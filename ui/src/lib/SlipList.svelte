@@ -36,6 +36,15 @@
   let committing = $state(false);
   /** Esc 取消后会立刻失焦，用这个标记让失焦不再触发提交。 */
   let cancelled = $state(false);
+  /**
+   * 当前这次编辑的**不可变快照**：`{ id, original }`。
+   *
+   * 为什么不能直接读 `editingId` / `draft`：用户改着 A 又去双击 B 时，这两个值
+   * 会被立刻改写成 B 的；而 A 那次提交是异步的，回来时读到的已经是别人的状态。
+   * 实测后果是**改动被静默丢弃**（A 的内容没保存，B 也没进入编辑）。
+   * 提交必须针对"这一次编辑"，而不是"当时碰巧在编辑哪一条"。
+   */
+  let session = $state(null);
 
   /**
    * 每条正文元素，用于方向键导航。
@@ -72,8 +81,13 @@
       onnotice?.("已锁定，先解锁才能修改");
       return;
     }
+    // 切到另一条之前，先把上一条**按它自己的会话**提交掉，否则改动会丢。
+    if (session && session.id !== slip.id) {
+      void commitEdit();
+    }
     editingId = slip.id;
     draft = slip.text;
+    session = { id: slip.id, original: slip.text };
     composing = false;
     cancelled = false;
   }
@@ -84,28 +98,43 @@
     composing = false;
     editingId = null;
     draft = "";
+    session = null;
   }
 
   async function commitEdit() {
     // 失焦可能和 Enter 撞在一起；也承接"取消后立刻失焦"的情况。
-    if (cancelled || committing || editingId === null) {
-      return;
-    }
-    const slip = slips.find((item) => item.id === editingId);
-    if (!slip) {
-      editingId = null;
+    const current = session;
+    if (cancelled || committing || !current) {
       return;
     }
     // 没改就不用发请求，免得平白把提示区刷成"已修改"。
-    if (draft === slip.text) {
-      editingId = null;
+    if (draft === current.original) {
+      finishSession(current.id);
       return;
     }
     committing = true;
-    const accepted = await onedit?.(slip, draft);
+    const accepted = await onedit?.(
+      { id: current.id, text: current.original },
+      draft,
+    );
     committing = false;
-    // 失败时保持 editingId 不变、draft 不清空：用户的输入不能丢。
+    // 失败时保持编辑态与草稿：用户的输入不能丢。
     if (accepted) {
+      finishSession(current.id);
+    }
+  }
+
+  /**
+   * 收尾：只有这条**仍然是当前编辑目标**时才清界面状态。
+   *
+   * 用户可能已经切到别的行了——那时清空会把新展开的编辑框一起关掉（实测过）。
+   */
+  function finishSession(id) {
+    if (session?.id !== id) {
+      return;
+    }
+    session = null;
+    if (editingId === id) {
       editingId = null;
       draft = "";
     }
@@ -135,7 +164,17 @@
     }
   }
 
-  function handleBlur() {
+  /**
+   * 失焦提交。
+   *
+   * 必须带上"这一行是谁"：切换编辑目标时，旧输入框会因卸载而失焦，而那时
+   * `session` 已经是新那一条的了。不校验就会拿别人的会话做判断——实测的后果是
+   * 旧改动被静默丢弃、新展开的编辑框也被关掉。
+   */
+  function handleBlur(slipId) {
+    if (!session || session.id !== slipId) {
+      return;
+    }
     if (cancelled) {
       cancelled = false;
       return;
@@ -239,7 +278,7 @@
             bind:value={draft}
             use:focusAndSelect
             onkeydown={handleKeydown}
-            onblur={handleBlur}
+            onblur={() => handleBlur(slip.id)}
             oncompositionstart={() => (composing = true)}
             oncompositionend={() => (composing = false)}
             aria-label="编辑纸条"

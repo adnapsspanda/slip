@@ -461,5 +461,70 @@ check("Esc 退出编辑且焦点回到那一行",
 check("首行 ↑ 回到捕获框", keyboardFlow.backToCapture === true,
   `backToCapture=${keyboardFlow.backToCapture}`);
 
+// 12. 切换编辑目标不丢改动；Ctrl+Enter 也能提交。
+//     这条对应实测过的数据丢失 bug：改着 A 又去双击 B，A 的改动被静默丢弃、
+//     B 也没进入编辑。根因是提交逻辑读的是可变的 editingId/draft。
+const switchEdit = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const wait = (ms) => new Promise(r => setTimeout(r, ms));
+       const ta = document.querySelector('.capture__input');
+       for (const value of ['切换测试 A', '切换测试 B']) {
+         ta.focus();
+         ta.value = value;
+         ta.dispatchEvent(new Event('input', { bubbles: true }));
+         ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+         await wait(1300);
+       }
+
+       const rows = [...document.querySelectorAll('.slip')].slice(-2);
+       const spanA = rows[0].querySelector('.slip__text');
+       const spanB = rows[1].querySelector('.slip__text');
+
+       spanA.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+       await wait(250);
+       const inputA = document.querySelector('.slip__edit');
+       if (!inputA) return JSON.stringify({ error: 'A 没有进入编辑' });
+       inputA.value = '切换测试 A 改过';
+       inputA.dispatchEvent(new Event('input', { bubbles: true }));
+
+       // 不按 Enter，直接切到 B —— 这正是会丢改动的那一步
+       spanB.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+       await wait(1600);
+       const openValue = document.querySelector('.slip__edit')?.value ?? null;
+       const texts = [...document.querySelectorAll('.slip__text')].map((e) => e.textContent);
+
+       // 在 B 的编辑框里用 Ctrl+Enter 提交
+       const inputB = document.querySelector('.slip__edit');
+       if (inputB) {
+         inputB.value = '切换测试 B 改过';
+         inputB.dispatchEvent(new Event('input', { bubbles: true }));
+         inputB.dispatchEvent(
+           new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }),
+         );
+       }
+       await wait(1600);
+       return JSON.stringify({
+         error: null,
+         openValue,
+         texts,
+         editorGone: document.querySelector('.slip__edit') === null,
+         afterCtrlEnter: [...document.querySelectorAll('.slip__text')].map((e) => e.textContent),
+       });
+     })()`,
+    true,
+  ),
+);
+check("切换编辑目标时前一条正常保存",
+  (switchEdit.texts ?? []).includes("切换测试 A 改过"),
+  `texts=${JSON.stringify(switchEdit.texts)}`);
+check("切换后新一条进入编辑且内容正确",
+  switchEdit.openValue === "切换测试 B",
+  `openValue=${switchEdit.openValue}`);
+check("Ctrl+Enter 提交",
+  switchEdit.editorGone === true &&
+    (switchEdit.afterCtrlEnter ?? []).includes("切换测试 B 改过"),
+  `editorGone=${switchEdit.editorGone} texts=${JSON.stringify(switchEdit.afterCtrlEnter)}`);
+
 cdp.close();
 process.exit(failed ? 1 : 0);
