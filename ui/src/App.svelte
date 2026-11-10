@@ -60,7 +60,9 @@
       return `无效文件已隔离到 ${snapshot.recovery.corruptPath}。可以重建一个空 Inbox。`;
     }
     if (snapshot.health && !snapshot.health.writable) {
-      return "文件无法解析，暂时只读。修好文件后可重新载入，或隔离并重建空 Inbox。";
+      // 不可写的原因不止"解析失败"：文件被其它程序占用、读盘失败同样会让它变 false。
+      // 具体原因在 diagnostics 里（例如"文件被其它程序占用"），这里只说清楚该怎么办。
+      return "当前不可写入。处理好下方诊断里的问题后可重新载入，或隔离并重建空 Inbox。";
     }
     if (snapshot.needsReload) {
       return "磁盘上的文件已被外部修改，需要重新载入。";
@@ -111,7 +113,8 @@
     if (!bridge.available) return "后端不可用";
     if (snapshot?.runtime?.state === "fatal") return "运行时已停止，不能收录";
     if (snapshot?.recovery?.state === "isolated") return "等待重建 Inbox";
-    if (snapshot && !snapshot.health.writable) return "文件无法解析，暂时只读";
+    if (snapshot && !snapshot.health.writable)
+      return "当前不可写入，详见横幅诊断";
     if (snapshot?.needsReload) return "磁盘文件已变化，请先重新载入";
     return "";
   });

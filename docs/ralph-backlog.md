@@ -52,6 +52,34 @@
 
 ## 完成记录
 
+- **R07｜本轮**：外部占用。**先实测再改**，结果和规划里的假设不一样。
+  实测（真实持有独占句柄 + CDP 触发收录）：
+  - 占用期间收录失败、草稿保留（这部分原本就是对的）；
+  - 但诊断只写 `Other`——Rust 把 Windows 的共享冲突归进 `Uncategorized`；
+  - **释放句柄后仍然拒绝写入**：一次瞬时占用让 vault 永久降级为只读，
+    只能靠用户手动点「重新载入」恢复（实测 reload 确实能恢复）；
+  - 横幅说「文件无法解析」，与诊断里的"读取失败"直接矛盾。
+
+  三处修复：
+  1. `IoKind::Busy`：按原生码区分 `ERROR_SHARING_VIOLATION(32)` /
+     `ERROR_LOCK_VIOLATION(33)`；并给 `IoKind` 实现 `Display`，诊断从
+     `Other` 变成「文件被其它程序占用」。
+  2. `read_for_conflict`：写入前的读盘对 `Busy` 短重试（5 次 × 40ms）。
+     **只对 Busy 重试**——权限不足、文件不存在重试多少次都一样，只会拖慢报错。
+  3. 前端横幅/`blockedReason` 改成原因中立（「当前不可写入，详见横幅诊断」），
+     具体原因交给 diagnostics。
+
+  测试 4 条，其中两条是"证明重试有用"而非"有重试"：
+  - `sharing_violation_maps_to_busy`：原生码 32/33 → Busy，且 5(ACCESS_DENIED)
+    不被误判；
+  - `exclusive_handle_reads_as_busy`：真实 `share_mode(0)` 独占句柄 → 读到 Busy；
+  - `retry_rides_out_a_short_lock`：占用 60ms、重试预算 160ms → 读成功。
+    把 ATTEMPTS 改成 1 或 DELAY 改成 1ms 会立刻变红；
+  - `io_kind_renders_human_readable_text`：这些文字会显示在界面上，不是日志。
+
+  实测确认：长占用时诊断显示「文件被其它程序占用」，提示区显示「当前不可写入，
+  详见横幅诊断」，草稿保留。测试 200 → 204；端到端 46 项全过。
+
 - **R04｜本轮**：跨屏定位先补测试再谈改算法。
   `place_near_cursor` 依赖 `AppHandle`（读光标、读显示器、读窗口尺寸），本身测不了，
   所以先把**纯几何**抽成 `placement(cursor, area, size, gap) -> (x, y)` 与 `Area` 结构，

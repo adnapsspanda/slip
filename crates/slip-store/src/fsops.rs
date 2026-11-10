@@ -19,6 +19,14 @@ use crate::{Hash, IoKind};
 const MAX_NAME_ATTEMPTS: u32 = 1000;
 
 pub(crate) fn map_io(error: std::io::Error) -> IoKind {
+    // Windows 的共享冲突与锁冲突落在 Rust 的 `Uncategorized` 里，光看 `kind()`
+    // 只能得到 `Other`——那个词对排查毫无帮助。按原生码区分出来，才能重试、才能解释。
+    if let Some(code) = error.raw_os_error() {
+        // ERROR_SHARING_VIOLATION = 32, ERROR_LOCK_VIOLATION = 33
+        if code == 32 || code == 33 {
+            return IoKind::Busy;
+        }
+    }
     match error.kind() {
         ErrorKind::NotFound => IoKind::NotFound,
         ErrorKind::AlreadyExists => IoKind::Occupied,

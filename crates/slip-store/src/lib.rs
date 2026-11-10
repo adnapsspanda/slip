@@ -104,7 +104,25 @@ pub enum IoKind {
     NotFound,
     Occupied,
     PermissionDenied,
+    /// 文件被其它进程占用（Windows `ERROR_SHARING_VIOLATION` / `ERROR_LOCK_VIOLATION`）。
+    ///
+    /// 单独成一类是有原因的：编辑器打开一下、杀软扫一下都会造成它，属于**瞬时**状态，
+    /// 值得重试；而权限不足、不存在这些重试也没用。归到 `Other` 里两者就没法区分了。
+    Busy,
     Other,
+}
+
+/// 给**人**看的文本。这些会出现在界面的诊断区，不是日志。
+impl std::fmt::Display for IoKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "文件不存在"),
+            Self::Occupied => write!(f, "目标已存在"),
+            Self::PermissionDenied => write!(f, "权限不足"),
+            Self::Busy => write!(f, "文件被其它程序占用"),
+            Self::Other => write!(f, "其它 I/O 错误"),
+        }
+    }
 }
 
 /// 给**人**看的文本。
@@ -182,6 +200,34 @@ pub trait Store: Send + Sync {
 // ---------------------------------------------------------------------------
 // 实现：磁盘事务层
 // ---------------------------------------------------------------------------
+
+/// 写入前读盘取 hash，遇到"被占用"就短重试。
+///
+/// 为什么值得重试：Windows 上的共享冲突（编辑器保存一下、杀软扫一下、同步盘读一下）
+/// 通常是**瞬时**的，几十毫秒后自己就过去了。实测过不重试的后果——外部占用 1 秒就把
+/// 整个 vault 降级成只读，而用户看不出原因，只能手动点"重新载入"。
+///
+/// 只对 [`IoKind::Busy`] 重试：权限不足、文件不存在这些重试多少次都一样，
+/// 只会把报错往后拖。最坏情况多等 4×40ms，而这条路径本来就要写盘（约 15ms）。
+fn read_for_conflict(path: &std::path::Path) -> Result<Vec<u8>, IoKind> {
+    const ATTEMPTS: usize = 5;
+    const DELAY: std::time::Duration = std::time::Duration::from_millis(40);
+
+    let mut last = IoKind::Other;
+    for attempt in 0..ATTEMPTS {
+        match fsops::read_bytes(path) {
+            Ok(bytes) => return Ok(bytes),
+            Err(kind) => {
+                last = kind;
+                if kind != IoKind::Busy || attempt + 1 == ATTEMPTS {
+                    break;
+                }
+                std::thread::sleep(DELAY);
+            }
+        }
+    }
+    Err(last)
+}
 
 /// 保留的备份代数（v11 §4.5）。
 const BACKUP_KEEP: usize = 5;
@@ -438,10 +484,12 @@ impl Store for MarkdownStore {
         }
 
         // 4. 有变化才读盘比较原始 hash；不同则只置 `needs_reload`，不写任何字节。
-        let current_hash = match fsops::read_bytes(&state.path) {
+        let current_hash = match read_for_conflict(&state.path) {
             Ok(disk) => fsops::hash_bytes(&disk),
             Err(kind) => {
-                let message = format!("写入前读取 {} 失败：{kind:?}", state.path.display());
+                // 用 `{kind}`（Display）而不是 `{kind:?}`：这段文字会显示在界面诊断区，
+                // 用户需要知道"文件被其它程序占用"，而不是看到一个 Debug 名。
+                let message = format!("写入前读取 {} 失败：{kind}", state.path.display());
                 state.degrade_with(Diagnostic {
                     line: None,
                     message,
@@ -806,6 +854,96 @@ mod tests {
     use time::macros::datetime;
 
     use super::*;
+
+    // ---------- I/O 分类与可读文本 ----------------
+
+    #[test]
+    fn sharing_violation_maps_to_busy() {
+        // Windows 的 ERROR_SHARING_VIOLATION(32) / ERROR_LOCK_VIOLATION(33)
+        // 在 Rust 里只有 Uncategorized，旧实现一律归成 Other——那个词对排查毫无帮助，
+        // 也没法据此决定"要不要重试"。
+        for code in [32, 33] {
+            let error = std::io::Error::from_raw_os_error(code);
+            assert_eq!(fsops::map_io(error), IoKind::Busy, "raw code {code}");
+        }
+        // 别的原生错误不该被误判成 Busy，否则重试会白等。
+        let denied = std::io::Error::from_raw_os_error(5); // ERROR_ACCESS_DENIED
+        assert_eq!(fsops::map_io(denied), IoKind::PermissionDenied);
+    }
+
+    #[test]
+    fn io_kind_renders_human_readable_text() {
+        // 这些文字会出现在界面的诊断区，不是日志里。
+        assert_eq!(IoKind::Busy.to_string(), "文件被其它程序占用");
+        assert_eq!(IoKind::NotFound.to_string(), "文件不存在");
+        assert_eq!(IoKind::PermissionDenied.to_string(), "权限不足");
+    }
+
+    /// 用真实的独占句柄验证：读不到的时候必须报 `Busy`，而不是 `Other`。
+    ///
+    /// 这条测试直接对应实测过的用户场景——编辑器/杀软占用 inbox.md 一秒，
+    /// 旧实现让整个 vault 永久降级成只读，且诊断只写"Other"。
+    #[cfg(windows)]
+    #[test]
+    fn exclusive_handle_reads_as_busy() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md");
+        std::fs::write(&path, b"content").expect("seed");
+
+        // share_mode(0) = 不共享，任何其它打开都会拿到共享冲突。
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .expect("打开文件以独占");
+
+        assert_eq!(fsops::read_bytes(&path), Err(IoKind::Busy));
+        // 重试路径也必须收敛成 Busy（而不是重试到别的错误）。
+        assert_eq!(read_for_conflict(&path), Err(IoKind::Busy));
+
+        drop(held);
+        // 释放后立刻能读——证明刚才的失败确实来自占用，而不是文件坏了。
+        assert!(fsops::read_bytes(&path).is_ok());
+    }
+
+    /// 重试必须**真的能等到锁释放**，而不是"有重试但没用"。
+    ///
+    /// 占用 60ms，重试预算是 4×40ms=160ms，所以应当在重试过程中读成功。
+    /// 这条测试同时钉住了那个常量的量级：如果把 ATTEMPTS 改成 1，
+    /// 或者把 DELAY 改成 1ms，它会立刻变红。
+    #[cfg(windows)]
+    #[test]
+    fn retry_rides_out_a_short_lock() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md");
+        std::fs::write(&path, b"content").expect("seed");
+
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let holder_path = path.clone();
+        let holder = std::thread::spawn(move || {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&holder_path)
+                .expect("打开文件以独占");
+            held_tx.send(()).expect("通知主线程");
+            std::thread::sleep(Duration::from_millis(60));
+            drop(file);
+        });
+
+        held_rx.recv().expect("等占用建立");
+        // 此刻文件被独占；只有重试才可能读到。
+        assert!(
+            read_for_conflict(&path).is_ok(),
+            "重试没能等到锁释放，说明预算太短或根本没重试"
+        );
+        holder.join().expect("占用线程结束");
+    }
 
     // ---------- 构件化文档与 `doc` 函数 ----------------
 
