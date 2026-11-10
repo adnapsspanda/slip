@@ -21,10 +21,11 @@
   /** 撤销请求在途，避免连按 Ctrl+Z 把后端的撤销栈一次抽干。 */
   let undoing = $state(false);
 
-
   // 归档判定只看 `archived`：后端 `SlipView.archived` 是唯一判据
   // （`done && archived_at.is_some()`，见 v11 §1.8），没有独立的 archivedAt 字段。
-  let visible = $derived((snapshot?.slips ?? []).filter((slip) => !slip.archived));
+  let visible = $derived(
+    (snapshot?.slips ?? []).filter((slip) => !slip.archived),
+  );
   let pendingCount = $derived(visible.filter((slip) => !slip.done).length);
   let doneSlips = $derived(visible.filter((slip) => slip.done));
   let doneCount = $derived(doneSlips.length);

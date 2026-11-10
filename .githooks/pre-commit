@@ -63,6 +63,15 @@ fi
 rm -f "$bom_tmp"
 step "编码检查（*.ps1 必须有 BOM）"
 
+# 前端格式：prettier 3 **不会**自动加载插件，所以 ui/.prettierrc.json 里必须显式
+# 声明 prettier-plugin-svelte，否则 *.svelte 会被静默跳过（表现为"检查通过"，
+# 其实根本没检查）。这条曾经骗过我一次。
+step "prettier --check（ui）"
+if [ ! -d ui/node_modules ]; then
+  ( cd ui && "$BUN" install )
+fi
+( cd ui && "$BUN" run format:check )
+
 step "cargo fmt --all --check"
 cargo fmt --all --check
 

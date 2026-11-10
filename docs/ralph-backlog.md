@@ -32,6 +32,10 @@
    确认，并在记录里附上文件与行号。`R-01` 就是反例：凭归档功能落地前的印象下了
    结论，白花一轮——代码里 `Patch::Unarchive`、`apply_patch` 分支、`inverse_batch`
    映射、以及 `pipeline.rs:301` 的端到端测试全都在。
+5. **门禁失败时，先问"这条断言依赖了什么没写出来的前提"，再去看被测代码。**
+   本会话两次假红都是这个形状：一次是 `Tauri Window` 这个类名被 Clash Verge 共用，
+   脚本抓到了别人的窗口；一次是显示器从双屏变单屏，翻转断言的前提（右下放不下）
+   不再成立。两次的失败信息都指向了错误的地方。
 
 ## 待办
 
@@ -39,7 +43,7 @@
 |---|---|---|---|---|
 | R-02 | 死视图路径（**需要产品决策，勿擅自删**） | 整个 `ui/` 零引用 `toggleCollapse` / `DragEnd` / `DockSideChanged` / `CollapseToggled`；后端仍保留 `ViewEvent` 四变体、`Command::ToggleCollapse`、`PaperViewSet.collapsed/dock_side`，以及**只为它们服务**的 `PREFS_DEBOUNCE`（仅 `dispatch.rs:400`、`:418` 触发） | 二选一并在 `docs/design` 落定：① 接线（需要先定义 UI 入口）；② 整体删除并把 `prefs` 收窄，同时保证旧 `ui-state.json` 仍可读（serde default）。删除可连带简化 `dispatch` 的去抖机制 | 待决策 |
 | R-06 | `csp: null` | `tauri.conf.json` 未设 CSP。当前无远程内容、无 `{@html}`，风险低但无纵深 | 补最小 CSP（`default-src 'self'`），确认 Svelte 内联样式与 WebView2 下仍正常：验收全过 | ✅ 见完成记录 |
-| R-07 | 前端无 lint/format | 只有 `vite build`；格式靠人。仓库其余部分都有门禁 | 引入 `prettier --check` 并接进 `.githooks/pre-commit` 与 CI；**不**引入 eslint 规则集（避免新噪音面） | 待办 |
+| R-07 | 前端无 lint/format | 只有 `vite build`；格式靠人。仓库其余部分都有门禁 | 引入 `prettier --check` 并接进钩子与 CI；**不**引入 eslint 规则集 | ✅ 见完成记录 |
 | R-08 | `.ps1` 必须带 BOM | `edit`/`write` 工具会剥掉 BOM，导致 `verify-hotkey.ps1` 被按 GBK 解码而报语法错，本次会话撞了 4 次 | 钩子 + CI 双向拦截：缺失则拒绝提交/构建失败，并给出修法 | ✅ 见完成记录 |
 | R-05 | 限制常量前后端各一份 | `slip-domain` 的 `MAX_TEXT_CODEPOINTS=2000` / `MAX_LINES=100` 与 `Capture.svelte` 的字面量重复，无单一来源 | 加一条会红的契约测试，把两处钉在一起 | ✅ 见完成记录 |
 | R-09 | 无安装包 | `bundle.active: false`，只能分发绿色 exe | 确认是否刻意；若是，在 README「已知限制」里写明不提供安装包及原因 | 待办 |
@@ -47,6 +51,19 @@
 | R-01 | ~~归档撤销承诺与实现不符~~ | **撤回**：`Patch::Unarchive`（`model.rs:52`）、`apply_patch` 分支（`state.rs:135`）、`inverse_batch` 双向映射（`dispatch.rs:565-568`）、领域测试（`state.rs:304`）、端到端测试（`pipeline.rs:301` `archive_and_undo_preserve_done_state_through_disk`）全部就位 | 无需改动。文档承诺与实现**一致** | ✅ 撤回 |
 
 ## 完成记录
+
+- **R-07｜本轮**：接入 prettier 3.9.10 + prettier-plugin-svelte 4.1.1。
+  - `ui/.prettierrc.json` 里显式声明 `plugins`。**这是必须的**：prettier 3 不会自动
+    加载插件，缺了它 `.svelte` 会被静默跳过——`--check` 报"全部合规"，其实一个都没查。
+    我第一轮测量时就上过这个当，误以为只有 2 个文件需要改。
+  - `ui/package.json` 加 `format` / `format:check` 两个脚本；钩子与 CI 各接一条。
+  - 真实改动面：5 个文件、+20/−11，全是空行与折行规范化，没有重排既有逻辑。
+  - 负向验证：往 `bridge.js` 追加一行 `export const  bad = (a,b)=>{return a+b}`
+    → `format:check` 退出码 1 并指出文件名；还原后恢复 `All matched files use
+    Prettier code style!`。
+  - 端到端：41 PASS / 0 FAIL，格式化没有改变行为。
+- **R-09｜本轮**：README「已知限制」补一条——`bundle.active` 为 `false`，只分发
+  绿色 exe（Win11 自带 WebView2），并给出想要安装包时的改动点。
 
 - **R-05｜本轮**：新增 `crates/slip-domain/tests/frontend_contract.rs`，直接读
   `ui/src/lib/Capture.svelte` 源码，把 `MAX_CODEPOINTS` / `MAX_LINES` 两个字面量与

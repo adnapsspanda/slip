@@ -110,8 +110,7 @@
   onkeydown={keydown}
   oninput={input}
   oncompositionstart={() => (composing = true)}
-  oncompositionend={() => (composing = false)}
-></textarea>
+  oncompositionend={() => (composing = false)}></textarea>
 <div class="capture__hint" class:capture__hint--warn={problem !== ""}>
   {problem || hint}
 </div>

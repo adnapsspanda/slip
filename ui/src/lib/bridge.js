@@ -79,8 +79,7 @@ export const setLocked = (requestId, id, locked) =>
   call("set_locked", { requestId, id, locked });
 
 /** 归档一条或多条已完成的纸条。 @param {string} requestId @param {string[]} ids @returns {Promise<Ack>} */
-export const archive = (requestId, ids) =>
-  call("archive", { requestId, ids });
+export const archive = (requestId, ids) => call("archive", { requestId, ids });
 
 /** 撤销栈在后端；前端只负责发请求，不维护自己的历史副本。 @returns {Promise<Ack>} */
 export const undo = (requestId) => call("undo", { requestId });

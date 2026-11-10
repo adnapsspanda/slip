@@ -161,7 +161,9 @@
             role="textbox"
             tabindex="0"
             aria-readonly="true"
-            aria-label={slip.locked ? "已锁定的纸条正文" : "纸条正文，双击或回车编辑"}
+            aria-label={slip.locked
+              ? "已锁定的纸条正文"
+              : "纸条正文，双击或回车编辑"}
             ondblclick={() => beginEdit(slip)}
             onkeydown={(event) => {
               // 键盘用户没有"双击"，给一个等价入口；其他按键不动。
@@ -181,7 +183,12 @@
               title="归档（从列表收起）"
               onclick={() => onarchive?.(slip)}
             >
-              <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <svg
+                viewBox="0 0 16 16"
+                width="13"
+                height="13"
+                aria-hidden="true"
+              >
                 <path
                   d="M2.5 3.5h11v2.5h-11zM3.5 6v6.5a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V6M6.5 8.5h3"
                   fill="none"
