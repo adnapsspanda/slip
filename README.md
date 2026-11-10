@@ -136,6 +136,9 @@ $env:SLIP_LOG = "debug"   # error | warn | info | debug | trace，默认 info
   就清空——历史不落盘，因为 `inbox.md` 是唯一真源。追加无法撤销（没有删除变更），
   锁定有显式开关可以直接点回去。
 - **锁定只锁正文。** 已定稿的纸条仍然可以勾选完成和归档，否则锁会阻止任务完成。
+- **不提供安装包。** `tauri.conf.json` 的 `bundle.active` 为 `false`，只分发绿色
+  `slip-shell.exe`（Win11 自带 WebView2 运行时，无需另装组件）。想要 MSI/NSIS
+  安装包时把它改成 `true` 再走 tauri CLI 打包即可。
 - 没有标签、没有提醒、没有项目分组、没有云同步。
   v1 只做「捕获」这一件事，其余一概不做。
 
