@@ -52,6 +52,25 @@
 
 ## 完成记录
 
+- **新维度：错误路径审计｜本轮**。核对三件事：
+  1. 设计文档 §6.5 的 `StoreError` → `Ack` 映射表与 `map_store_error` /
+     `result_for_code` **逐条一致**（conflict / needsReload / readOnly / domain /
+     blocking / io / notDegraded 全对得上）。
+  2. 前端横幅优先级与设计一致（Fatal > Isolated > Degraded > needsReload），
+     `blockedReason` 覆盖 bridge 不可用、fatal、isolated、只读、needsReload 五种状态，
+     9 处 ACK 处理**全部**走 `formatAckError`，没有绕过翻译的地方。
+  3. **发现真缺陷**：`formatAckError` 缺 `blocking` / `io` / `notDegraded` 三个后端
+     确实会返回的码，落到 `default` 把原始消息直接给用户；而 `blocking` 的消息是
+     `format!("{err:?}")`——用户会在提示区看到
+     `DuplicateId { id: SlipId(SlipId(019a…)) }` 这样的 Rust 结构体。
+
+  修复：给 `BlockingError` 实现 `Display`（错误类型应当能自我描述，不该逼调用方
+  Debug 它）；`map_store_error` 改用 `err.to_string()`；前端补三个 case，并遵守既有
+  约定——后端消息保持英文（`domain` 分支靠 `msg.includes("locked")` 判断，改语言会
+  让判断失效），翻译只在前端按 code 做。
+  加守卫测试 `blocking_message_is_human_readable`：消息里出现 `{` 或 `SlipId` 就红。
+  测试 187 → 188；端到端 41 项全过。
+
 - **新维度：文档一致性审计｜本轮**。逐条把 `README` / `AGENTS.md` 里可验证的承诺
   对照代码核实（现场读代码 + grep，不凭记忆）。结果：
 

@@ -669,8 +669,9 @@ fn map_store_error(error: &StoreError) -> (&'static str, String) {
             String::from("the file cannot be parsed; vault is read-only"),
         ),
         StoreError::Domain(err) => ("domain", err.to_string()),
-        StoreError::Blocking(err) => ("blocking", format!("{err:?}")),
-        StoreError::Io(kind) => ("io", format!("io error: {kind:?}")),
+        // 用 Display 而不是 Debug：这条消息会直接出现在用户的提示区。
+        StoreError::Blocking(err) => ("blocking", err.to_string()),
+        StoreError::Io(kind) => ("io", format!("i/o error: {kind:?}")),
         StoreError::NotDegraded => (
             "notDegraded",
             String::from("isolation is only allowed while degraded"),
@@ -983,6 +984,25 @@ mod tests {
     }
 
     // ------------------------------------------------ Fatal
+
+    /// 错误消息会**直接进入用户的提示区**，所以不能泄漏 Debug 结构体。
+    ///
+    /// 回归背景：`blocking` 曾经是 `format!("{err:?}")`，用户会在界面上看到
+    /// `DuplicateId { id: SlipId(SlipId(019a…)) }`。这条测试挡住那种退化——
+    /// 只要消息里出现结构体的花括号就红。
+    #[test]
+    fn blocking_message_is_human_readable() {
+        let id = SlipId::new_v7();
+        let (code, message) = map_store_error(&StoreError::Blocking(
+            slip_store::BlockingError::DuplicateId { id },
+        ));
+        assert_eq!(code, "blocking");
+        assert!(
+            !message.contains('{') && !message.contains("SlipId"),
+            "消息泄漏了 Debug 结构体：{message}"
+        );
+        assert!(message.contains("duplicate"), "缺少可读描述：{message}");
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn panic_marks_unknown_and_enters_fatal() {

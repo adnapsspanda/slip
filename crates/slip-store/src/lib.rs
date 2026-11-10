@@ -107,6 +107,28 @@ pub enum IoKind {
     Other,
 }
 
+/// 给**人**看的文本。
+///
+/// 这几条会被直接写进 ACK 的 `message` 与日志。没有 `Display` 时调用方只能用
+/// `{err:?}`，于是用户会在提示区看到 `DuplicateId { id: SlipId(SlipId(019a…)) }`
+/// 这样的 Rust 结构体。错误类型应当能自我描述，不该逼调用方去 Debug 它。
+impl std::fmt::Display for BlockingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRecord { line, reason } => {
+                write!(f, "invalid record at line {line}: {reason:?}")
+            }
+            Self::DuplicateId { id } => {
+                write!(f, "duplicate slip id: {}", id.to_canonical_string())
+            }
+            Self::UnsupportedVersion => write!(f, "unsupported marker version"),
+            Self::NonUtf8Record { line } => {
+                write!(f, "record at line {line} is not valid UTF-8")
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
     Conflict { current_hash: Hash },

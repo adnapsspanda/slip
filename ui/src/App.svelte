@@ -80,6 +80,14 @@
         return "运行时状态异常，请重启 Slip";
       case "undo":
         return msg;
+      case "blocking":
+        // 后端的 message 已经是人类可读的句子（BlockingError 实现了 Display），
+        // 这里只补一句"该怎么办"。
+        return `inbox.md 有无法处理的结构问题：${msg}。修好文件后重新载入`;
+      case "io":
+        return `磁盘读写失败（${msg.replace(/^i\/o error:\s*/, "")}）`;
+      case "notDegraded":
+        return "当前文件状态正常，不需要隔离";
       case "domain":
         if (msg.includes("locked")) return "纸条已锁定，请先解锁再修改";
         if (msg.includes("empty")) return "纸条内容不能为空";
