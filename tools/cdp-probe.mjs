@@ -87,6 +87,21 @@ const awake = JSON.parse(
 check("唤出后捕获框获得焦点", awake.cls === "capture__input", `activeElement=${awake.tag}.${awake.cls}`);
 check("Tauri 桥可用", awake.tauri === true);
 
+// 1.5 空 vault 的首屏必须有指引。第一次启动那张空纸最容易被误解成"什么也没发生"，
+//     所以这一步在录入之前断言，且要求指引里含可识别的按键说明而不只是一句空话。
+const emptyState = JSON.parse(
+  await evaluate(`JSON.stringify({
+    present: document.querySelector('.slips__empty') !== null,
+    title: document.querySelector('.slips__empty-title')?.textContent?.trim() ?? '',
+    steps: document.querySelectorAll('.slips__empty-steps li').length,
+    keys: [...document.querySelectorAll('.slips__empty kbd')].map(e => e.textContent),
+  })`),
+);
+check("空 vault 时展示空态指引", emptyState.present === true && emptyState.title.length > 0,
+  `title=${emptyState.title}`);
+check("空态指引给出了两步操作与按键", emptyState.steps === 2 && emptyState.keys.length >= 3,
+  `steps=${emptyState.steps} keys=${JSON.stringify(emptyState.keys)}`);
+
 // 2. 真打一条并按回车，走完整 IPC -> 领域 -> 磁盘 -> 快照。
 const typed = JSON.parse(
   await evaluate(
@@ -102,6 +117,7 @@ const typed = JSON.parse(
          hint: document.querySelector('.capture__hint')?.textContent ?? null,
          slips: [...document.querySelectorAll('.slip__text')].map(e => e.textContent),
          inputLeft: ta.value,
+         emptyGone: document.querySelector('.slips__empty') === null,
        });
      })()`,
     true,
@@ -110,6 +126,7 @@ const typed = JSON.parse(
 check("回车后提示为已收录", typed.hint === "已收录", `hint=${typed.hint}`);
 check("列表出现该条", (typed.slips ?? []).includes("热键唤出后写入的一条"), `slips=${JSON.stringify(typed.slips)}`);
 check("输入框已清空", typed.inputLeft === "", `left=${JSON.stringify(typed.inputLeft)}`);
+check("录入后空态引导无缝让位给列表", typed.emptyGone === true, `emptyGone=${typed.emptyGone}`);
 
 // 3. 输入法组合态按回车必须不提交（回归红线）。
 const ime = JSON.parse(

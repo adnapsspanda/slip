@@ -128,7 +128,27 @@
 
 <ul class="slips">
   {#if slips.length === 0}
-    <li class="slips__empty">还没有内容。先写一条试试。</li>
+    <!--
+      空态不是装饰：第一次启动这张纸是空的时候，用户最容易以为"什么也没发生"。
+      这里不展示具体热键——视图里的 hotkey 是**配置原值**，可能写过但没注册成功，
+      显示它等于给一个可能不生效的键。真正生效的那个由托盘菜单负责展示。
+    -->
+    <li class="slips__empty">
+      <p class="slips__empty-title">还没有内容</p>
+      <ol class="slips__empty-steps">
+        <li>
+          按唤出热键（默认 <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>Space</kbd
+          >，也可以点托盘图标）
+        </li>
+        <li>
+          打完字按 <kbd>Enter</kbd> —— 条目立刻写进
+          <code>inbox.md</code>，窗口自动收起
+        </li>
+      </ol>
+      <p class="slips__empty-foot">
+        换过热键？右键托盘图标，菜单第一行就是当前生效的那个。
+      </p>
+    </li>
   {:else}
     {#each slips as slip (slip.id)}
       <li class:slip--done={slip.done} class="slip">

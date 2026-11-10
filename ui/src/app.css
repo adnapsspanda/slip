@@ -190,9 +190,59 @@ body {
 }
 
 .slips__empty {
-  padding: 18px 4px;
-  font-size: 13px;
+  padding: 22px 6px 18px;
   color: var(--ink-soft);
+  text-align: left;
+}
+
+.slips__empty-title {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  text-align: center;
+}
+
+.slips__empty-steps {
+  margin: 0;
+  padding-left: 22px;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
+.slips__empty-steps li + li {
+  margin-top: 6px;
+}
+
+.slips__empty-steps code {
+  padding: 1px 5px;
+  border: 1px solid var(--paper-edge);
+  border-radius: 4px;
+  background: #fffdf8;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+/* 键帽样式：让"按哪个键"在纯文字里也能一眼认出来。 */
+.slips__empty kbd {
+  display: inline-block;
+  min-width: 18px;
+  padding: 1px 5px;
+  border: 1px solid var(--paper-edge);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: #fffdf8;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.slips__empty-foot {
+  margin: 14px 0 0;
+  font-size: 12px;
+  opacity: 0.85;
   text-align: center;
 }
 
