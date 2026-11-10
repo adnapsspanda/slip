@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+# 同一分支的新推送直接取消上一次运行，别让排队浪费时间。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  quality:
+    name: 质量门禁
+    # 只跑 Windows：这个应用依赖 Win32 托盘、全局热键与 WebView2，
+    # 在 Linux 上连编译都过不去。假装跨平台反而会给出假的绿灯。
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # 必须在任何 cargo 命令之前：`tauri::generate_context!` 在**编译期**读
+      # `ui/dist`，而该目录不入库。顺序错了会得到一句 "proc macro panicked"。
+      # 详见 src-tauri/build.rs 里的前置检查。
+      - name: 构建前端产物
+        working-directory: ui
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: 缓存 Rust 产物
+        uses: Swatinem/rust-cache@v2
+
+      # 工具链版本由 rust-toolchain.toml 钉死，这里不重复声明。
+      - name: 格式检查
+        run: cargo fmt --all --check
+
+      - name: Clippy（警告即错误）
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: 测试
+        run: cargo test --workspace --locked
+
+      # debug 能过不代表 release 能过：优化会改变 cfg 分支与某些 lint 的判定。
+      - name: Release 构建
+        run: cargo build --release -p slip-shell --locked
+
+      # 端到端验收（真实热键 / 托盘 / 窗口定位）**不在 CI 里**：
+      # 它需要一个交互式桌面会话和一个真实光标，runner 上跑不了。
+      # 那部分只能在本机用 `pwsh -File tools/verify-hotkey.ps1` 兜。

@@ -1,0 +1,17 @@
+[package]
+name = "slip-app"
+version.workspace = true
+edition.workspace = true
+description = "Slip 的调度器、presenter 与视图快照。v1 不依赖 tauri，便于单测。"
+
+[dependencies]
+slip-domain = { path = "../slip-domain" }
+slip-store = { path = "../slip-store" }
+time.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

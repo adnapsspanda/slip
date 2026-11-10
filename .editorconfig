@@ -1,0 +1,26 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{js,mjs,svelte,json,yml,yaml,html,css}]
+indent_size = 2
+
+[*.md]
+# Markdown 里行尾两个空格是**有语义**的换行，不能自动删。
+trim_trailing_whitespace = false
+
+[*.ps1]
+# 这一条是血泪换来的：Windows PowerShell 会把不带 BOM 的 UTF-8 按 ANSI/GBK 解码，
+# 中文注释变乱码后直接引发语法错误。见 AGENTS.md「写验收脚本时踩过的坑」。
+charset = utf-8-bom
+end_of_line = crlf
+indent_size = 4
+
+[*.{ico,png,jpg}]
+insert_final_newline = false

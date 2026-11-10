@@ -1,0 +1,22 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/slip-domain",
+    "crates/slip-store",
+    "crates/slip-app",
+    "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+
+[workspace.dependencies]
+uuid = { version = "1", features = ["v7"] }
+time = { version = "0.3", features = ["formatting", "parsing", "macros"] }
+blake3 = "1"
+tempfile = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tokio = { version = "1", features = ["sync", "macros", "rt", "test-util"] }

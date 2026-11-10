@@ -1,0 +1,269 @@
+/*
+ * 纸片的视觉。
+ *
+ * 刻意不用系统阴影窗：Windows 上"无边框 + 透明 + 系统阴影"三者的命中区域
+ * 会互相打架。阴影交给 CSS，命中区域就严格等于纸片矩形。
+ */
+
+:root {
+  --paper: #fbf7ee;
+  --paper-edge: #e2d9c6;
+  --ink: #2b2620;
+  --ink-soft: #8a8172;
+  --accent: #b4663a;
+  --radius: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  /* 透明的部分必须真的透明，点击才会落到下层应用 */
+  background: transparent;
+  overflow: hidden;
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
+    system-ui, sans-serif;
+  color: var(--ink);
+  /* 无边框窗口里选中文字会干扰拖动，按需在局部开启 */
+  user-select: none;
+}
+
+#app {
+  height: 100%;
+}
+
+.paper {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  border-radius: var(--radius);
+  border: 1px solid var(--paper-edge);
+  background: var(--paper);
+  box-shadow: 0 18px 40px rgb(43 38 32 / 22%), 0 2px 6px rgb(43 38 32 / 14%);
+  overflow: hidden;
+}
+
+.paper__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 14px 6px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+  cursor: default;
+}
+
+.paper__title {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.paper__meta {
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capture {
+  padding: 0 12px 8px;
+}
+
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid #d9b2a0;
+  background: #fbeae2;
+  color: #7a3a1d;
+  font-size: 12px;
+  line-height: 1.5;
+  user-select: text;
+}
+
+.banner button {
+  flex: none;
+  padding: 4px 8px;
+  border: 1px solid #c98f74;
+  border-radius: 6px;
+  background: #fff6f1;
+  color: #7a3a1d;
+  font: inherit;
+  cursor: pointer;
+}
+
+.capture__input {
+  width: 100%;
+  resize: none;
+  border: 1px solid var(--paper-edge);
+  border-radius: 10px;
+  background: #fffdf8;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink);
+  outline: none;
+  user-select: text;
+}
+
+.capture__input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(180 102 58 / 14%);
+}
+
+.capture__input:disabled {
+  color: var(--ink-soft);
+  background: #f6f1e6;
+}
+
+.capture__hint {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.slips {
+  flex: 1;
+  margin: 0;
+  padding: 4px 12px 12px;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.slips__empty {
+  padding: 18px 4px;
+  font-size: 13px;
+  color: var(--ink-soft);
+  text-align: center;
+}
+
+.slip {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  font-size: 13.5px;
+  line-height: 1.45;
+  user-select: text;
+}
+
+.slip:hover {
+  background: #f3ecdd;
+}
+
+.slip__box {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  padding: 0;
+  border: 1.5px solid var(--ink-soft);
+  border-radius: 4px;
+  background: transparent;
+  cursor: pointer;
+  position: relative;
+}
+
+.slip__box:hover {
+  border-color: var(--accent);
+}
+
+.slip__box--done {
+  border-color: var(--accent);
+  background: var(--accent);
+}
+
+.slip__box--done::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 8px;
+  border: solid #fffdf8;
+  border-width: 0 2px 2px 0;
+  transform: rotate(42deg);
+}
+
+.slip__text {
+  flex: 1;
+  word-break: break-word;
+}
+
+.slip--done .slip__text {
+  color: var(--ink-soft);
+  text-decoration: line-through;
+}
+
+.spike {
+  border-top: 1px dashed var(--paper-edge);
+  padding: 8px 12px 10px;
+  font-size: 12px;
+  color: var(--ink-soft);
+  background: #f6f1e6;
+}
+
+.spike__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.spike__head strong {
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.spike__toggle,
+.spike__row button {
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 1px solid var(--paper-edge);
+  border-radius: 7px;
+  background: #fffdf8;
+  color: var(--ink);
+  cursor: pointer;
+  user-select: none;
+}
+
+.spike__row button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.spike__row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.spike__out {
+  margin: 8px 0 0;
+  padding: 8px;
+  max-height: 130px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #fffdf8;
+  border: 1px solid var(--paper-edge);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+}

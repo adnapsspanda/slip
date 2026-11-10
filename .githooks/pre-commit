@@ -1,0 +1,44 @@
+#!/bin/sh
+# Slip 的提交前门禁。
+#
+# 安装（每个克隆一次）：git config core.hooksPath .githooks
+# 临时跳过：git commit --no-verify —— CI 仍然会拦住，别养成习惯。
+#
+# 为什么这些检查放在提交前而不是只放 CI：
+# 反复犯过的错误是「只跑了 cargo check，没跑 clippy」，于是两个 lint 错误
+# 混进了代码库。门禁必须在最便宜的地方拦。
+set -e
+
+# Git Bash 里 cargo 通常不在 PATH（Windows 用户默认也没配）。
+if [ -d "$HOME/.cargo/bin" ]; then
+  PATH="$HOME/.cargo/bin:$PATH"
+fi
+
+BUN="$HOME/.bun/bin/bun"
+if [ ! -x "$BUN" ]; then
+  BUN="bun"
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+
+step() {
+  printf '\033[36m[pre-commit]\033[0m %s\n' "$1"
+}
+
+# ui/dist 不入库，但外壳**编译期**要读它。缺了就补，否则 clippy 只会给出
+# 一句没有指向性的 "proc macro panicked"。
+if [ ! -f ui/dist/index.html ]; then
+  step "ui/dist 缺失，先构建前端"
+  ( cd ui && "$BUN" install && "$BUN" run build )
+fi
+
+step "cargo fmt --all --check"
+cargo fmt --all --check
+
+step "cargo clippy --workspace --all-targets -D warnings"
+cargo clippy --workspace --all-targets --locked -- -D warnings
+
+step "cargo test --workspace"
+cargo test --workspace --locked --quiet
+
+step "通过"

@@ -1,0 +1,19 @@
+# 仓库内统一用 LF，checkout 时按平台/类型转换。
+# 没有这一段，Windows 上任何涉及换行的工具（git diff、cargo fmt --check、
+# 甚至 PowerShell 解析）在不同机器上会给出不同结果。
+* text=auto eol=lf
+
+# Windows 脚本保持 CRLF：某些老工具链与编辑器对 LF 的 .ps1 处理不一致。
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制：禁止任何换行/编码转换，否则文件会被悄悄损坏。
+*.ico binary
+*.png binary
+*.jpg binary
+*.woff2 binary
+
+# 锁文件是文本，但不要做 diff 噪声优化之外的任何处理。
+Cargo.lock text
+ui/bun.lock text

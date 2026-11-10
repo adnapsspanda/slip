@@ -1,0 +1,7 @@
+# 钉死工具链，保证 `cargo fmt --check` 与 `cargo clippy -D warnings` 在不同机器上
+# 得出同一个结论。不钉的话，同一份代码在更新的 rustc 上会因为新 lint 而"突然失败"，
+# 而失败原因与你的改动毫无关系。
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

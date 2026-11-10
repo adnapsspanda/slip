@@ -1,0 +1,15 @@
+[package]
+name = "slip-store"
+version.workspace = true
+edition.workspace = true
+description = "Slip 的唯一磁盘写入口：Markdown 真源、原子提交、恢复矩阵、偏好。"
+
+[dependencies]
+slip-domain = { path = "../slip-domain" }
+uuid.workspace = true
+time.workspace = true
+blake3.workspace = true
+tempfile.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

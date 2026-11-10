@@ -1,0 +1,25 @@
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # 小版本和补丁合并成一个 PR；大版本单独来，方便逐个评估破坏性。
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # 前端**故意不交给 dependabot**。
+  #
+  # 这里用的是 bun.lock，而 dependabot 的 npm 生态只认 package-lock / yarn.lock /
+  # pnpm-lock；它会只改 package.json 而不更新 bun.lock，于是 CI 里的
+  # `bun install --frozen-lockfile` 立刻失败。一个会把主干弄红的自动 PR
+  # 比没有自动化更糟。前端依赖升级请手动 `cd ui && bun update && bun install`。

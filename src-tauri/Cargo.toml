@@ -1,0 +1,32 @@
+[package]
+name = "slip-shell"
+version.workspace = true
+edition.workspace = true
+description = "Slip 的 Tauri 外壳：窗口、托盘、快捷键与 IPC 边界"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `tray-icon` 是托盘的基础能力；不开这个 feature，`TrayIconBuilder` 不存在。
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "std"] }
+tokio = { workspace = true, features = ["sync", "rt-multi-thread"] }
+
+slip-domain = { path = "../crates/slip-domain" }
+slip-store = { path = "../crates/slip-store" }
+slip-app = { path = "../crates/slip-app" }
+
+# 单实例只在桌面平台有意义；放这里而不是无条件依赖，避免将来跨平台时炸掉。
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
+
+[features]
+# 默认不带 devtools；需要时用 `--features devtools`。
+devtools = ["tauri/devtools"]

@@ -1,0 +1,26 @@
+/target
+**/target
+*.log
+build-shell.log
+.DS_Store
+Thumbs.db
+
+# 前端依赖与构建产物
+node_modules/
+ui/dist/
+
+# 一次性验证留下的临时物
+.tmp-*
+r.log
+e.log
+
+# 本地运行产物
+*.tmp
+inbox.md.bak-*
+inbox.md.corrupt-*
+
+# 编辑器个人配置（配色之类）不该进仓库；要共享 tasks.json 再单独放开。
+.vscode/
+
+# tauri-build 每次构建自动重建的 ACL/权限 schema，不是源码。
+src-tauri/gen/

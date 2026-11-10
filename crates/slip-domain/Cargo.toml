@@ -1,0 +1,10 @@
+[package]
+name = "slip-domain"
+version.workspace = true
+edition.workspace = true
+description = "Slip 领域模型：类型、校验、状态转换、拆条。零 I/O。"
+
+[dependencies]
+uuid.workspace = true
+time.workspace = true
+serde.workspace = true
