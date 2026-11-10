@@ -195,6 +195,41 @@ pub fn dismiss(app: &AppHandle) {
     FOCUSED_SINCE_SUMMON.store(false, Ordering::SeqCst);
 }
 
+/// 一个矩形区域（物理像素）。抽成独立类型是为了让几何计算能被单测。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Area {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+/// 纯几何：算出窗口左上角应该落在哪里。
+///
+/// 规则与 [`place_near_cursor`] 完全一致，只是把"读光标 / 读显示器 / 读尺寸"这些
+/// 需要 `AppHandle` 的部分剥离出去——否则这段最容易出错的边界逻辑永远只能靠
+/// 端到端脚本碰运气验证，而负坐标副屏那条在单屏机器上还是 SKIP。
+///
+/// 顺序不能改：先尝试右下（`cursor + gap`），放不下再翻到左上，最后夹紧进工作区。
+/// 夹紧用 `.max()` 兜住"窗口比工作区还大"的退化情形——`clamp` 在 `min > max` 时会 panic。
+fn placement(cursor: (i32, i32), area: Area, size: (i32, i32), gap: i32) -> (i32, i32) {
+    let (cursor_x, cursor_y) = cursor;
+    let (width, height) = size;
+
+    let mut x = cursor_x + gap;
+    if x + width > area.right {
+        x = cursor_x - gap - width;
+    }
+    let mut y = cursor_y + gap;
+    if y + height > area.bottom {
+        y = cursor_y - gap - height;
+    }
+
+    let max_x = (area.right - width).max(area.left);
+    let max_y = (area.bottom - height).max(area.top);
+    (x.clamp(area.left, max_x), y.clamp(area.top, max_y))
+}
+
 /// 把窗口摆到光标右下方；放不下就翻到另一侧，最后夹紧进工作区。
 ///
 /// 任何一步拿不到信息都退化为居中——**宁可回到旧行为，也不能让窗口跑丢**。
@@ -219,36 +254,125 @@ fn place_near_cursor(app: &AppHandle, window: &tauri::WebviewWindow) {
     let area = monitor.work_area();
     let left = area.position.x;
     let top = area.position.y;
-    let right = left + area.size.width as i32;
-    let bottom = top + area.size.height as i32;
+    let bounds = Area {
+        left,
+        top,
+        right: left + area.size.width as i32,
+        bottom: top + area.size.height as i32,
+    };
 
-    let width = size.width as i32;
-    let height = size.height as i32;
     // 物理尺寸对比的是物理坐标，所以缝也要按缩放折算。
     let gap = (CURSOR_GAP * monitor.scale_factor()).round() as i32;
-    let cursor_x = cursor.x.round() as i32;
-    let cursor_y = cursor.y.round() as i32;
-
-    let mut x = cursor_x + gap;
-    if x + width > right {
-        x = cursor_x - gap - width;
-    }
-    let mut y = cursor_y + gap;
-    if y + height > bottom {
-        y = cursor_y - gap - height;
-    }
-
-    // 夹紧：即使窗口比工作区还大，也保证左上角可见。
-    let max_x = (right - width).max(left);
-    let max_y = (bottom - height).max(top);
-    let _ = window.set_position(PhysicalPosition::new(
-        x.clamp(left, max_x),
-        y.clamp(top, max_y),
-    ));
+    let (x, y) = placement(
+        (cursor.x.round() as i32, cursor.y.round() as i32),
+        bounds,
+        (size.width as i32, size.height as i32),
+        gap,
+    );
+    let _ = window.set_position(PhysicalPosition::new(x, y));
 }
 
 /// IPC：前端在 Esc 或捕获成功时请求收走。
 #[tauri::command]
 pub fn dismiss_window(app: AppHandle) {
     dismiss(&app);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Area, placement};
+
+    /// 主屏常见值：1707×1019 的虚拟工作区（2560×1600 @150% 扣掉任务栏）。
+    fn primary() -> Area {
+        Area {
+            left: 0,
+            top: 0,
+            right: 1707,
+            bottom: 1019,
+        }
+    }
+
+    const WIN: (i32, i32) = (420, 560);
+    const GAP: i32 = 16;
+
+    #[test]
+    fn right_below_when_it_fits() {
+        // 左上角放得下：直接落在光标右下方，不留意外偏移。
+        assert_eq!(placement((200, 200), primary(), WIN, GAP), (216, 216));
+    }
+
+    #[test]
+    fn flips_left_when_it_would_overflow() {
+        // 1400 + 16 + 420 = 1836 > 1707 → 翻到光标左侧。
+        let (x, _) = placement((1400, 100), primary(), WIN, GAP);
+        assert_eq!(x, 1400 - GAP - 420);
+    }
+
+    #[test]
+    fn flips_up_when_it_would_overflow() {
+        // 900 + 16 + 560 = 1476 > 1019 → 翻到光标上方。
+        let (_, y) = placement((100, 900), primary(), WIN, GAP);
+        assert_eq!(y, 900 - GAP - 560);
+    }
+
+    #[test]
+    fn exactly_at_the_edge_does_not_flip() {
+        // 判据是严格大于：正好贴边仍算放得下。
+        let cursor_x = 1707 - 420 - GAP;
+        let (x, _) = placement((cursor_x, 100), primary(), WIN, GAP);
+        assert_eq!(x, cursor_x + GAP);
+
+        // 再多 1 像素就必须翻。
+        let (x, _) = placement((cursor_x + 1, 100), primary(), WIN, GAP);
+        assert_eq!(x, cursor_x + 1 - GAP - 420);
+    }
+
+    #[test]
+    fn handles_monitor_with_negative_origin() {
+        // 副屏整体落在负坐标区（本机 DISPLAY5 就是这种布局）。
+        // 这条路径端到端只能 SKIP（单屏时脚本会跳过副屏场景），所以必须在这里钉住。
+        let secondary = Area {
+            left: -454,
+            top: -1440,
+            right: 2106,
+            bottom: -48,
+        };
+        let (x, y) = placement((-300, -1000), secondary, WIN, GAP);
+        assert_eq!((x, y), (-284, -984));
+        assert!(x >= secondary.left && x + WIN.0 <= secondary.right);
+        assert!(y >= secondary.top && y + WIN.1 <= secondary.bottom);
+    }
+
+    #[test]
+    fn clamps_when_window_is_larger_than_work_area() {
+        // 退化情形：窗口比工作区还大。必须保住左上角可见，且**不能 panic**
+        // （`clamp` 在 min > max 时会炸，靠 `.max()` 兜住）。
+        let tiny = Area {
+            left: 0,
+            top: 0,
+            right: 300,
+            bottom: 200,
+        };
+        assert_eq!(placement((250, 150), tiny, WIN, GAP), (0, 0));
+    }
+
+    #[test]
+    fn stays_inside_work_area_for_every_edge_cursor() {
+        // 扫一遍边界：无论光标落在工作区的哪个角落，结果都必须完整落在工作区内。
+        let cases = [
+            (-1000, -1000),
+            (0, 0),
+            (1707, 0),
+            (0, 1019),
+            (1707, 1019),
+            (850, 500),
+        ];
+        for (cx, cy) in cases {
+            let (x, y) = placement((cx, cy), primary(), WIN, GAP);
+            assert!(x >= 0, "cursor=({cx},{cy}) x={x} 越出左边");
+            assert!(x + WIN.0 <= 1707, "cursor=({cx},{cy}) x={x} 越出右边");
+            assert!(y >= 0, "cursor=({cx},{cy}) y={y} 越出上边");
+            assert!(y + WIN.1 <= 1019, "cursor=({cx},{cy}) y={y} 越出下边");
+        }
+    }
 }

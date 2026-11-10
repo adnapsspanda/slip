@@ -52,6 +52,26 @@
 
 ## 完成记录
 
+- **R04｜本轮**：跨屏定位先补测试再谈改算法。
+  `place_near_cursor` 依赖 `AppHandle`（读光标、读显示器、读窗口尺寸），本身测不了，
+  所以先把**纯几何**抽成 `placement(cursor, area, size, gap) -> (x, y)` 与 `Area` 结构，
+  规则一字未改（先右下 → 放不下翻左上 → 最后夹紧进工作区，夹紧用 `.max()` 兜住
+  "窗口比工作区还大"的退化情形，因为 `clamp` 在 `min > max` 时会 panic）。
+
+  7 条单元测试，其中两条是端到端覆盖不到的：
+  - `handles_monitor_with_negative_origin`：副屏整体在负坐标区
+    （left=-454 / top=-1440 / right=2106 / bottom=-48）。端到端脚本在单屏机器上
+    只能 SKIP 这条路径，自显示器变更后它就没被验证过。
+  - `clamps_when_window_is_larger_than_work_area`：窗口大于工作区时必须保住左上角
+    可见且**不 panic**。
+
+  另有贴边判据（严格大于才算溢出：`cursor+gap+width == right` 不翻）、
+  两个翻转方向，以及"光标在任意角落结果都在工作区内"的横扫。
+
+  验证：7 项单测通过；全量 **200 项**（193 → 200）；端到端 46 项全过，两个场景仍是
+  `adj=(0,0)`——重构没有改变运行时行为。顺带观察到本次运行时分辨率变回 1707×1019，
+  而屏幕推导的坐标自动跟上了。
+
 - **R09｜本轮**：损坏文件角标。
   - 后端：`system::corrupt_artifacts(vault)` 扫 `inbox.md.corrupt-*`（**只认这个前缀**，
     vault 是用户可写目录，扫出别的文件当"损坏"会误导人），按 mtime 倒序；
