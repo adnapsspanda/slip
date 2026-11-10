@@ -52,6 +52,21 @@
 
 ## 完成记录
 
+- **新维度：权限最小化审计｜本轮**。Tauri 的 capabilities 只约束 **webview → core
+  的 IPC 调用**，Rust 侧直接调插件 API 不需要权限。按这个前提核实前端：
+  `ui/src` 里只有两处 `__TAURI__`——`core.invoke`（`bridge.js:36`）与 `event.listen`
+  （`bridge.js:105`）。`startDragging`、`window.hide/show/setFocus`、`globalShortcut`、
+  `autostart` **一次都没被调用**（后两个本来就是 Rust 侧直接用插件）。
+
+  于是把 11 项权限收成 1 项：`["core:default"]`。删掉的是
+  `core:window:allow-start-dragging / allow-hide / allow-show / allow-set-focus`、
+  冗余的 `core:event:default`，以及 `global-shortcut:*`、`autostart:*` 共 10 条。
+
+  验证：重建后跑验收 **41 PASS / 0 FAIL**，其中「唤出后捕获框获得焦点」证明
+  `event.listen` 仍通（`core:default` 已包含 event），「Tauri 桥可用」「回车后提示为
+  已收录」「收录成功后窗口自动收起」证明 IPC 与自定义命令未受影响。
+  约定写进 `AGENTS.md` 新增的「权限最小化」一节。
+
 - **新维度：CI 可执行性验证｜本轮**。CI 因为还没有远端，**从未真正执行过**。
   做法：`git clone` 一份干净副本（无 `ui/dist`、无 `target`），按 workflow 顺序逐步跑。
   结果全部通过：

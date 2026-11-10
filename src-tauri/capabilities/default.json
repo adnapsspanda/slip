@@ -1,19 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Slip 主窗口与前端可用的能力",
+  "description": "Slip 主窗口与前端可用的能力。前端只用两样：core.invoke（自定义命令）与 event.listen（唤出事件），都包含在 core:default 里；窗口显隐/聚焦、全局热键、开机自启全部由 Rust 侧直接调用，不经过 webview IPC。",
   "windows": ["main"],
-  "permissions": [
-    "core:default",
-    "core:window:allow-start-dragging",
-    "core:window:allow-hide",
-    "core:window:allow-show",
-    "core:window:allow-set-focus",
-    "core:event:default",
-    "global-shortcut:allow-register",
-    "global-shortcut:allow-unregister",
-    "autostart:allow-enable",
-    "autostart:allow-disable",
-    "autostart:allow-is-enabled"
-  ]
+  "permissions": ["core:default"]
 }

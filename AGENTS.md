@@ -19,6 +19,17 @@ docs/research/        外部项目调研。
 
 依赖方向**只能**是 `src-tauri → slip-app → slip-store → slip-domain`，反向依赖一律拒绝。
 
+### 权限最小化
+
+`src-tauri/capabilities/default.json` 只授 `core:default`，这不是偷懒而是审计结果：
+前端实际只用 `core.invoke`（自定义命令）与 `event.listen`（唤出事件），两者都包含在
+`core:default` 里；窗口显隐/聚焦、全局热键、开机自启全部由 Rust 侧直接调用插件 API，
+**不经过 webview IPC**，因此不需要任何 capability。
+
+加权限前先确认前端真的有对应调用（在 `ui/src` 里 grep 得到），否则等于把能力白送给
+一段本该做不到这些事的代码。改完必须跑 `tools/verify-hotkey.ps1`——它验证了
+事件订阅（唤出后捕获框获得焦点）与 IPC 是否仍然可用，是这条收窄唯一可靠的守门人。
+
 ## Build, Test, and Development
 
 本机 `cargo` 不在 PATH，需先补：
