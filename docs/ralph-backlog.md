@@ -52,6 +52,21 @@
 
 ## 完成记录
 
+- **R09｜本轮**：损坏文件角标。
+  - 后端：`system::corrupt_artifacts(vault)` 扫 `inbox.md.corrupt-*`（**只认这个前缀**，
+    vault 是用户可写目录，扫出别的文件当"损坏"会误导人），按 mtime 倒序；
+    `reveal_newest_corrupt` 用 `explorer.exe /select,<path>` 选中最新那个。
+  - 命令面只增两条，且都刻意收窄：`corrupt_files` **只返回文件名不返回绝对路径**；
+    `reveal_corrupt` **不接收任何参数**——定位目标由 Rust 自己从 vault 查，
+    否则等于让 webview 决定 explorer 打开什么。
+  - 前端：`meta` 行显示"N 个损坏文件"，仅在确实存在时出现一个`定位`按钮，
+    `title` 里列出文件名供核对；读取失败当作没有（它是提示不是门禁）。
+  - 验证：造两个损坏证据 + 一个干扰文件 `my-notes.md` 的 vault，
+    实测 `meta = "r09-vault · 0 条未完成 · 2 个损坏文件 · rev 1"`，
+    `title` 里两个文件按新到旧排列，干扰文件未被计入。
+  - 探针补 2 条：`corrupt_files` 必须返回数组（否则 `corrupt.length` 会在界面炸成
+    TypeError）、干净 vault 不显示角标。端到端 44 → 46。
+
 - **R05｜本轮**：用算出来的数字改配色，不靠肉眼。
   实测发现两个可量化问题：
   1. `--ink-soft`（#8a8172）在纸色上只有 **3.59:1**，低于 WCAG AA 对正文的 4.5:1，

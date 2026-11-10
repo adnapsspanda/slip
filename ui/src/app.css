@@ -113,6 +113,24 @@ body {
   white-space: nowrap;
 }
 
+/* meta 行里的文字型按钮：只在有东西可定位时出现，不占常驻空间。 */
+.paper__link {
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid var(--paper-edge);
+  border-radius: 6px;
+  background: #fffdf8;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.paper__link:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .capture {
   padding: 0 12px 8px;
 }

@@ -94,6 +94,20 @@ export const isolateAndReset = (requestId) =>
 /** @returns {Promise<string>} */
 export const vaultPath = () => call("vault_path");
 
+/**
+ * vault 里遗留的损坏文件，新的在前。只含文件名，不含绝对路径——
+ * 界面不需要绝对路径，少暴露一点也给"定位不带参数"留了余地。
+ * @returns {Promise<string[]>}
+ */
+export const corruptFiles = () => call("corrupt_files");
+
+/**
+ * 在资源管理器里选中最新的损坏文件。不传参数：定位目标由 Rust 自己从 vault 里查，
+ * 否则等于让 webview 决定 explorer 打开什么。
+ * @returns {Promise<void>}
+ */
+export const revealCorrupt = () => call("reveal_corrupt");
+
 export const flushPrefs = () => call("flush_prefs");
 
 /**

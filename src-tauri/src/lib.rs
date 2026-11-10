@@ -141,6 +141,24 @@ async fn complete(
         .await)
 }
 
+/// vault 里遗留的损坏文件——**只返回文件名，不返回绝对路径**。
+///
+/// 界面只需要"有几个、叫什么"，绝对路径既没必要暴露给定 webview 的代码，
+/// 也是 `reveal_corrupt` 拒绝接收前端路径的前提。
+#[tauri::command]
+fn corrupt_files(state: tauri::State<'_, ShellState>) -> Vec<String> {
+    system::corrupt_artifacts(&state.vault)
+        .into_iter()
+        .filter_map(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect()
+}
+
+/// 在资源管理器里选中最新的损坏文件。定位目标由 Rust 自己查，不接受参数。
+#[tauri::command]
+fn reveal_corrupt(app: tauri::AppHandle) -> Result<(), String> {
+    system::reveal_newest_corrupt(&app)
+}
+
 #[tauri::command]
 async fn reload(state: tauri::State<'_, ShellState>, request_id: String) -> Result<Ack, String> {
     Ok(state.dispatcher.reload(request_id).await)
@@ -297,6 +315,8 @@ pub fn run() {
             reload,
             isolate_and_reset,
             vault_path,
+            corrupt_files,
+            reveal_corrupt,
             flush_prefs,
             hotkey::dismiss_window,
         ])

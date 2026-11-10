@@ -102,6 +102,23 @@ check("空 vault 时展示空态指引", emptyState.present === true && emptySta
 check("空态指引给出了两步操作与按键", emptyState.steps === 2 && emptyState.keys.length >= 3,
   `steps=${emptyState.steps} keys=${JSON.stringify(emptyState.keys)}`);
 
+// 1.6 干净 vault 不该出现损坏文件角标。这条同时验证 `corrupt_files` 的契约：
+//     返回数组（不是 null/对象），否则 `corrupt.length` 会在界面上炸成 TypeError。
+const corruptContract = JSON.parse(
+  await evaluate(`(async () => {
+    const list = await window.__TAURI__.core.invoke('corrupt_files');
+    return JSON.stringify({
+      isArray: Array.isArray(list),
+      length: Array.isArray(list) ? list.length : -1,
+      badgeShown: document.querySelector('.paper__link') !== null,
+    });
+  })()`, true),
+);
+check("corrupt_files 返回数组", corruptContract.isArray === true, `isArray=${corruptContract.isArray}`);
+check("干净 vault 不显示损坏角标",
+  corruptContract.length === 0 && corruptContract.badgeShown === false,
+  `length=${corruptContract.length} badge=${corruptContract.badgeShown}`);
+
 // 2. 真打一条并按回车，走完整 IPC -> 领域 -> 磁盘 -> 快照。
 const typed = JSON.parse(
   await evaluate(

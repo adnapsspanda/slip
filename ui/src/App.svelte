@@ -20,6 +20,13 @@
   let notice = $state(null);
   /** 撤销请求在途，避免连按 Ctrl+Z 把后端的撤销栈一次抽干。 */
   let undoing = $state(false);
+  /**
+   * vault 里遗留的损坏文件（`inbox.md.corrupt-*`）。
+   *
+   * 这是启动时的一次性事实，不需要订阅；取不到就当作没有——它是提示，不是门禁，
+   * 不该因为读目录失败就在界面上报警。
+   */
+  let corrupt = $state([]);
 
   // 归档判定只看 `archived`：后端 `SlipView.archived` 是唯一判据
   // （`done && archived_at.is_some()`，见 v11 §1.8），没有独立的 archivedAt 字段。
@@ -34,6 +41,7 @@
     [
       vaultLabel,
       `${pendingCount} 条未完成`,
+      corrupt.length > 0 ? `${corrupt.length} 个损坏文件` : "",
       snapshot ? `rev ${snapshot.contentRev}` : "",
     ]
       .filter(Boolean)
@@ -392,6 +400,20 @@
     await refresh();
   }
 
+  /**
+   * 在资源管理器里选中最新的损坏文件。
+   *
+   * 定位失败不改动任何界面状态，只在提示区说一句——这个按钮是"帮我找到证据"，
+   * 失败了也不影响正文的读写。
+   */
+  async function handleRevealCorrupt() {
+    try {
+      await bridge.revealCorrupt();
+    } catch (error) {
+      hint = `定位失败：${error}`;
+    }
+  }
+
   onMount(() => {
     let disposed = false;
     let unlisten;
@@ -407,6 +429,15 @@
         } else {
           unlisten = off;
         }
+      })
+      .catch(() => {});
+
+    // 损坏文件只在启动时看一次。读失败就当没有：它是提示不是门禁，
+    // 不该因为一次目录读取失败就在界面上报警。
+    bridge
+      .corruptFiles()
+      .then((list) => {
+        if (!disposed) corrupt = Array.isArray(list) ? list : [];
       })
       .catch(() => {});
 
@@ -448,6 +479,17 @@
         </button>
       {/if}
       <span class="paper__meta">{meta}</span>
+      {#if corrupt.length > 0}
+        <!-- 只在真的留下过损坏文件时出现。title 里列文件名，方便核对是哪些。 -->
+        <button
+          type="button"
+          class="paper__link"
+          title={`已隔离的文件：\n${corrupt.join("\n")}`}
+          onclick={handleRevealCorrupt}
+        >
+          定位
+        </button>
+      {/if}
     </div>
   </header>
 

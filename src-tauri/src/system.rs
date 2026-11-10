@@ -201,3 +201,46 @@ fn open_inbox(app: &AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// vault 里遗留的隔离/损坏证据文件（`inbox.md.corrupt-*`），新的在前。
+///
+/// 只认这个前缀：vault 是用户可写的目录，里面可能有他自己放的备份或笔记，
+/// 扫出别的文件并显示成"损坏"会误导人。
+pub fn corrupt_artifacts(vault: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(vault) else {
+        return Vec::new();
+    };
+    let mut found: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("inbox.md.corrupt-"))
+        })
+        .collect();
+    // 新的在前。取不到 mtime 时按文件名倒序——时间戳就在名字里。
+    found.sort_by(|left, right| {
+        let ml = std::fs::metadata(left).and_then(|m| m.modified()).ok();
+        let mr = std::fs::metadata(right).and_then(|m| m.modified()).ok();
+        mr.cmp(&ml).then_with(|| right.cmp(left))
+    });
+    found
+}
+
+/// 在资源管理器里选中最新那个损坏文件。
+///
+/// **不接收前端传来的路径**：那等于让 webview 决定 explorer 打开什么。
+/// 需要什么由 Rust 自己从 vault 里查。
+pub fn reveal_newest_corrupt(app: &AppHandle) -> Result<(), String> {
+    let vault = app.state::<crate::ShellState>().vault.clone();
+    let Some(newest) = corrupt_artifacts(&vault).into_iter().next() else {
+        return Ok(());
+    };
+    // `/select,<path>` 必须是**一个**参数，否则 explorer 会把路径当成要独立打开的目标。
+    let arg = format!("/select,{}", newest.display());
+    if let Err(error) = std::process::Command::new("explorer.exe").arg(arg).spawn() {
+        return Err(format!("无法定位 {}: {error}", newest.display()));
+    }
+    Ok(())
+}
