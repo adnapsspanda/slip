@@ -63,6 +63,16 @@ fi
 rm -f "$bom_tmp"
 step "编码检查（*.ps1 必须有 BOM）"
 
+# 语法检查：BOM 只管编码，管不了语法。本仓库的验收脚本被频繁手改（引号、
+# here-string、中文注释都踩过），语法错却要等到有人在本机跑那条命令才暴露。
+# 实现放在 tools/check-ps1-syntax.ps1，CI 用同一份，避免两边逻辑漂移。
+if command -v pwsh >/dev/null 2>&1; then
+  step "PowerShell 语法检查"
+  pwsh -NoProfile -File tools/check-ps1-syntax.ps1
+else
+  step "PowerShell 语法检查（跳过：环境里没有 pwsh）"
+fi
+
 # 前端格式：prettier 3 **不会**自动加载插件，所以 ui/.prettierrc.json 里必须显式
 # 声明 prettier-plugin-svelte，否则 *.svelte 会被静默跳过（表现为"检查通过"，
 # 其实根本没检查）。这条曾经骗过我一次。

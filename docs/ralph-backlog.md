@@ -52,6 +52,29 @@
 
 ## 完成记录
 
+- **新维度：CI 可执行性验证｜本轮**。CI 因为还没有远端，**从未真正执行过**。
+  做法：`git clone` 一份干净副本（无 `ui/dist`、无 `target`），按 workflow 顺序逐步跑。
+  结果全部通过：
+
+  | step | 结果 |
+  |---|---|
+  | 2 编码检查 | OK |
+  | 4 `bun install --frozen-lockfile` + build | OK —— 说明提交的 `bun.lock` 与 `package.json` 一致（刚加过依赖，这条最容易红） |
+  | 5 `prettier --check` | OK |
+  | 7 `cargo fmt` | OK |
+  | 8 clippy `-D warnings` | OK（冷编译 56s） |
+  | 9 `cargo test` | OK（188 项，50s） |
+  | 10 release 构建 | OK（73s，产物 10.2 MB） |
+
+  冷启动总耗时约 3 分钟，远低于 `timeout-minutes: 30`。
+
+  **顺带发现覆盖缺口**：CI 只检查 `*.ps1` 的 BOM，**不检查语法**。验收脚本被频繁
+  手改（引号、here-string、中文注释都踩过），语法错在 CI 里完全看不见。
+  新增 `tools/check-ps1-syntax.ps1`（解析全部 `*.ps1`，报出首个错误与行号），
+  由提交钩子与 CI 共用同一份实现。正反验证：当前仓库「全部 .ps1 语法通过」；
+  造一个缺右大括号的脚本 → 正确报出「第 1 行」且退出码 1。
+  钩子 6 步 → 7 步，CI 10 步 → 11 步。
+
 - **新维度：错误路径审计｜本轮**。核对三件事：
   1. 设计文档 §6.5 的 `StoreError` → `Ack` 映射表与 `map_store_error` /
      `result_for_code` **逐条一致**（conflict / needsReload / readOnly / domain /

@@ -47,6 +47,12 @@ jobs:
           }
           Write-Output "全部 .ps1 均带 BOM"
 
+      # BOM 只管编码，管不了语法。验收脚本被频繁手改，而语法错在 CI 里原本完全
+      # 看不见——只会在有人本机跑那条命令时才暴露。实现与提交钩子共用一份。
+      - name: PowerShell 语法检查
+        shell: pwsh
+        run: pwsh -NoProfile -File tools/check-ps1-syntax.ps1
+
       - name: 安装 bun
         uses: oven-sh/setup-bun@v2
         with:

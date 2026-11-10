@@ -144,7 +144,7 @@ pwsh -File tools/verify-hotkey.ps1
 
 | 门 | 命令 | 覆盖 |
 |---|---|---|
-| 提交前钩子 | `git commit` 自动触发 | 编码（`*.ps1` 的 BOM）/ prettier / fmt / clippy / test |
+| 提交前钩子 | `git commit` 自动触发 | 编码（`*.ps1` 的 BOM）/ PowerShell 语法 / prettier / fmt / clippy / test |
 | CI | `.github/workflows/ci.yml` | 同上 + 前端构建 + release 构建 |
 | 本机验收 | `pwsh -File tools/verify-hotkey.ps1` | 真实热键 / 托盘 / 窗口定位 |
 
