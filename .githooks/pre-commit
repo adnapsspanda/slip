@@ -32,6 +32,37 @@ if [ ! -f ui/dist/index.html ]; then
   ( cd ui && "$BUN" install && "$BUN" run build )
 fi
 
+# 编码守卫：*.ps1 必须带 UTF-8 BOM。
+#
+# 为什么：tools/*.ps1 里有大量中文，而 Windows PowerShell 5.1（以及部分编辑器）
+# 在没有 BOM 时按 GBK 解码，中文变乱码并触发语法错。这个坑的排查成本极高——
+# 报错位置和真正的原因（文件编码）毫无关系。编辑器和某些工具链会静默剥掉 BOM，
+# 所以这里按**暂存区内容**校验，而不是工作区文件。
+#
+# 放在所有 cargo 步骤之前：几乎不耗时，而且这是唯一能用肉眼之外的证据发现
+# "文件编码坏了"的地方。
+bom_tmp=$(mktemp)
+git diff --cached --name-only --diff-filter=ACM -- '*.ps1' | while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  first3=$(git show ":$f" 2>/dev/null | head -c 3 | od -An -tx1 | tr -d ' \n')
+  if [ "$first3" != "efbbbf" ]; then
+    printf '  %s\n' "$f" >> "$bom_tmp"
+  fi
+done
+if [ -s "$bom_tmp" ]; then
+  printf '\033[31m[pre-commit]\033[0m 以下 .ps1 缺少 UTF-8 BOM（PowerShell 会按 GBK 解码中文并报语法错）：\n' >&2
+  cat "$bom_tmp" >&2
+  echo '  修法（PowerShell）：' >&2
+  echo '    $p = "<文件>"' >&2
+  echo '    $t = [IO.File]::ReadAllText($p, [Text.UTF8Encoding]::new($false))' >&2
+  echo '    [IO.File]::WriteAllText($p, $t, [Text.UTF8Encoding]::new($true))' >&2
+  echo '  或让编辑器按 .editorconfig 里的 charset=utf-8-bom 保存。' >&2
+  rm -f "$bom_tmp"
+  exit 1
+fi
+rm -f "$bom_tmp"
+step "编码检查（*.ps1 必须有 BOM）"
+
 step "cargo fmt --all --check"
 cargo fmt --all --check
 

@@ -26,6 +26,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 编码守卫：*.ps1 必须带 UTF-8 BOM。
+      # 与 .githooks/pre-commit 里的同一条检查对应——钩子可以被 --no-verify 绕过，
+      # CI 不能。PowerShell 在没有 BOM 时会按 GBK 解码中文并报语法错，
+      # 而报错位置和真正的原因（文件编码）毫无关系，排查成本极高。
+      - name: 编码检查（*.ps1 必须有 BOM）
+        shell: pwsh
+        run: |
+          $bad = @()
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $head = [IO.File]::ReadAllBytes($_.FullName) | Select-Object -First 3
+            if ($head.Length -lt 3 -or $head[0] -ne 0xEF -or $head[1] -ne 0xBB -or $head[2] -ne 0xBF) {
+              $bad += $_.FullName
+            }
+          }
+          if ($bad.Count -gt 0) {
+            Write-Output "以下 .ps1 缺少 UTF-8 BOM："
+            $bad | ForEach-Object { Write-Output "  $_" }
+            exit 1
+          }
+          Write-Output "全部 .ps1 均带 BOM"
+
       - name: 安装 bun
         uses: oven-sh/setup-bun@v2
         with:

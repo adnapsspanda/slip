@@ -40,13 +40,24 @@
 | R-02 | 死视图路径（**需要产品决策，勿擅自删**） | 整个 `ui/` 零引用 `toggleCollapse` / `DragEnd` / `DockSideChanged` / `CollapseToggled`；后端仍保留 `ViewEvent` 四变体、`Command::ToggleCollapse`、`PaperViewSet.collapsed/dock_side`，以及**只为它们服务**的 `PREFS_DEBOUNCE`（仅 `dispatch.rs:400`、`:418` 触发） | 二选一并在 `docs/design` 落定：① 接线（需要先定义 UI 入口）；② 整体删除并把 `prefs` 收窄，同时保证旧 `ui-state.json` 仍可读（serde default）。删除可连带简化 `dispatch` 的去抖机制 | 待决策 |
 | R-06 | `csp: null` | `tauri.conf.json` 未设 CSP。当前无远程内容、无 `{@html}`，风险低但无纵深 | 补最小 CSP（`default-src 'self'`），确认 Svelte 内联样式与 WebView2 下仍正常：验收全过 | ✅ 见完成记录 |
 | R-07 | 前端无 lint/format | 只有 `vite build`；格式靠人。仓库其余部分都有门禁 | 引入 `prettier --check` 并接进 `.githooks/pre-commit` 与 CI；**不**引入 eslint 规则集（避免新噪音面） | 待办 |
-| R-08 | `.ps1` 必须带 BOM | `edit`/`write` 工具会剥掉 BOM，导致 `verify-hotkey.ps1` 被按 GBK 解码而报语法错，本次会话撞了 4 次 | 在 `.githooks/pre-commit` 里检查 `*.ps1` 是否以 `EF BB BF` 开头，缺失则拒绝并提示一句修法 | 待办 |
+| R-08 | `.ps1` 必须带 BOM | `edit`/`write` 工具会剥掉 BOM，导致 `verify-hotkey.ps1` 被按 GBK 解码而报语法错，本次会话撞了 4 次 | 钩子 + CI 双向拦截：缺失则拒绝提交/构建失败，并给出修法 | ✅ 见完成记录 |
 | R-05 | 限制常量前后端各一份 | `slip-domain` 的 `MAX_TEXT_CODEPOINTS=2000` / `MAX_LINES=100` 与 `Capture.svelte` 的字面量重复，无单一来源 | 至少加双向注释互指；更理想是加一条断言两处相等的契约测试（前端值可在构建期注入） | 待办 |
 | R-09 | 无安装包 | `bundle.active: false`，只能分发绿色 exe | 确认是否刻意；若是，在 README「已知限制」里写明不提供安装包及原因 | 待办 |
 | R-03 | 摆放兜底居中到主屏 | **降级**：原证据（用户两次启动坐标恒为 `(965,344)`）实际来自沙盒启动，交互桌面上 `place_near_cursor` 正常跟随光标 | 仅在能复现"真实桌面下光标不可读"时再修；修法是把兜底顺序改为 光标所在屏 → 前台窗口所在屏 → 主屏 | 降级 |
 | R-01 | ~~归档撤销承诺与实现不符~~ | **撤回**：`Patch::Unarchive`（`model.rs:52`）、`apply_patch` 分支（`state.rs:135`）、`inverse_batch` 双向映射（`dispatch.rs:565-568`）、领域测试（`state.rs:304`）、端到端测试（`pipeline.rs:301` `archive_and_undo_preserve_done_state_through_disk`）全部就位 | 无需改动。文档承诺与实现**一致** | ✅ 撤回 |
 
 ## 完成记录
+
+- **R-08｜本轮**：编码守卫同时落在钩子与 CI。
+  - `.githooks/pre-commit`：按**暂存区内容**（`git show ":$f"`）校验 `*.ps1` 的前三个
+    字节是否为 `EF BB BF`，检查排在所有 cargo 步骤之前（几乎不耗时，且是唯一能用
+    肉眼之外的证据发现"文件编码坏了"的地方）。用 `while IFS= read -r` + 临时文件
+    收集失败项，路径含空格也不会漏。
+  - `.github/workflows/ci.yml`：同一条检查作为第 2 个 step，理由写在注释里——
+    钩子能被 `--no-verify` 绕过，CI 不能。
+  - 双向验证：造一个无 BOM 的 `tools/_bom_probe.ps1` 暂存后跑 `git hook run pre-commit`
+    → 退出码 1 并列出文件名与修法；补上 BOM 后重跑 → `[pre-commit] 通过`。
+    探针已清理。CI 的检查逻辑在本机全仓库跑过一遍：`全部 .ps1 均带 BOM`。
 
 - **R-06｜本轮**：`tauri.conf.json` 补 CSP：
   `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;
