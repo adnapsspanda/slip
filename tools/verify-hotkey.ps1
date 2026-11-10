@@ -44,6 +44,22 @@ $utf8 = [System.Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName Microsoft.VisualBasic
 Add-Type -AssemblyName System.Windows.Forms
 
+# 场景坐标一律由**当前**主屏尺寸推导，不写死。
+#
+# 教训：原先翻转场景把光标钉在 (1400,900)，在"2560x1600 + 3840x2160 双屏"下
+# 右下确实放不下；显示器改成单块 2560x1440 之后，1400+16+420=1836 ≤ 2560，
+# 水平方向本来就放得下，于是"必须翻到左侧"的断言变成假红。
+# 断言依赖的是"放不下"这个前提，坐标就必须跟着屏幕算。
+$primaryBounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+$ScreenW = $primaryBounds.Width
+$ScreenH = $primaryBounds.Height
+# 左上场景：留足空白，保证右下放得下（不触发翻转）。
+$NearX = [Math]::Max(40, [int]($ScreenW * 0.1))
+$NearY = [Math]::Max(40, [int]($ScreenH * 0.1))
+# 翻转场景：贴到右下角，保证两个轴都放不下。
+$FarX = [Math]::Max(40, $ScreenW - 60)
+$FarY = [Math]::Max(40, $ScreenH - 60)
+
 Add-Type -TypeDefinition @"
 using System;
 using System.Text;
@@ -246,8 +262,11 @@ function Assert-Placement {
         "$detail adj=($adjX,$adjY)"
 
     if ($ExpectFlip) {
-        # 右下放不下时整体落在光标左侧：翻转方向的判据，不依赖绝对坐标。
+        # 右下都放不下时，窗口整体落在光标的左上方。
+        # 判据只依赖"放不下"这个前提，所以召唤坐标必须由当前屏幕尺寸推导——
+        # 写死坐标会在显示器数量/分辨率变化后变成假红。
         Check "$Label：放不下时翻到光标左侧" ($Rect.Right -le $Cursor.X) $detail
+        Check "$Label：放不下时翻到光标上方" ($Rect.Bottom -le $Cursor.Y) $detail
     }
 }
 
@@ -284,7 +303,7 @@ $visible = Test-SlipVisible
 Check "CDP 收走后窗口不可见" (-not $visible) "visible=$visible"
 
 # 左上角留足空间：右下都放得下，不该翻转。
-$rect = Invoke-SummonAt -X 200 -Y 200
+$rect = Invoke-SummonAt -X $NearX -Y $NearY
 $visible = Test-SlipVisible
 Check "热键唤出后窗口可见" $visible "visible=$visible"
 Check "热键唤出后成为前台" (Test-SlipForeground) "pid=$script:slipPid fgPid=$([Win]::PidOf([Win]::GetForegroundWindow()))"
@@ -304,7 +323,7 @@ $visible = Test-SlipVisible
 Check "收录成功后窗口自动收起" (-not $visible) "visible=$visible"
 
 # ----------------------------------------------------------------- 5. 位置：右下放不下则翻转
-$rect = Invoke-SummonAt -X 1400 -Y 900
+$rect = Invoke-SummonAt -X $FarX -Y $FarY
 $visible = Test-SlipVisible
 Check "翻转场景下窗口可见" $visible "visible=$visible"
 Assert-Placement -Label "右下场景" -Rect $rect -Cursor $script:summonCursor -ExpectFlip

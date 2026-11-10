@@ -38,7 +38,7 @@
 | ID | 事项 | 证据 | 验收标准 | 状态 |
 |---|---|---|---|---|
 | R-02 | 死视图路径（**需要产品决策，勿擅自删**） | 整个 `ui/` 零引用 `toggleCollapse` / `DragEnd` / `DockSideChanged` / `CollapseToggled`；后端仍保留 `ViewEvent` 四变体、`Command::ToggleCollapse`、`PaperViewSet.collapsed/dock_side`，以及**只为它们服务**的 `PREFS_DEBOUNCE`（仅 `dispatch.rs:400`、`:418` 触发） | 二选一并在 `docs/design` 落定：① 接线（需要先定义 UI 入口）；② 整体删除并把 `prefs` 收窄，同时保证旧 `ui-state.json` 仍可读（serde default）。删除可连带简化 `dispatch` 的去抖机制 | 待决策 |
-| R-06 | `csp: null` | `tauri.conf.json` 未设 CSP。当前无远程内容、无 `{@html}`，风险低但无纵深 | 补最小 CSP（`default-src 'self'`），确认 Svelte 内联样式与 WebView2 下仍正常：44 项验收全过 | 待办 |
+| R-06 | `csp: null` | `tauri.conf.json` 未设 CSP。当前无远程内容、无 `{@html}`，风险低但无纵深 | 补最小 CSP（`default-src 'self'`），确认 Svelte 内联样式与 WebView2 下仍正常：验收全过 | ✅ 见完成记录 |
 | R-07 | 前端无 lint/format | 只有 `vite build`；格式靠人。仓库其余部分都有门禁 | 引入 `prettier --check` 并接进 `.githooks/pre-commit` 与 CI；**不**引入 eslint 规则集（避免新噪音面） | 待办 |
 | R-08 | `.ps1` 必须带 BOM | `edit`/`write` 工具会剥掉 BOM，导致 `verify-hotkey.ps1` 被按 GBK 解码而报语法错，本次会话撞了 4 次 | 在 `.githooks/pre-commit` 里检查 `*.ps1` 是否以 `EF BB BF` 开头，缺失则拒绝并提示一句修法 | 待办 |
 | R-05 | 限制常量前后端各一份 | `slip-domain` 的 `MAX_TEXT_CODEPOINTS=2000` / `MAX_LINES=100` 与 `Capture.svelte` 的字面量重复，无单一来源 | 至少加双向注释互指；更理想是加一条断言两处相等的契约测试（前端值可在构建期注入） | 待办 |
@@ -48,6 +48,20 @@
 
 ## 完成记录
 
+- **R-06｜本轮**：`tauri.conf.json` 补 CSP：
+  `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:;
+  font-src 'self'; connect-src 'self' ipc: http://ipc.localhost; object-src 'none';
+  base-uri 'self'; form-action 'none'; frame-ancestors 'none'`。
+  前置确认：`ui/src` 无内联 `style=`/`style:`、`ui/dist/index.html` 无内联 script、
+  产物 JS 不动态插入 `<style>`，所以不需要 `unsafe-inline`。
+  `connect-src` 必须显式放行 `ipc:` 与 `http://ipc.localhost`（Tauri v2 的 IPC 走这里）。
+  验证：验收里「Tauri 桥可用」「回车后提示为已收录」「输入框已清空」全过，
+  说明 `script-src 'self'` 与 IPC 都在 CSP 下正常工作。
+- **顺带修掉验收脚本的一个真缺陷**：翻转场景把光标坐标写死成 `(1400,900)`。显示器从
+  「2560x1600 + 3840x2160 双屏」变成「单块 2560x1440」后，该坐标水平方向其实放得下，
+  「必须翻到左侧」的断言随即假红。改为由 `PrimaryScreen.Bounds` 推导
+  （`$NearX/$NearY`、`$FarX/$FarY`），并把翻转判据补成左右 + 上下两个轴。
+  副作用：`[SKIP] 负坐标副屏：本机只有一块显示器` 属预期，脚本本就该在单屏时跳过。
 - **R-04｜4469d04 之后的文档提交**：设计文档 §9.7 补修订表第 14 行与 §9.7.2，
   说明 `spike_*` 命令集已删、自检迁到 `diag.rs`（`SLIP_LOG=debug`），并把
   §9.7.1 人眼清单第 3 条里对 `spike_hide` 的依赖改成 `Esc`/点窗口外。
