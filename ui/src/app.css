@@ -267,3 +267,9 @@ body {
   word-break: break-all;
   user-select: text;
 }
+
+/* 超出单条上限 / 条数上限时的本地提示：比普通提示更醒目，但不抢走输入焦点。 */
+.capture__hint--warn {
+  color: #a8422a;
+  font-weight: 600;
+}

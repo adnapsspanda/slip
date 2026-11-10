@@ -287,6 +287,11 @@ impl MarkdownStore {
     }
 
     /// 只对**受影响的** `Slip` 跑 `validate_slip`（v11 §6.1 第 2 步）。
+    ///
+    /// 按**索引**判断"是否受影响"成立，前提是变更只有"追加"和"原位 Patch"：
+    /// 记录既不重排也不删除，第 i 条永远对第 i 条，末尾新记录拿到 `None` 因而
+    /// 必定被校验。若将来引入删除或重排，这里必须改成按 id 比对，否则会静默
+    /// 漏校验——那种错误不会报错，只会让非法内容落盘。
     fn validate_candidate(
         &self,
         original: &doc::Document,

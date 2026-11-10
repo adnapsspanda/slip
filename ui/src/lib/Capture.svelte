@@ -9,11 +9,41 @@
    */
   let { hint = "", disabled = false, onsubmit, onescape } = $props();
 
+  /** 与 slip_domain::text / slip_domain::split 保持同口径。 */
+  const MAX_CODEPOINTS = 2000;
+  const MAX_LINES = 100;
+
   let text = $state("");
   /** 每次编辑递增；随请求带上，ACK 回来时用来判断草稿是否还是提交时的那一份。 */
   let draftVersion = $state(0);
   let composing = $state(false);
   let field = $state(null);
+
+  /** JS 的 `[...s]` 与 Rust 的 `s.chars()` 都按码点迭代，单位一致。 */
+  const codepointLen = (s) => [...s].length;
+
+  /**
+   * 本地提示，**不是裁决**。真正的拒绝仍由领域层给出。
+   *
+   * 在这里提前拦的理由：后端的 `TextTooLong` 只说"太长"，说不清是第几行、
+   * 超出多少；多行粘贴时用户根本不知道该改哪一行。
+   */
+  let problem = $derived.by(() => {
+    const lines = text
+      .split(/\r\n|\r|\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
+    if (lines.length > MAX_LINES) {
+      return `一次最多收 ${MAX_LINES} 行，现在是 ${lines.length} 行`;
+    }
+    for (let i = 0; i < lines.length; i += 1) {
+      const n = codepointLen(lines[i]);
+      if (n > MAX_CODEPOINTS) {
+        return `第 ${i + 1} 行 ${n} 字，单条上限 ${MAX_CODEPOINTS}`;
+      }
+    }
+    return "";
+  });
 
   export function focus() {
     field?.focus();
@@ -53,6 +83,9 @@
       return;
     }
     event.preventDefault();
+    if (problem) {
+      return;
+    }
     if (text.trim().length === 0) {
       return;
     }
@@ -73,4 +106,6 @@
   oncompositionstart={() => (composing = true)}
   oncompositionend={() => (composing = false)}
 ></textarea>
-<div class="capture__hint">{hint}</div>
+<div class="capture__hint" class:capture__hint--warn={problem !== ""}>
+  {problem || hint}
+</div>

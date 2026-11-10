@@ -139,5 +139,39 @@ check(
   `inputKept=${ime.kept} before=${ime.before} after=${ime.count}`,
 );
 
+// 4. 超过单条上限时回车不提交，且提示要指出是**哪一行**（回归红线）。
+//    后端只说"太长"，说不清第几行、超多少，所以前端这层提示是有意义的。
+const tooLong = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const ta = document.querySelector('.capture__input');
+       const before = document.querySelectorAll('.slip').length;
+       ta.focus();
+       ta.value = 'ok\\n' + 'a'.repeat(2001);
+       ta.dispatchEvent(new Event('input', { bubbles: true }));
+       await new Promise(r => setTimeout(r, 150));
+       const hintBefore = document.querySelector('.capture__hint')?.textContent ?? '';
+       ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+       await new Promise(r => setTimeout(r, 600));
+       const keptLen = ta.value.length;
+       const count = document.querySelectorAll('.slip').length;
+       ta.value = '';
+       ta.dispatchEvent(new Event('input', { bubbles: true }));
+       return JSON.stringify({ hintBefore, keptLen, count, before });
+     })()`,
+    true,
+  ),
+);
+check(
+  "超长时回车不提交且草稿保留",
+  tooLong.count === tooLong.before && tooLong.keptLen > 0,
+  `before=${tooLong.before} after=${tooLong.count} keptLen=${tooLong.keptLen}`,
+);
+check(
+  "超长提示指出是哪一行",
+  (tooLong.hintBefore ?? "").includes("第 2 行"),
+  `hint=${tooLong.hintBefore}`,
+);
+
 cdp.close();
 process.exit(failed ? 1 : 0);

@@ -42,6 +42,7 @@ $Gap = 16
 
 $utf8 = [System.Text.UTF8Encoding]::new($false)
 Add-Type -AssemblyName Microsoft.VisualBasic
+Add-Type -AssemblyName System.Windows.Forms
 
 Add-Type -TypeDefinition @"
 using System;
@@ -250,7 +251,56 @@ if ($rect) {
         "win=($($rect.Left),$($rect.Top))"
 }
 
-# ----------------------------------------------------------------- 6. 失焦自动收走
+# ----------------------------------------------------------------- 6. 位置：负坐标副屏
+#
+# 这条路径原先完全没有覆盖：主屏坐标都是正的，而副屏可能整体落在负坐标区
+# （本机 DISPLAY5 在 X=-454, Y=-1440）。摆放用的是"光标所在显示器的工作区"，
+# 一旦把边界当成 0 来夹紧，窗口就会跑回主屏或屏幕外。
+& $bun run $probe $Port --dismiss 2>&1 | Out-Null
+Start-Sleep -Milliseconds 700
+
+$other = [System.Windows.Forms.Screen]::AllScreens |
+    Where-Object { -not $_.Primary } | Select-Object -First 1
+if ($null -eq $other) {
+    Write-Output "[SKIP] 负坐标副屏：本机只有一块显示器"
+} else {
+    $wa = $other.WorkingArea
+    if (($wa.Width -lt 500) -or ($wa.Height -lt 640)) {
+        Write-Output "[SKIP] 负坐标副屏：工作区 $($wa.Width)x$($wa.Height) 放不下窗口"
+    } else {
+        $tx = [int]($wa.X + [Math]::Floor($wa.Width / 2))
+        $ty = [int]($wa.Y + [Math]::Floor($wa.Height / 2))
+        $rect = Invoke-SummonAt -X $tx -Y $ty
+        $cursor = Get-CursorPoint
+        $visible = Test-SlipVisible
+
+        Check "副屏上唤出后窗口可见" $visible "visible=$visible"
+        if ($null -eq $rect) {
+            Check "副屏场景窗口矩形可读" $false "GetWindowRect 失败"
+        } else {
+            $detail = "screen=$($other.DeviceName) work=($($wa.X),$($wa.Y)) $($wa.Width)x$($wa.Height) " +
+                      "win=($($rect.Left),$($rect.Top)) cursor=($($cursor.X),$($cursor.Y))"
+            $inside = ($rect.Left -ge $wa.X) -and ($rect.Right -le ($wa.X + $wa.Width)) -and
+                      ($rect.Top -ge $wa.Y) -and ($rect.Bottom -le ($wa.Y + $wa.Height))
+            Check "窗口完整落在副屏工作区内" $inside $detail
+
+            $covers = ($cursor.X -ge $rect.Left) -and ($cursor.X -le $rect.Right) -and
+                      ($cursor.Y -ge $rect.Top) -and ($cursor.Y -le $rect.Bottom)
+            Check "副屏场景窗口不覆盖光标" (-not $covers) $detail
+
+            # 只有该屏真的在负坐标区时，这条判据才有意义。
+            if (($wa.X -lt 0) -or ($wa.Y -lt 0)) {
+                Check "负坐标副屏上窗口未回到主屏正坐标区" `
+                    (($rect.Left -lt 0) -or ($rect.Top -lt 0)) $detail
+            }
+        }
+        # 复位到主屏：后续场景仍按主屏坐标判断。
+        [void][Win]::SetCursorPos(800, 500)
+        Start-Sleep -Milliseconds 400
+    }
+}
+
+# ----------------------------------------------------------------- 7. 失焦自动收走
 $notepad = Start-Process notepad.exe -PassThru
 Start-Sleep -Seconds 2
 try { $null = [Microsoft.VisualBasic.Interaction]::AppActivate($notepad.Id) } catch {}
@@ -258,7 +308,7 @@ Start-Sleep -Seconds 2
 $visible = Test-SlipVisible
 Check "焦点被其它应用抢走后窗口自动收起" (-not $visible) "visible=$visible"
 
-# ----------------------------------------------------------------- 7. 磁盘
+# ----------------------------------------------------------------- 8. 磁盘
 Write-Output "--- inbox.md ---"
 $inbox = Join-Path $Vault 'inbox.md'
 if (Test-Path $inbox) {
