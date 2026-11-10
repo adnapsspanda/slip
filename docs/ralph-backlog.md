@@ -52,6 +52,23 @@
 
 ## 完成记录
 
+- **新维度：文档一致性审计｜本轮**。逐条把 `README` / `AGENTS.md` 里可验证的承诺
+  对照代码核实（现场读代码 + grep，不凭记忆）。结果：
+
+  | 承诺 | 结论 |
+  |---|---|
+  | 热键写错回落默认并留 warn | ✅ `hotkey.rs::resolve_shortcut` 确有 `tracing::warn!` |
+  | 归档有单条按钮 + 顶部「归档已完成」 | ✅ `SlipList.svelte:184`、`App.svelte:436/439` |
+  | 启动时 stdout 打印 vault / 偏好 / 热键 | ✅ 三行 `println!` 都在 |
+  | 「`ui-state.json` 只是展示偏好」 | ❌ 它含 `hotkey`，`prefs.rs` 自己的注释就写着「它严格说不是展示偏好」。已改：**删了不影响内容，但自定义热键会丢失、回到默认** |
+  | 「开发机两台显示器都是 150%」 | ❌ 现在只有一块屏。已改为「开发机所有显示器缩放都相同」，与台数解耦 |
+  | AGENTS「覆盖 7 类语义」 | ❌ 实际远超 7 类。已重写为完整清单，并注明**条目数不要写死** |
+  | AGENTS 钩子覆盖「fmt / clippy / test」 | ❌ 已含编码检查与 prettier。已更新 |
+  | `PaperViewSet` 必须原样携带 `hotkey` | ✅ 有回归测试 `view_roundtrip_never_drops_the_hotkey` |
+
+  顺带把「断言不得依赖未声明的环境前提」写进 `AGENTS.md` 的验收章节——
+  本会话两次假红都是这个形状（类名撞车、坐标写死）。
+
 - **R-07｜本轮**：接入 prettier 3.9.10 + prettier-plugin-svelte 4.1.1。
   - `ui/.prettierrc.json` 里显式声明 `plugins`。**这是必须的**：prettier 3 不会自动
     加载插件，缺了它 `.svelte` 会被静默跳过——`--check` 报"全部合规"，其实一个都没查。

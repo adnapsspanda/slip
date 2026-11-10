@@ -105,9 +105,15 @@ pwsh -File tools/verify-hotkey.ps1
 
 它用外部视角取证而非"看起来对"：Win32 `keybd_event` 发**真实**的
 `Ctrl+Alt+Space`、`GetWindowRect`/`IsWindowVisible` 读窗口状态、CDP 读界面焦点与
-列表、读 `inbox.md` 字节。覆盖 7 类语义：自启静默 / 手动启动可见 / 热键唤出到光标旁 /
-放不下时翻转 / 捕获全链路 / IME 组合态 / 失焦自动收走。每项有 `[PASS]/[FAIL]`，
+列表、读 `inbox.md` 字节。覆盖面（**条目数会随功能增加，不要在这里写死**）：
+自启静默 / 手动启动可见且不被抢焦点收走 / 热键唤出到光标旁 / 放不下时翻转 /
+单屏与负坐标副屏的摆放 / 捕获全链路 / IME 组合态 / 超长拦截 / 行内编辑与锁定 /
+归档与撤销 / 失焦自动收走 / 磁盘取证。每项有 `[PASS]/[FAIL]/[SKIP]`，
 失败时退出码为失败项数。
+
+**断言不得依赖未声明的环境前提。** 已经因此假红过两次：一次是按窗口类名找窗口，
+而 `Tauri Window` 被 Clash Verge 共用；一次是把光标坐标写死，显示器数量一变
+"右下放不下"的前提就不成立。坐标要由 `PrimaryScreen.Bounds` 推导，窗口要按进程 ID 找。
 
 ### 写验收脚本时踩过的坑（会再踩，先看这里）
 
@@ -138,7 +144,7 @@ pwsh -File tools/verify-hotkey.ps1
 
 | 门 | 命令 | 覆盖 |
 |---|---|---|
-| 提交前钩子 | `git commit` 自动触发 | fmt / clippy / test |
+| 提交前钩子 | `git commit` 自动触发 | 编码（`*.ps1` 的 BOM）/ prettier / fmt / clippy / test |
 | CI | `.github/workflows/ci.yml` | 同上 + 前端构建 + release 构建 |
 | 本机验收 | `pwsh -File tools/verify-hotkey.ps1` | 真实热键 / 托盘 / 窗口定位 |
 
