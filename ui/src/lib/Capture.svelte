@@ -7,7 +7,13 @@
    * - 输入法正在选词时（`composing` 或 `event.isComposing`）的回车只是确认
    *   候选词，**绝不能**把半截拼音收进 Inbox。
    */
-  let { hint = "", disabled = false, onsubmit, onescape } = $props();
+  let {
+    hint = "",
+    disabled = false,
+    onsubmit,
+    onescape,
+    onseeklist,
+  } = $props();
 
   /**
    * 与领域层同值，且由 `crates/slip-domain/tests/frontend_contract.rs` 钉住：
@@ -83,6 +89,12 @@
     }
 
     if (event.key !== "Enter" || event.shiftKey) {
+      // 输入框为空时按 ↓ 直接进入列表：让"录入 → 浏览"不必摸鼠标。
+      // 有内容时不劫持 ↓——那时用户多半就是想移动光标。
+      if (event.key === "ArrowDown" && text.trim().length === 0) {
+        event.preventDefault();
+        onseeklist?.();
+      }
       return;
     }
     if (composing || event.isComposing || event.keyCode === 229) {

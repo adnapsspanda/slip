@@ -12,6 +12,8 @@
   let hint = $state(DEFAULT_HINT);
   let vaultLabel = $state("");
   let captureRef = $state(null);
+  /** 列表组件句柄：捕获框里按 ↓ 时要把焦点交给它。 */
+  let listRef = $state(null);
   /** 正在等待应答的提交；迟到 ACK 必须与这条不可变记录比较。 */
   let inFlight = $state(null);
   /** 列表里的编辑态；Ctrl+Z 只在没在编辑时才抢撤销。 */
@@ -525,6 +527,7 @@
       disabled={Boolean(blockedReason)}
       onsubmit={handleCapture}
       onescape={abandon}
+      onseeklist={() => listRef?.focusFirst()}
     />
     {#if notice}
       <div class="notice">
@@ -539,11 +542,13 @@
   </section>
 
   <SlipList
+    bind:this={listRef}
     slips={visible}
     ontoggle={handleToggle}
     onedit={handleEdit}
     onlock={handleLock}
     onarchive={handleArchive}
+    onseekcapture={() => captureRef?.focus()}
     onnotice={(message) => (hint = message)}
     bind:editing={listEditing}
   />

@@ -1,4 +1,6 @@
 <script>
+  import { tick } from "svelte";
+
   /**
    * 纸片列表。
    *
@@ -19,6 +21,8 @@
     onarchive,
     /** 往提示区送一条文案（例如锁定纸条被双击时）。 */
     onnotice,
+    /** 在最上面一条按 ↑ 时把焦点交回捕获框。 */
+    onseekcapture,
     /** 双向暴露"是否正在编辑"，让 App 的 Ctrl+Z 知道该不该让路。 */
     editing = $bindable(false),
   } = $props();
@@ -32,6 +36,20 @@
   let committing = $state(false);
   /** Esc 取消后会立刻失焦，用这个标记让失焦不再触发提交。 */
   let cancelled = $state(false);
+
+  /**
+   * 每条正文元素，用于方向键导航。
+   *
+   * 用 DOM 焦点当"当前选中项"，不另建一份 `selectedId` 状态——两份状态就要回答
+   * "焦点和选中不一致时听谁的"，而这问题没有正确答案。
+   */
+  let itemEls = $state([]);
+
+  /** 把焦点移到第一条。捕获框在空内容按 ↓ 时由 App 调用。 */
+  export function focusFirst() {
+    const first = itemEls.find(Boolean);
+    first?.focus();
+  }
 
   $effect(() => {
     editing = editingId !== null;
@@ -105,10 +123,15 @@
         onnotice?.("纸条内容不能为空");
         return;
       }
-      commitEdit();
+      const id = editingId;
+      // 键盘进入编辑、键盘提交，那么焦点也该由键盘交还——失焦提交不走这里，
+      // 免得把用户刚点去的输入框抢回来。
+      commitEdit().then(() => refocusRow(id));
     } else if (event.key === "Escape") {
       event.preventDefault();
+      const id = editingId;
       cancelEdit();
+      refocusRow(id);
     }
   }
 
@@ -123,6 +146,53 @@
       return;
     }
     commitEdit();
+  }
+
+  /** 编辑结束后把焦点放回那一行，键盘流才不至于断在半空。 */
+  async function refocusRow(id) {
+    await tick();
+    const index = slips.findIndex((item) => item.id === id);
+    if (index >= 0) itemEls[index]?.focus();
+  }
+
+  /**
+   * 纸条正文上的方向键导航。
+   *
+   * Space 勾选、Enter 编辑、↑↓ 上下移动；在最上面按 ↑ 回到捕获框。
+   * 这样"录入 → 下移 → 勾选 → 编辑 → 退出"全程可以不碰鼠标。
+   *
+   * 刻意不维护"当前选中项"状态：DOM 焦点就是它。两份状态就要回答"焦点和选中
+   * 不一致时听谁的"，而那没有正确答案。
+   */
+  function handleItemKeydown(event, slip, index) {
+    if (composing || event.isComposing || event.keyCode === 229) {
+      return;
+    }
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        itemEls[index + 1]?.focus();
+        return;
+      case "ArrowUp":
+        event.preventDefault();
+        if (index === 0) {
+          onseekcapture?.();
+        } else {
+          itemEls[index - 1]?.focus();
+        }
+        return;
+      case " ":
+        // 空格在 span 上默认是滚动，必须挡掉，否则勾选的同时页面会跳。
+        event.preventDefault();
+        ontoggle?.(slip);
+        return;
+      case "Enter":
+        event.preventDefault();
+        beginEdit(slip);
+        return;
+      default:
+        return;
+    }
   }
 </script>
 
@@ -150,7 +220,7 @@
       </p>
     </li>
   {:else}
-    {#each slips as slip (slip.id)}
+    {#each slips as slip, index (slip.id)}
       <li class:slip--done={slip.done} class="slip">
         <button
           type="button"
@@ -184,14 +254,9 @@
             aria-label={slip.locked
               ? "已锁定的纸条正文"
               : "纸条正文，双击或回车编辑"}
+            bind:this={itemEls[index]}
             ondblclick={() => beginEdit(slip)}
-            onkeydown={(event) => {
-              // 键盘用户没有"双击"，给一个等价入口；其他按键不动。
-              if (event.key === "Enter") {
-                event.preventDefault();
-                beginEdit(slip);
-              }
-            }}
+            onkeydown={(event) => handleItemKeydown(event, slip, index)}
             title={slip.locked ? "已锁定，先解锁才能修改" : "双击编辑"}
             >{slip.text}</span
           >

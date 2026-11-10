@@ -395,5 +395,71 @@ check(
   `count=${archivedAndUndone.countAfterUndo} checked=${archivedAndUndone.checkedAfterUndo}`,
 );
 
+// 11. 全键盘流：录入 → ↓ 进列表 → Space 勾选 → Enter 编辑 → Esc 退出 → ↑ 回捕获框。
+//     放在最后，因为前面的用例已经把第一条锁定并把状态改了很多轮。
+const keyboardFlow = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const ta = document.querySelector('.capture__input');
+       // 先录一条新的：它未锁定，才能测 Enter 编辑。
+       ta.focus();
+       ta.value = '键盘流测试的一条';
+       ta.dispatchEvent(new Event('input', { bubbles: true }));
+       ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+       await new Promise(r => setTimeout(r, 1500));
+
+       // ↓：输入框清空后按下，焦点应进入列表第一行
+       ta.focus();
+       ta.value = '';
+       ta.dispatchEvent(new Event('input', { bubbles: true }));
+       ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+       await new Promise(r => setTimeout(r, 150));
+       const spans = () => [...document.querySelectorAll('.slip__text')];
+       const downFromCapture = document.activeElement === spans()[0];
+
+       // Space：在第二条（未锁定）上勾选
+       const second = spans()[1];
+       second.focus();
+       second.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+       await new Promise(r => setTimeout(r, 1200));
+       const boxes = [...document.querySelectorAll('.slip__box')];
+       const spaceChecked = boxes[1]?.getAttribute('aria-checked');
+
+       // Enter：进入编辑
+       spans()[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+       await new Promise(r => setTimeout(r, 250));
+       const enteredEdit = document.querySelector('.slip__edit') !== null;
+
+       // Esc：退出编辑，焦点应回到那一行而不是丢掉
+       document.querySelector('.slip__edit')?.dispatchEvent(
+         new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }),
+       );
+       await new Promise(r => setTimeout(r, 250));
+       const leftEdit = document.querySelector('.slip__edit') === null;
+       const focusBackOnRow = (document.activeElement?.className ?? '').includes('slip__text');
+
+       // ↑：在第一行按上，焦点应回到捕获框
+       spans()[0].focus();
+       spans()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+       await new Promise(r => setTimeout(r, 150));
+       const backToCapture = (document.activeElement?.className ?? '').includes('capture__input');
+
+       return JSON.stringify({ downFromCapture, spaceChecked, enteredEdit, leftEdit, focusBackOnRow, backToCapture });
+     })()`,
+    true,
+  ),
+);
+check("↓ 从空输入框进入列表第一行", keyboardFlow.downFromCapture === true,
+  `downFromCapture=${keyboardFlow.downFromCapture}`);
+check("Space 勾选纸条", keyboardFlow.spaceChecked === "true",
+  `aria-checked=${keyboardFlow.spaceChecked}`);
+check("Enter 进入编辑", keyboardFlow.enteredEdit === true,
+  `enteredEdit=${keyboardFlow.enteredEdit}`);
+check("Esc 退出编辑且焦点回到那一行",
+  keyboardFlow.leftEdit === true && keyboardFlow.focusBackOnRow === true,
+  `leftEdit=${keyboardFlow.leftEdit} focusBack=${keyboardFlow.focusBackOnRow}`);
+check("首行 ↑ 回到捕获框", keyboardFlow.backToCapture === true,
+  `backToCapture=${keyboardFlow.backToCapture}`);
+
 cdp.close();
 process.exit(failed ? 1 : 0);
