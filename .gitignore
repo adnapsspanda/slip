@@ -24,3 +24,6 @@ inbox.md.corrupt-*
 
 # tauri-build 每次构建自动重建的 ACL/权限 schema，不是源码。
 src-tauri/gen/
+
+# archify 生成的架构图产物（可重新生成，不进版本库）
+.archify/
