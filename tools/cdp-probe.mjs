@@ -173,14 +173,39 @@ check(
   `hint=${tooLong.hintBefore}`,
 );
 
-// 5. 双击正文 → 回车提交：真实走 IPC，列表与磁盘同步变。
-const edited = JSON.parse(
+// 5. 双击正文 → 行内编辑框 IME 组合态按 Enter / Esc 不得误提交或丢弃 → 回车提交。
+const editIme = JSON.parse(
   await evaluate(
     `(async () => {
        const text = document.querySelector('.slip__text');
        if (!text) return JSON.stringify({ error: '没有纸条' });
        text.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
        await new Promise(r => setTimeout(r, 250));
+       const input = document.querySelector('.slip__edit');
+       if (!input) return JSON.stringify({ error: '编辑框没有出现' });
+       input.value = '拼音选词中';
+       input.dispatchEvent(new Event('input', { bubbles: true }));
+       input.dispatchEvent(new CompositionEvent('compositionstart'));
+       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }));
+       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, isComposing: true }));
+       await new Promise(r => setTimeout(r, 300));
+       const stillEditing = document.querySelector('.slip__edit') !== null;
+       const draftVal = input.value;
+       input.dispatchEvent(new CompositionEvent('compositionend'));
+       return JSON.stringify({ stillEditing, draftVal });
+     })()`,
+    true,
+  ),
+);
+check(
+  "行内编辑框 IME 组合态按 Enter/Esc 不提交不退出",
+  editIme.stillEditing === true && editIme.draftVal === "拼音选词中",
+  `stillEditing=${editIme.stillEditing} draftVal=${editIme.draftVal}`,
+);
+
+const edited = JSON.parse(
+  await evaluate(
+    `(async () => {
        const input = document.querySelector('.slip__edit');
        if (!input) return JSON.stringify({ error: '编辑框没有出现' });
        input.value = '编辑后的内容';
@@ -281,6 +306,7 @@ const doneWhileLocked = JSON.parse(
        await new Promise(r => setTimeout(r, 1500));
        return JSON.stringify({
          checked: document.querySelector('.slip__box')?.getAttribute('aria-checked'),
+         notice: document.querySelector('.notice')?.textContent ?? '',
        });
      })()`,
     true,
@@ -290,6 +316,49 @@ check(
   "锁定的纸条仍然可以勾选完成",
   doneWhileLocked.checked === "true",
   `aria-checked=${doneWhileLocked.checked}`,
+);
+check(
+  "勾选完成后提示区出现已完成与撤销入口",
+  (doneWhileLocked.notice ?? "").includes("已完成") &&
+    (doneWhileLocked.notice ?? "").includes("撤销"),
+  `notice=${doneWhileLocked.notice}`,
+);
+
+// 10. 归档已完成纸条 → 从可见列表收起 → Ctrl+Z 撤销归档恢复到列表。
+const archivedAndUndone = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const btn = document.querySelector('.slip__archive');
+       if (!btn) return JSON.stringify({ error: '没有归档按钮' });
+       btn.click();
+       await new Promise(r => setTimeout(r, 1500));
+       const countAfterArchive = document.querySelectorAll('.slip').length;
+       const noticeAfterArchive = document.querySelector('.notice')?.textContent ?? '';
+       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+       await new Promise(r => setTimeout(r, 1500));
+       const countAfterUndo = document.querySelectorAll('.slip').length;
+       const checkedAfterUndo = document.querySelector('.slip__box')?.getAttribute('aria-checked');
+       return JSON.stringify({
+         countAfterArchive,
+         noticeAfterArchive,
+         countAfterUndo,
+         checkedAfterUndo,
+       });
+     })()`,
+    true,
+  ),
+);
+check(
+  "归档后纸条从默认列表收起",
+  archivedAndUndone.countAfterArchive === 0 &&
+    (archivedAndUndone.noticeAfterArchive ?? "").includes("已归档"),
+  `count=${archivedAndUndone.countAfterArchive} notice=${archivedAndUndone.noticeAfterArchive}`,
+);
+check(
+  "Ctrl+Z 可撤销归档并保留已完成状态",
+  archivedAndUndone.countAfterUndo === 1 &&
+    archivedAndUndone.checkedAfterUndo === "true",
+  `count=${archivedAndUndone.countAfterUndo} checked=${archivedAndUndone.checkedAfterUndo}`,
 );
 
 cdp.close();

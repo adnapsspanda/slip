@@ -295,3 +295,97 @@ async fn edit_undo_and_lock_round_trip_through_disk() {
 
     dispatcher.shutdown().await;
 }
+
+/// 归档已完成条目 → 落盘并隐藏 → 撤销归档恢复可见且保留完成时间。
+#[tokio::test(flavor = "current_thread")]
+async fn archive_and_undo_preserve_done_state_through_disk() {
+    let dir = tempfile::tempdir().expect("temp vault");
+    let inbox = dir.path().join("inbox.md");
+
+    let store = Arc::new(MarkdownStore::new(&inbox));
+    let prefs = Arc::new(JsonPrefsStore::new(dir.path().join("prefs.json")));
+    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    let dispatcher = Dispatcher::spawn(store, prefs, presenter, 8);
+
+    let first = slip("交水电费");
+    let second = slip("寄快递");
+    let ack = dispatcher
+        .apply(
+            String::from("r1"),
+            vec![
+                Mutation::Append(first.clone()),
+                Mutation::Append(second.clone()),
+            ],
+        )
+        .await;
+    assert_eq!(ack.result, AckResult::Applied);
+
+    let done_at = OffsetDateTime::now_utc();
+    let ack = dispatcher
+        .apply(
+            String::from("r2"),
+            vec![
+                Mutation::Patch {
+                    id: first.id,
+                    patch: Patch::SetDone {
+                        done: true,
+                        at: done_at,
+                    },
+                },
+                Mutation::Patch {
+                    id: second.id,
+                    patch: Patch::SetDone {
+                        done: true,
+                        at: done_at,
+                    },
+                },
+            ],
+        )
+        .await;
+    assert_eq!(ack.result, AckResult::Applied);
+
+    // 批量归档两条已完成纸条。
+    let archived_at = OffsetDateTime::now_utc();
+    let ack = dispatcher
+        .apply(
+            String::from("r3"),
+            vec![
+                Mutation::Patch {
+                    id: first.id,
+                    patch: Patch::Archive { at: archived_at },
+                },
+                Mutation::Patch {
+                    id: second.id,
+                    patch: Patch::Archive { at: archived_at },
+                },
+            ],
+        )
+        .await;
+    assert_eq!(ack.result, AckResult::Applied);
+
+    let raw = std::fs::read_to_string(&inbox).expect("read inbox");
+    assert!(
+        raw.contains(";archived_at="),
+        "archived_at missing: {raw:?}"
+    );
+    let snapshot = dispatcher.get_snapshot().await.unwrap();
+    assert!(snapshot.slips.iter().all(|s| s.archived));
+
+    // 撤销一次即可把整批归档恢复为"已完成但未归档"，且保留原完成时间。
+    let ack = dispatcher.undo(String::from("r4")).await;
+    assert_eq!(ack.result, AckResult::Applied);
+
+    let raw = std::fs::read_to_string(&inbox).expect("read inbox");
+    assert!(
+        !raw.contains(";archived_at="),
+        "archived_at should be removed after undo: {raw:?}"
+    );
+    assert!(
+        raw.contains(";done_at="),
+        "done_at must survive unarchive: {raw:?}"
+    );
+    let snapshot = dispatcher.get_snapshot().await.unwrap();
+    assert!(snapshot.slips.iter().all(|s| s.done && !s.archived));
+
+    dispatcher.shutdown().await;
+}

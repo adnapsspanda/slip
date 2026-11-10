@@ -8,8 +8,8 @@
 //! **任何业务判断都不在这里**：拆条在 `slip-domain`，落盘在 `slip-store`，
 //! 顺序与状态在 `slip-app`。外壳只做类型搬运，所以它可以被替换而不动契约。
 
+mod diag;
 mod hotkey;
-mod spike;
 mod system;
 
 use std::path::PathBuf;
@@ -191,7 +191,34 @@ async fn set_locked(
         .await)
 }
 
-/// 回滚最近一次内容编辑或勾选。
+/// 归档一条或多条已完成的纸条。
+///
+/// 一批归档走同一个 `apply` 批次：共用一次原子替换、`content_rev` 只 +1，
+/// 且在撤销栈里算作一步，按一次 `Ctrl+Z` 即可整批恢复。
+#[tauri::command]
+async fn archive(
+    state: tauri::State<'_, ShellState>,
+    request_id: String,
+    ids: Vec<String>,
+) -> Result<Ack, String> {
+    let at = OffsetDateTime::now_utc();
+    let mut mutations = Vec::with_capacity(ids.len());
+    for raw_id in ids {
+        let id = match SlipId::parse_strict(&raw_id) {
+            Ok(id) => id,
+            Err(error) => {
+                return Ok(rejected(&request_id, "domain", error.to_string()));
+            }
+        };
+        mutations.push(Mutation::Patch {
+            id,
+            patch: Patch::Archive { at },
+        });
+    }
+    Ok(state.dispatcher.apply(request_id, mutations).await)
+}
+
+/// 回滚最近一次内容编辑、勾选或归档。
 #[tauri::command]
 async fn undo(state: tauri::State<'_, ShellState>, request_id: String) -> Result<Ack, String> {
     Ok(state.dispatcher.undo(request_id).await)
@@ -265,18 +292,13 @@ pub fn run() {
             complete,
             edit,
             set_locked,
+            archive,
             undo,
             reload,
             isolate_and_reset,
             vault_path,
             flush_prefs,
             hotkey::dismiss_window,
-            spike::spike_ignore_cursor,
-            spike::spike_always_on_top,
-            spike::spike_monitors,
-            spike::spike_window_report,
-            spike::spike_hide,
-            spike::spike_show,
         ])
         .setup(|app| {
             let vault = resolve_vault();
@@ -345,20 +367,20 @@ pub fn run() {
 
             // 手动启动（双击 exe）时把窗口显示出来：召唤式应用静默启动会让用户
             // 以为没跑起来。开机自启被拉起时才真正静默。
+            //
+            // 用 `show_on_launch` 而不是 `summon`：启动展示不挂"失焦自动收走"。
+            // 本机实测 Clash Verge 每约 2.7 秒抢一次前台，挂上该规则会让窗口在
+            // 用户看清之前就被收走，表现成"启动后一个窗口都没有"。
             let launched_by_autostart = std::env::args().any(|arg| arg == AUTOSTART_FLAG);
             if !launched_by_autostart {
-                hotkey::summon(app.handle());
+                hotkey::show_on_launch(app.handle());
             }
 
+            // 启动自检走 tracing::debug：平时不吵，排查时 `SLIP_LOG=debug` 就有。
+            // 诊断「进程在跑但看不到窗口」时，这几行能和外部枚举到的窗口做对照。
             if let Some(window) = app.get_webview_window("main") {
-                if let Ok(report) = spike::spike_window_report(window.clone()) {
-                    println!("[slip] window report: {report:?}");
-                }
-                if let Ok(monitors) = spike::spike_monitors(window) {
-                    for monitor in monitors {
-                        println!("[slip] monitor: {monitor:?}");
-                    }
-                }
+                diag::log_window(&window);
+                diag::log_monitors(&window);
             }
             Ok(())
         })

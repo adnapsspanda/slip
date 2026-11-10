@@ -3,7 +3,6 @@
   import * as bridge from "./lib/bridge.js";
   import Capture from "./lib/Capture.svelte";
   import SlipList from "./lib/SlipList.svelte";
-  import SpikePanel from "./lib/SpikePanel.svelte";
 
   /** 默认提示文案，唤出和放弃捕获时都要回到它，所以只写一次。 */
   const DEFAULT_HINT = "Enter 收录 · Shift+Enter 换行";
@@ -22,10 +21,13 @@
   /** 撤销请求在途，避免连按 Ctrl+Z 把后端的撤销栈一次抽干。 */
   let undoing = $state(false);
 
+
   // 归档判定只看 `archived`：后端 `SlipView.archived` 是唯一判据
   // （`done && archived_at.is_some()`，见 v11 §1.8），没有独立的 archivedAt 字段。
   let visible = $derived((snapshot?.slips ?? []).filter((slip) => !slip.archived));
   let pendingCount = $derived(visible.filter((slip) => !slip.done).length);
+  let doneSlips = $derived(visible.filter((slip) => slip.done));
+  let doneCount = $derived(doneSlips.length);
 
   let meta = $derived(
     [
@@ -49,13 +51,43 @@
       return `无效文件已隔离到 ${snapshot.recovery.corruptPath}。可以重建一个空 Inbox。`;
     }
     if (snapshot.health && !snapshot.health.writable) {
-      return "文件无法解析，暂时只读。可以隔离它后重建一个空 Inbox。";
+      return "文件无法解析，暂时只读。修好文件后可重新载入，或隔离并重建空 Inbox。";
     }
     if (snapshot.needsReload) {
       return "磁盘上的文件已被外部修改，需要重新载入。";
     }
     return "";
   });
+
+  let diagnostics = $derived(snapshot?.diagnostics ?? []);
+
+  /** 把后端内部错误码转换为面向用户的中文行动提示。 */
+  function formatAckError(ack) {
+    const code = ack?.error?.code;
+    const msg = ack?.error?.message ?? ack?.result ?? "未知错误";
+    switch (code) {
+      case "conflict":
+      case "needsReload":
+        return "磁盘上的文件已被修改，请先点上方「重新载入」";
+      case "readOnly":
+        return "文件无法解析，当前处于只读保护状态";
+      case "busy":
+        return "操作过于频繁，请稍后再试";
+      case "notExecuted":
+        return "后台未执行该操作，请重试";
+      case "fatal":
+        return "运行时状态异常，请重启 Slip";
+      case "undo":
+        return msg;
+      case "domain":
+        if (msg.includes("locked")) return "纸条已锁定，请先解锁再修改";
+        if (msg.includes("empty")) return "纸条内容不能为空";
+        if (msg.includes("not done")) return "只有已完成的纸条才能归档";
+        return msg;
+      default:
+        return msg;
+    }
+  }
 
   /** 内容提交被禁用时的原因；空字符串表示可以提交。 */
   let blockedReason = $derived.by(() => {
@@ -136,7 +168,7 @@
         hint = "收到不匹配的应答，草稿已保留。";
       } else if (ack.result !== "applied") {
         await refresh();
-        hint = `未收录：${ack.error?.message ?? ack.result}`;
+        hint = `未收录：${formatAckError(ack)}`;
       } else if (ack.uiRev == null) {
         hint = "已收录，但后端未返回界面版本；草稿已保留，可重试同步。";
       } else if (captureRef?.getDraftVersion?.() !== request.draftVersion) {
@@ -168,12 +200,27 @@
   }
 
   async function handleToggle(slip) {
+    const targetDone = !slip.done;
     try {
-      await bridge.complete(bridge.newRequestId(), slip.id, !slip.done);
+      const ack = await bridge.complete(
+        bridge.newRequestId(),
+        slip.id,
+        targetDone,
+      );
+      await refresh();
+      if (ack.result === "applied") {
+        hint = DEFAULT_HINT;
+        notice = {
+          message: targetDone ? "已完成" : "已标为未完成",
+          undo: true,
+        };
+      } else {
+        hint = `未更新：${formatAckError(ack)}`;
+      }
     } catch (error) {
       hint = `complete 失败：${error}`;
+      await refresh();
     }
-    await refresh();
   }
 
   /**
@@ -191,7 +238,7 @@
         notice = { message: "已修改", undo: true };
         return true;
       }
-      hint = `未修改：${ack.error?.message ?? ack.result}`;
+      hint = `未修改：${formatAckError(ack)}`;
       return false;
     } catch (error) {
       hint = `edit 失败：${error}`;
@@ -211,13 +258,52 @@
         slip.id,
         !slip.locked,
       );
-      if (ack.result !== "applied") {
-        hint = `锁定状态未变：${ack.error?.message ?? ack.result}`;
+      if (ack.result === "applied") {
+        // 锁定不进撤销栈，清掉可能残留的旧撤销条以免误导。
+        notice = null;
+      } else {
+        hint = `锁定状态未变：${formatAckError(ack)}`;
       }
     } catch (error) {
       hint = `set_locked 失败：${error}`;
     }
     await refresh();
+  }
+
+  /** 归档单条已完成纸条，并提供一键撤销入口。 */
+  async function handleArchive(slip) {
+    try {
+      const ack = await bridge.archive(bridge.newRequestId(), [slip.id]);
+      await refresh();
+      if (ack.result === "applied") {
+        hint = DEFAULT_HINT;
+        notice = { message: "已归档", undo: true };
+      } else {
+        hint = `未归档：${formatAckError(ack)}`;
+      }
+    } catch (error) {
+      hint = `archive 失败：${error}`;
+      await refresh();
+    }
+  }
+
+  /** 一键归档当前所有已完成的纸条（同一事务，一次 Ctrl+Z 即可整批恢复）。 */
+  async function handleArchiveAll() {
+    const ids = doneSlips.map((slip) => slip.id);
+    if (ids.length === 0) return;
+    try {
+      const ack = await bridge.archive(bridge.newRequestId(), ids);
+      await refresh();
+      if (ack.result === "applied") {
+        hint = DEFAULT_HINT;
+        notice = { message: `已归档 ${ids.length} 条`, undo: true };
+      } else {
+        hint = `未归档：${formatAckError(ack)}`;
+      }
+    } catch (error) {
+      hint = `archive 失败：${error}`;
+      await refresh();
+    }
   }
 
   /**
@@ -236,7 +322,7 @@
         hint = DEFAULT_HINT;
         notice = { message: "已撤销", undo: false };
       } else {
-        hint = `撤销失败：${ack.error?.message ?? ack.result}`;
+        hint = `撤销失败：${formatAckError(ack)}`;
       }
     } catch (error) {
       hint = `undo 失败：${error}`;
@@ -246,10 +332,9 @@
   }
 
   /**
-   * 窗口级 Ctrl+Z。
-   *
-   * 编辑中的输入框有自己的撤销语义，抢过来只会毁掉用户刚打的字；
-   * 输入框里的 Ctrl+Z 也一并让路。
+   * 窗口级快捷键：
+   * - `Ctrl+Z`：非输入态时触发后端撤销；
+   * - `Ctrl+Shift+D`：切换 §9.7 窗口验收调试面板。
    */
   function handleKeydown(event) {
     if (event.key !== "z" && event.key !== "Z") return;
@@ -268,7 +353,13 @@
     hint = "重新载入中…";
     try {
       const ack = await bridge.reload(bridge.newRequestId());
-      hint = ack.result === "applied" ? "已重新载入" : `重载失败：${ack.error?.message ?? ack.result}`;
+      hint =
+        ack.result === "applied"
+          ? "已重新载入"
+          : `重载失败：${formatAckError(ack)}`;
+      if (ack.result === "applied") {
+        notice = null;
+      }
     } catch (error) {
       hint = `重载失败：${error}`;
     }
@@ -282,7 +373,10 @@
       hint =
         ack.result === "applied"
           ? "已重建空 Inbox"
-          : `重建失败：${ack.error?.message ?? ack.result}`;
+          : `重建失败：${formatAckError(ack)}`;
+      if (ack.result === "applied") {
+        notice = null;
+      }
     } catch (error) {
       hint = `重建失败：${error}`;
     }
@@ -333,19 +427,41 @@
 <div class="paper">
   <header class="paper__bar" data-tauri-drag-region>
     <span class="paper__title">Slip</span>
-    <span class="paper__meta">{meta}</span>
+    <div class="paper__bar-right">
+      {#if doneCount > 0 && !blockedReason}
+        <button
+          type="button"
+          class="paper__archive-all"
+          onclick={handleArchiveAll}
+          title="将所有已完成的纸条归档收起"
+        >
+          归档已完成 ({doneCount})
+        </button>
+      {/if}
+      <span class="paper__meta">{meta}</span>
+    </div>
   </header>
 
   <section class="capture">
     {#if banner}
       <div class="banner">
-        <span>{banner}</span>
-        {#if snapshot?.runtime?.state !== "fatal"}
-          {#if snapshot?.recovery?.state === "isolated" || (snapshot && !snapshot.health.writable)}
-            <button type="button" onclick={handleIsolate}>隔离并重建</button>
-          {:else if snapshot?.needsReload}
-            <button type="button" onclick={handleReload}>重新载入</button>
+        <div class="banner__body">
+          <span>{banner}</span>
+          {#if diagnostics.length > 0}
+            <div class="banner__diag">{diagnostics.join("；")}</div>
           {/if}
+        </div>
+        {#if snapshot?.runtime?.state !== "fatal"}
+          <div class="banner__actions">
+            {#if snapshot?.recovery?.state === "isolated"}
+              <button type="button" onclick={handleIsolate}>重试重建</button>
+            {:else if snapshot && !snapshot.health.writable}
+              <button type="button" onclick={handleReload}>重新载入</button>
+              <button type="button" onclick={handleIsolate}>隔离并重建</button>
+            {:else if snapshot?.needsReload}
+              <button type="button" onclick={handleReload}>重新载入</button>
+            {/if}
+          </div>
         {/if}
       </div>
     {/if}
@@ -373,9 +489,8 @@
     ontoggle={handleToggle}
     onedit={handleEdit}
     onlock={handleLock}
+    onarchive={handleArchive}
     onnotice={(message) => (hint = message)}
     bind:editing={listEditing}
   />
-
-  <SpikePanel />
 </div>

@@ -61,12 +61,19 @@ $env:PATH = "C:\Users\spand\.cargo\bin;" + $env:PATH
 热键唤出、记完或 Esc 收走。三条不能破坏的约定：
 
 1. **手动双击必须看得见窗口。** 自启插件带 `--autostart` 标记参数，只有带这个参数
-   才静默驻留；否则 `lib.rs` 在 setup 里主动 `summon` 一次。改掉这条会让用户
-   双击 exe 后"什么也没发生"。
+   才静默驻留；否则 `lib.rs` 在 setup 里调一次 `hotkey::show_on_launch`。改掉这条
+   会让用户双击 exe 后"什么也没发生"。
 2. **唤出要贴着光标**，放在光标右下 16 逻辑像素；放不下就翻到左上，最后夹紧进
    `Monitor::work_area()`。任何信息拿不到都退化为居中，**绝不能让窗口跑丢**。
-3. **失焦自动收走**，但有 400ms 宽限期——Windows 前台锁定可能让 `set_focus()` 失败
-   并立刻送来 `Focused(false)`，没有宽限期就会变成"一闪就没"。
+3. **失焦自动收走，但只对"召唤"上膛**，且有 400ms 宽限期。
+   - 热键与托盘走 `summon`：上膛，点别处就收走。
+   - **启动展示走 `show_on_launch`：不上膛。** 用户是明确打开了程序，别的常驻应用
+     抢前台不该让窗口消失。本机实测 Clash Verge 每 2.7~4.5 秒抢一次前台，上膛的
+     结果就是"启动后一个窗口都没有"。启动出来的窗口靠 `Esc`、托盘或热键收走。
+   - 400ms 宽限期：Windows 前台锁定可能让 `set_focus()` 失败并立刻送来
+     `Focused(false)`，没有宽限期就会变成"一闪就没"。
+   - 另一条判据：**从未被聚焦过的窗口不因"失焦"收走**——那是"还没拿到焦点"，
+     不是"用着用着离开了"。
 
 热键存在 `<vault>/ui-state.json` 的 `hotkey` 字段，由 `hotkey::resolve_shortcut`
 解析，解析失败回落默认值。**`PaperViewSet` 必须原样携带这个字段**：`Prefs` 是整体写的，
@@ -74,6 +81,21 @@ $env:PATH = "C:\Users\spand\.cargo\bin;" + $env:PATH
 `view_roundtrip_never_drops_the_hotkey` 锁的就是这条）。
 
 ## 端到端验收
+
+### 先决条件：必须在**交互桌面**的终端里启动
+
+如果你的终端本身运行在沙盒 / 隔离环境里（某些 agent 工具的终端就是这样），从这里
+`cargo run` 出来的进程会建在**隔离的窗口站/桌面**上：
+
+- 进程活着、WebView2 正常起来、配置里的一切都成功；
+- 但**用户看不到窗口**，外部 `EnumWindows` 该进程的顶层窗口数是 **0**；
+- 且 `cursor_position()` 读不到光标，`place_near_cursor` 永远退化到 `center()`。
+
+指纹很好认：**多次启动的窗口坐标完全相同（都是屏幕正中），并且 `focused: false`**；
+在交互桌面上启动时坐标会跟随光标变化、`focused: true`。
+
+遇到"进程在跑但没窗口"，先跑 `pwsh -File tools/diag-window.ps1`，
+再确认启动它的终端是不是普通交互终端。这不是程序缺陷。
 
 改动窗口、热键、或捕获链路之后，**必须**跑一次：
 

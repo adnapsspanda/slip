@@ -271,8 +271,8 @@ async fn run(
                     let _ = reply.send(not_executed(request_id));
                     continue;
                 }
-                // 只有"正文编辑 / 勾选"进撤销栈；追加没有对应的删除变更，
-                // 锁定与归档各有显式开关，都不需要撤销。
+                // "正文编辑 / 勾选 / 归档"进撤销栈：归档后纸条立即从默认列表隐藏，
+                // 没有开关可点回去，因此必须能靠撤销恢复；追加无删除变更，锁定有显式开关。
                 let inverse = if undoable(&mutations) {
                     inverse_batch(&store.snapshot(), &mutations)
                 } else {
@@ -523,15 +523,18 @@ async fn run_batch(
 
 /// 这批变更是否值得进撤销栈。
 ///
-/// 只认"改正文"和"改完成状态"：追加没有对应的删除变更所以撤不掉，
-/// 锁定和归档各有显式开关，点回去比撤销更直观。
+/// 覆盖"改正文""改完成状态"与"归档"：归档后纸条会从默认视图消失，没有原地
+/// 按钮可点回去，必须允许 `Ctrl+Z` 恢复；追加没有删除变更，锁定有显式开关。
 fn undoable(mutations: &[Mutation]) -> bool {
     !mutations.is_empty()
         && mutations.iter().all(|mutation| {
             matches!(
                 mutation,
                 Mutation::Patch {
-                    patch: Patch::SetText(_) | Patch::SetDone { .. },
+                    patch: Patch::SetText(_)
+                        | Patch::SetDone { .. }
+                        | Patch::Archive { .. }
+                        | Patch::Unarchive,
                     ..
                 }
             )
@@ -559,7 +562,11 @@ fn inverse_batch(before: &StoreSnapshot, mutations: &[Mutation]) -> Option<Vec<M
                     at: OffsetDateTime::now_utc(),
                 },
             },
-            Patch::Archive { .. } | Patch::SetLocked(_) => return None,
+            Patch::Archive { .. } | Patch::Unarchive => match slip.archived_at {
+                Some(at) => Patch::Archive { at },
+                None => Patch::Unarchive,
+            },
+            Patch::SetLocked(_) => return None,
         };
         inverse.push(Mutation::Patch { id: *id, patch });
     }

@@ -65,6 +65,30 @@ body {
   color: var(--ink);
 }
 
+.paper__bar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.paper__archive-all {
+  flex: none;
+  padding: 2px 7px;
+  border: 1px solid var(--paper-edge);
+  border-radius: 6px;
+  background: #fffdf8;
+  color: var(--ink-soft);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.paper__archive-all:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .paper__meta {
   font-variant-numeric: tabular-nums;
   overflow: hidden;
@@ -90,6 +114,26 @@ body {
   font-size: 12px;
   line-height: 1.5;
   user-select: text;
+}
+
+.banner__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.banner__diag {
+  margin-top: 2px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  color: #8c4524;
+  word-break: break-all;
+}
+
+.banner__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: none;
 }
 
 .banner button {
@@ -240,7 +284,8 @@ body {
   box-shadow: 0 0 0 3px rgb(180 102 58 / 14%);
 }
 
-.slip__lock {
+.slip__lock,
+.slip__archive {
   flex: none;
   display: flex;
   align-items: center;
@@ -259,11 +304,14 @@ body {
 }
 
 .slip:hover .slip__lock,
-.slip__lock:focus-visible {
+.slip:hover .slip__archive,
+.slip__lock:focus-visible,
+.slip__archive:focus-visible {
   opacity: 0.85;
 }
 
-.slip__lock:hover {
+.slip__lock:hover,
+.slip__archive:hover {
   background: #e9e1cf;
   opacity: 1;
 }
@@ -313,66 +361,6 @@ body {
 .slip--done .slip__text {
   color: var(--ink-soft);
   text-decoration: line-through;
-}
-
-.spike {
-  border-top: 1px dashed var(--paper-edge);
-  padding: 8px 12px 10px;
-  font-size: 12px;
-  color: var(--ink-soft);
-  background: #f6f1e6;
-}
-
-.spike__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.spike__head strong {
-  color: var(--ink);
-  font-size: 12px;
-}
-
-.spike__toggle,
-.spike__row button {
-  font: inherit;
-  font-size: 11px;
-  padding: 3px 8px;
-  border: 1px solid var(--paper-edge);
-  border-radius: 7px;
-  background: #fffdf8;
-  color: var(--ink);
-  cursor: pointer;
-  user-select: none;
-}
-
-.spike__row button:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.spike__row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
-}
-
-.spike__out {
-  margin: 8px 0 0;
-  padding: 8px;
-  max-height: 130px;
-  overflow: auto;
-  border-radius: 8px;
-  background: #fffdf8;
-  border: 1px solid var(--paper-edge);
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: 11px;
-  line-height: 1.45;
-  white-space: pre-wrap;
-  word-break: break-all;
-  user-select: text;
 }
 
 /* 超出单条上限 / 条数上限时的本地提示：比普通提示更醒目，但不抢走输入焦点。 */

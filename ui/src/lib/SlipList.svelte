@@ -15,6 +15,8 @@
     onedit,
     /** 切换锁定。 */
     onlock,
+    /** 归档单条已完成纸条。 */
+    onarchive,
     /** 往提示区送一条文案（例如锁定纸条被双击时）。 */
     onnotice,
     /** 双向暴露"是否正在编辑"，让 App 的 Ctrl+Z 知道该不该让路。 */
@@ -24,6 +26,8 @@
   let editingId = $state(null);
   /** 编辑框里的初值/当前值；提交失败时靠它把用户输入原样留着。 */
   let draft = $state("");
+  /** 输入法组合态：选词按 Enter 或 Esc 时绝不能误提交或丢弃编辑。 */
+  let composing = $state(false);
   /** 提交进行中，防止失焦与 Enter 各发一次请求。 */
   let committing = $state(false);
   /** Esc 取消后会立刻失焦，用这个标记让失焦不再触发提交。 */
@@ -52,12 +56,14 @@
     }
     editingId = slip.id;
     draft = slip.text;
+    composing = false;
     cancelled = false;
   }
 
   /** 取消不产生任何请求：编辑框里的内容不是用户想保存的东西。 */
   function cancelEdit() {
     cancelled = true;
+    composing = false;
     editingId = null;
     draft = "";
   }
@@ -88,9 +94,17 @@
   }
 
   function handleKeydown(event) {
+    // 与捕获框同口径：输入法选词期间的 Enter / Esc 归输入法自己消费。
+    if (composing || event.isComposing || event.keyCode === 229) {
+      return;
+    }
     if (event.key === "Enter") {
       // 单行输入框里 Enter 没有别的含义；阻止冒泡避免触发窗口级快捷键。
       event.preventDefault();
+      if (draft.trim().length === 0) {
+        onnotice?.("纸条内容不能为空");
+        return;
+      }
       commitEdit();
     } else if (event.key === "Escape") {
       event.preventDefault();
@@ -101,6 +115,11 @@
   function handleBlur() {
     if (cancelled) {
       cancelled = false;
+      return;
+    }
+    // 把内容删空后直接点外部失焦：视为放弃修改并恢复原文，避免卡在失焦的空编辑框里。
+    if (draft.trim().length === 0) {
+      cancelEdit();
       return;
     }
     commitEdit();
@@ -131,6 +150,8 @@
             use:focusAndSelect
             onkeydown={handleKeydown}
             onblur={handleBlur}
+            oncompositionstart={() => (composing = true)}
+            oncompositionend={() => (composing = false)}
             aria-label="编辑纸条"
           />
         {:else}
@@ -152,6 +173,26 @@
             title={slip.locked ? "已锁定，先解锁才能修改" : "双击编辑"}
             >{slip.text}</span
           >
+          {#if slip.done}
+            <button
+              type="button"
+              class="slip__archive"
+              aria-label="归档纸条"
+              title="归档（从列表收起）"
+              onclick={() => onarchive?.(slip)}
+            >
+              <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+                <path
+                  d="M2.5 3.5h11v2.5h-11zM3.5 6v6.5a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1V6M6.5 8.5h3"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.35"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+          {/if}
           <button
             type="button"
             class="slip__lock"

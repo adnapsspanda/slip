@@ -45,6 +45,11 @@ pub enum Patch {
     Archive {
         at: OffsetDateTime,
     },
+    /// 取消归档（恢复到默认列表，保留 `done` 与 `done_at`）。
+    ///
+    /// 为什么需要它：归档后纸条立刻从默认视图隐藏，用户没有开关可点回去，
+    /// 撤销栈需要一个能只清 `archived_at` 而不擦除完成状态的逆操作。
+    Unarchive,
     /// 切换定稿标记。锁定与解锁都必须可做，否则锁就是单向门。
     SetLocked(bool),
 }

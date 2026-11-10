@@ -36,6 +36,18 @@ static LAST_SUMMON: Mutex<Option<Instant>> = Mutex::new(None);
 /// 从未被聚焦过的窗口不存在"用户正在用它却失去了焦点"，因此不该被失焦规则收走。
 static FOCUSED_SINCE_SUMMON: AtomicBool = AtomicBool::new(false);
 
+/// 失焦自动收走是否「上膛」。
+///
+/// 为什么需要这个开关：启动展示与热键召唤是两种不同的意图。
+/// 热键召唤是"我喊它出来"，点一下别处就该收走；而双击启动是"我要打开它"，
+/// 此时如果别的常驻程序（Clash Verge、输入法、更新弹窗都会这么干）抢走前台，
+/// 窗口就会被失焦规则收走——用户看到的是"窗口闪一下，然后怎么都找不到"。
+/// 实测本机 Clash Verge 每约 2.7 秒抢一次前台，窗口必然消失。
+///
+/// 所以：启动展示不上膛，只有热键/托盘召唤才上膛。
+/// 启动出来的窗口靠 `Esc`、托盘或热键收走——它本来就是个正常窗口。
+static AUTO_DISMISS_ARMED: AtomicBool = AtomicBool::new(true);
+
 fn note_summon() {
     if let Ok(mut slot) = LAST_SUMMON.lock() {
         *slot = Some(Instant::now());
@@ -106,6 +118,9 @@ fn install_auto_dismiss(app: &App) {
             _ => return,
         }
         // 从未聚焦过 → 不是"失去焦点"，是"还没拿到焦点"，收走等于让窗口闪现即消失。
+        if !AUTO_DISMISS_ARMED.load(Ordering::SeqCst) {
+            return;
+        }
         if !FOCUSED_SINCE_SUMMON.load(Ordering::SeqCst) || recently_summoned() {
             return;
         }
@@ -133,10 +148,28 @@ fn toggle(app: &AppHandle) {
 }
 
 /// 唤出：摆到光标旁边 → 显示 → 置顶 → 聚焦 → 通知前端。
+///
+/// 热键与托盘走这里：这是"我喊它出来"，所以**上膛**失焦收走。
 pub fn summon(app: &AppHandle) {
+    show(app, true);
+}
+
+/// 手动启动时的展示。
+///
+/// 与 [`summon`] 的唯一区别是**不上膛**失焦收走：用户明确打开了这个程序，
+/// 别的程序抢前台不该让窗口消失。关闭它用 `Esc`、托盘或热键。
+pub fn show_on_launch(app: &AppHandle) {
+    show(app, false);
+}
+
+fn show(app: &AppHandle, arm_auto_dismiss: bool) {
+    // 拿不到窗口时绝不能再静默返回：那会让"启动后没有界面"变成一条查不到原因的
+    // 症状。这里必须留下日志，否则只能靠外部枚举窗口去猜。
     let Some(window) = app.get_webview_window("main") else {
+        tracing::error!("main window is missing; show/summon skipped (UI will not appear)");
         return;
     };
+    AUTO_DISMISS_ARMED.store(arm_auto_dismiss, Ordering::SeqCst);
     // 先定位再显示：先显示会让人看见窗口从上一处跳过来。
     place_near_cursor(app, &window);
     let _ = window.show();

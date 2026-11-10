@@ -60,9 +60,16 @@ pub struct Slip {
     pub created_at: OffsetDateTime,
     pub done_at: Option<OffsetDateTime>,
     pub archived_at: Option<OffsetDateTime>,
+    pub locked: bool,
 }
 
-pub enum Patch { SetText(String), SetDone { done: bool, at: OffsetDateTime }, Archive { at: OffsetDateTime } }
+pub enum Patch {
+    SetText(String),
+    SetDone { done: bool, at: OffsetDateTime },
+    Archive { at: OffsetDateTime },
+    Unarchive,
+    SetLocked(bool),
+}
 pub enum Mutation { Append(Slip), Patch { id: SlipId, patch: Patch } }
 pub enum Transition { Changed, Noop }
 ```
@@ -71,13 +78,16 @@ pub enum Transition { Changed, Noop }
 
 | 操作 | 前置 | 结果 |
 |---|---|---|
-| `SetText(t)` | id 存在；`t` 过 `normalize_text` | 更新 text，保留其他字段；规范化后与旧值相同则 `Noop` |
+| `SetText(t)` | id 存在且 `!locked`；`t` 过 `normalize_text` | 更新 text，保留其他字段；规范化后与旧值相同则 `Noop`；已 `locked` 则 `Err(SlipLocked)` |
 | `SetDone{true, at}` | 未 done | `done=true, done_at=Some(at), archived_at=None` |
 | `SetDone{true, at}` | 已 done | `Noop`；不补写缺失的 `done_at`，不重写原时间 |
 | `SetDone{false, at}` | id 存在 | `done=false`，清 `done_at`、`archived_at`；三字段本来就如此则 `Noop` |
 | `Archive{at}` | done 且未有效归档 | `archived_at=Some(at)` |
 | `Archive{at}` | 已有效归档 | `Noop`；保留原归档时间 |
 | `Archive{at}` | 未 done | `Err(ArchiveRequiresDone)` |
+| `Unarchive` | `archived_at.is_some()` | `archived_at=None`，保留 `done` 与 `done_at` |
+| `Unarchive` | `archived_at.is_none()` | `Noop` |
+| `SetLocked(b)` | id 存在 | `locked=b`；与原值相同则 `Noop` |
 | `Append(s)` | `validate_slip(s)` 通过且 id 不存在 | 追加 |
 
 跨字段异常组合允许从文件载入，并允许文本编辑保留它们。应用不自动"修复"元数据；`Append` 不承担跨字段修复。

@@ -270,7 +270,12 @@ Reset-Vault
 $null = Start-Slip
 $appeared = Wait-OnceVisible
 Check "手动启动（无 --autostart）时会主动显示窗口" $appeared "appeared=$appeared"
-Start-Sleep -Seconds 1
+# 启动展示**不挂**失焦收走：别的程序抢前台不该让窗口消失。
+# 本机 Clash Verge 约每 2.7~4.5 秒抢一次前台，这条断言正是挡住
+# "启动后一个窗口都没有"那个回归的。
+Start-Sleep -Seconds 6
+$still = Test-SlipVisible
+Check "启动展示不会被其它应用抢焦点而收走" $still "visible=$still"
 
 # ----------------------------------------------------------------- 3. 位置：右下放得下
 & $bun run $probe $Port --dismiss 2>&1 | Out-Null

@@ -132,6 +132,15 @@ pub fn apply_patch(slip: &Slip, patch: &Patch) -> Result<(Slip, Transition), Dom
             Ok((next, Transition::Changed))
         }
 
+        Patch::Unarchive => {
+            if slip.archived_at.is_none() {
+                return Ok((slip.clone(), Transition::Noop));
+            }
+            let mut next = slip.clone();
+            next.archived_at = None;
+            Ok((next, Transition::Changed))
+        }
+
         Patch::SetLocked(locked) => {
             if slip.locked == *locked {
                 return Ok((slip.clone(), Transition::Noop));
@@ -289,6 +298,22 @@ mod tests {
         let (next, t) = apply_patch(&slip, &Patch::Archive { at: at_noon() }).unwrap();
         assert_eq!(t, Transition::Noop);
         assert_eq!(next.archived_at, Some(at_earlier()));
+    }
+
+    #[test]
+    fn unarchive_clears_archived_at_and_keeps_done_state() {
+        let mut slip = base_slip();
+        slip.done = true;
+        slip.done_at = Some(at_earlier());
+        slip.archived_at = Some(at_noon());
+        let (next, t) = apply_patch(&slip, &Patch::Unarchive).unwrap();
+        assert_eq!(t, Transition::Changed);
+        assert!(next.done);
+        assert_eq!(next.done_at, Some(at_earlier()));
+        assert_eq!(next.archived_at, None);
+
+        let (_, noop) = apply_patch(&next, &Patch::Unarchive).unwrap();
+        assert_eq!(noop, Transition::Noop);
     }
 
     #[test]
