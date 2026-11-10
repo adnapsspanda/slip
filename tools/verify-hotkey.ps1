@@ -33,6 +33,22 @@ $root = Split-Path -Parent $PSScriptRoot
 if (-not $Vault) { $Vault = Join-Path $root '.tmp-vault' }
 $exe = Join-Path $root 'target\debug\slip-shell.exe'
 if (-not (Test-Path $exe)) { throw "找不到 $exe —— 先跑 cargo build -p slip-shell" }
+
+# 时序守卫：`ui/dist` 是**编译期**被嵌进 exe 的（tauri::generate_context!）。
+# 因此 dist 比 exe 新，说明二进制里装的是旧界面——此时跑验收等于验一个不存在的东西，
+# 而症状会伪装成"界面没更新"这种极难定位的样子。宁可在这里直接说清楚。
+$distDir = Join-Path $root 'ui\dist'
+if (Test-Path $distDir) {
+    $distTime = (Get-ChildItem $distDir -Recurse -File |
+        Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime
+    if ($distTime -gt (Get-Item $exe).LastWriteTime) {
+        Write-Output "[STALE] ui/dist 比 slip-shell.exe 新，二进制里嵌的是旧界面。"
+        Write-Output "        dist 最新改动: $distTime"
+        Write-Output "        exe 构建时间:  $((Get-Item $exe).LastWriteTime)"
+        Write-Output "        先跑：cargo build -p slip-shell"
+        exit 2
+    }
+}
 $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
 if (-not (Test-Path $bun)) { throw "找不到 bun：$bun" }
 $probe = Join-Path $PSScriptRoot 'cdp-probe.mjs'
