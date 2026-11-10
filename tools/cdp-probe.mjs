@@ -173,5 +173,124 @@ check(
   `hint=${tooLong.hintBefore}`,
 );
 
+// 5. 双击正文 → 回车提交：真实走 IPC，列表与磁盘同步变。
+const edited = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const text = document.querySelector('.slip__text');
+       if (!text) return JSON.stringify({ error: '没有纸条' });
+       text.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+       await new Promise(r => setTimeout(r, 250));
+       const input = document.querySelector('.slip__edit');
+       if (!input) return JSON.stringify({ error: '编辑框没有出现' });
+       input.value = '编辑后的内容';
+       input.dispatchEvent(new Event('input', { bubbles: true }));
+       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+       await new Promise(r => setTimeout(r, 1500));
+       return JSON.stringify({
+         texts: [...document.querySelectorAll('.slip__text')].map(e => e.textContent),
+         notice: document.querySelector('.notice')?.textContent ?? '',
+         cleared: document.querySelector('.slip__edit') === null,
+       });
+     })()`,
+    true,
+  ),
+);
+check(
+  "双击进入编辑并回车提交",
+  (edited.texts ?? []).includes("编辑后的内容"),
+  `texts=${JSON.stringify(edited.texts)}`,
+);
+check("提交后编辑框退出", edited.cleared === true, `cleared=${edited.cleared}`);
+check("提示区出现已修改", (edited.notice ?? "").includes("已修改"), `notice=${edited.notice}`);
+
+// 6. Ctrl+Z 走窗口级快捷键，回滚到上一次正文。
+const undone = JSON.parse(
+  await evaluate(
+    `(async () => {
+       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+       await new Promise(r => setTimeout(r, 1500));
+       return JSON.stringify({
+         texts: [...document.querySelectorAll('.slip__text')].map(e => e.textContent),
+         notice: document.querySelector('.notice')?.textContent ?? '',
+       });
+     })()`,
+    true,
+  ),
+);
+check(
+  "Ctrl+Z 回滚上一次编辑",
+  (undone.texts ?? []).includes("热键唤出后写入的一条") &&
+    !(undone.texts ?? []).includes("编辑后的内容"),
+  `texts=${JSON.stringify(undone.texts)}`,
+);
+check("提示区出现已撤销", (undone.notice ?? "").includes("已撤销"), `notice=${undone.notice}`);
+
+// 7. 点锁定按钮：标记落到 marker 上，正文转次级色。
+const lockedState = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const btn = document.querySelector('.slip__lock');
+       if (!btn) return JSON.stringify({ error: '没有锁定按钮' });
+       btn.click();
+       await new Promise(r => setTimeout(r, 1500));
+       const text = document.querySelector('.slip__text');
+       return JSON.stringify({
+         pressed: document.querySelector('.slip__lock')?.getAttribute('aria-pressed'),
+         lockedClass: text?.className ?? '',
+       });
+     })()`,
+    true,
+  ),
+);
+check("点锁定后按钮转为按下态", lockedState.pressed === "true", `pressed=${lockedState.pressed}`);
+check(
+  "锁定后正文使用次级样式",
+  (lockedState.lockedClass ?? "").includes("slip__text--locked"),
+  `class=${lockedState.lockedClass}`,
+);
+
+// 8. 已锁定的纸条双击不进入编辑，并说明原因。
+const lockedEdit = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const text = document.querySelector('.slip__text');
+       text.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+       await new Promise(r => setTimeout(r, 400));
+       return JSON.stringify({
+         hasEdit: document.querySelector('.slip__edit') !== null,
+         hint: document.querySelector('.capture__hint')?.textContent ?? '',
+       });
+     })()`,
+    true,
+  ),
+);
+check("锁定后双击不进入编辑", lockedEdit.hasEdit === false, `hasEdit=${lockedEdit.hasEdit}`);
+check(
+  "锁定后双击给出原因",
+  (lockedEdit.hint ?? "").includes("已锁定"),
+  `hint=${lockedEdit.hint}`,
+);
+
+// 9. 锁只锁正文：勾选必须照常可用，否则锁会阻止任务完成。
+const doneWhileLocked = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const box = document.querySelector('.slip__box');
+       box.click();
+       await new Promise(r => setTimeout(r, 1500));
+       return JSON.stringify({
+         checked: document.querySelector('.slip__box')?.getAttribute('aria-checked'),
+       });
+     })()`,
+    true,
+  ),
+);
+check(
+  "锁定的纸条仍然可以勾选完成",
+  doneWhileLocked.checked === "true",
+  `aria-checked=${doneWhileLocked.checked}`,
+);
+
 cdp.close();
 process.exit(failed ? 1 : 0);

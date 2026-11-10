@@ -303,6 +303,7 @@ fn slip_view(slip: &Slip) -> SlipView {
         done: slip.done,
         // 有效归档的唯一算法（v11 §1.8）：未完成时的残留 `archived_at` 不隐藏条目。
         archived: slip.done && slip.archived_at.is_some(),
+        locked: slip.locked,
         created_at: rfc3339(slip.created_at),
         done_at: slip.done_at.map(rfc3339),
     }
@@ -384,6 +385,7 @@ mod tests {
             created_at: OffsetDateTime::now_utc(),
             done_at: None,
             archived_at: None,
+            locked: false,
         }
     }
 

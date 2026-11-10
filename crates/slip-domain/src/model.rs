@@ -20,6 +20,11 @@ pub struct Slip {
     pub created_at: OffsetDateTime,
     pub done_at: Option<OffsetDateTime>,
     pub archived_at: Option<OffsetDateTime>,
+    /// 定稿标记：正文不可再改。
+    ///
+    /// 只锁**正文**，不锁完成与归档——锁住的待办仍然必须能被勾掉，
+    /// 否则这个标记会阻止任务完成，与它的用途正好相反。
+    pub locked: bool,
 }
 
 /// 拆条产出的草稿：正文 + 本次捕获的时间。
@@ -33,8 +38,15 @@ pub struct Draft {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Patch {
     SetText(String),
-    SetDone { done: bool, at: OffsetDateTime },
-    Archive { at: OffsetDateTime },
+    SetDone {
+        done: bool,
+        at: OffsetDateTime,
+    },
+    Archive {
+        at: OffsetDateTime,
+    },
+    /// 切换定稿标记。锁定与解锁都必须可做，否则锁就是单向门。
+    SetLocked(bool),
 }
 
 /// 一次写入批次中的单个变更。

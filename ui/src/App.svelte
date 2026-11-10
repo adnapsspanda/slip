@@ -15,7 +15,15 @@
   let captureRef = $state(null);
   /** 正在等待应答的提交；迟到 ACK 必须与这条不可变记录比较。 */
   let inFlight = $state(null);
+  /** 列表里的编辑态；Ctrl+Z 只在没在编辑时才抢撤销。 */
+  let listEditing = $state(false);
+  /** 撤销提示：与普通 hint 分开，因为只有它需要挂一个按钮。 */
+  let notice = $state(null);
+  /** 撤销请求在途，避免连按 Ctrl+Z 把后端的撤销栈一次抽干。 */
+  let undoing = $state(false);
 
+  // 归档判定只看 `archived`：后端 `SlipView.archived` 是唯一判据
+  // （`done && archived_at.is_some()`，见 v11 §1.8），没有独立的 archivedAt 字段。
   let visible = $derived((snapshot?.slips ?? []).filter((slip) => !slip.archived));
   let pendingCount = $derived(visible.filter((slip) => !slip.done).length);
 
@@ -95,6 +103,8 @@
    */
   function summon() {
     hint = DEFAULT_HINT;
+    // 撤销提示跨过"收起再唤出"就过期了：那次的修改上下文已经不在了。
+    notice = null;
     captureRef?.focus();
   }
 
@@ -102,6 +112,7 @@
   function abandon() {
     captureRef?.clear();
     hint = DEFAULT_HINT;
+    notice = null;
     dismissWindow();
   }
 
@@ -163,6 +174,94 @@
       hint = `complete 失败：${error}`;
     }
     await refresh();
+  }
+
+  /**
+   * 提交正文编辑。
+   *
+   * 返回布尔值而不是只改 hint：列表要靠它决定要不要关掉编辑框。
+   * 失败时返回 false，让用户刚打的字留在输入框里。
+   */
+  async function handleEdit(slip, text) {
+    try {
+      const ack = await bridge.edit(bridge.newRequestId(), slip.id, text);
+      await refresh();
+      if (ack.result === "applied") {
+        hint = DEFAULT_HINT;
+        notice = { message: "已修改", undo: true };
+        return true;
+      }
+      hint = `未修改：${ack.error?.message ?? ack.result}`;
+      return false;
+    } catch (error) {
+      hint = `edit 失败：${error}`;
+      return false;
+    }
+  }
+
+  /**
+   * 切换锁定。
+   *
+   * 无论成败都刷新：锁的显示必须以后端为准，否则界面会替用户"以为"成功了。
+   */
+  async function handleLock(slip) {
+    try {
+      const ack = await bridge.setLocked(
+        bridge.newRequestId(),
+        slip.id,
+        !slip.locked,
+      );
+      if (ack.result !== "applied") {
+        hint = `锁定状态未变：${ack.error?.message ?? ack.result}`;
+      }
+    } catch (error) {
+      hint = `set_locked 失败：${error}`;
+    }
+    await refresh();
+  }
+
+  /**
+   * 撤销上一次改动。栈在后端，这里不做任何本地回滚。
+   *
+   * 同一时刻只放一个请求进去：撤销栈是后进先出的，并发请求会让用户
+   * 多按的那一下撤掉一条并不是他刚看到的那次修改。
+   */
+  async function handleUndo() {
+    if (undoing) return;
+    undoing = true;
+    try {
+      const ack = await bridge.undo(bridge.newRequestId());
+      await refresh();
+      if (ack.result === "applied") {
+        hint = DEFAULT_HINT;
+        notice = { message: "已撤销", undo: false };
+      } else {
+        hint = `撤销失败：${ack.error?.message ?? ack.result}`;
+      }
+    } catch (error) {
+      hint = `undo 失败：${error}`;
+    } finally {
+      undoing = false;
+    }
+  }
+
+  /**
+   * 窗口级 Ctrl+Z。
+   *
+   * 编辑中的输入框有自己的撤销语义，抢过来只会毁掉用户刚打的字；
+   * 输入框里的 Ctrl+Z 也一并让路。
+   */
+  function handleKeydown(event) {
+    if (event.key !== "z" && event.key !== "Z") return;
+    if (!event.ctrlKey || event.shiftKey || event.altKey) return;
+    if (listEditing) return;
+    const target = event.target;
+    const tag = target?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) {
+      return;
+    }
+    event.preventDefault();
+    handleUndo();
   }
 
   async function handleReload() {
@@ -229,6 +328,8 @@
   });
 </script>
 
+<svelte:window onkeydown={handleKeydown} />
+
 <div class="paper">
   <header class="paper__bar" data-tauri-drag-region>
     <span class="paper__title">Slip</span>
@@ -255,9 +356,26 @@
       onsubmit={handleCapture}
       onescape={abandon}
     />
+    {#if notice}
+      <div class="notice">
+        <span>{notice.message}</span>
+        {#if notice.undo}
+          <button type="button" onclick={handleUndo} disabled={undoing}>
+            撤销
+          </button>
+        {/if}
+      </div>
+    {/if}
   </section>
 
-  <SlipList slips={visible} ontoggle={handleToggle} />
+  <SlipList
+    slips={visible}
+    ontoggle={handleToggle}
+    onedit={handleEdit}
+    onlock={handleLock}
+    onnotice={(message) => (hint = message)}
+    bind:editing={listEditing}
+  />
 
   <SpikePanel />
 </div>

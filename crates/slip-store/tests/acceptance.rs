@@ -45,6 +45,7 @@ fn slip(id: &str, text: &str, created_at: OffsetDateTime) -> Slip {
         created_at,
         done_at: None,
         archived_at: None,
+        locked: false,
     }
 }
 

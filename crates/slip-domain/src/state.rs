@@ -80,6 +80,10 @@ pub fn validate_slip(slip: &Slip) -> Result<(), DomainError> {
 pub fn apply_patch(slip: &Slip, patch: &Patch) -> Result<(Slip, Transition), DomainError> {
     match patch {
         Patch::SetText(raw) => {
+            // 定稿只锁正文：完成、归档、解锁都照常，否则锁会阻止任务完成。
+            if slip.locked {
+                return Err(DomainError::SlipLocked);
+            }
             let text = normalize_text(raw)?;
             if text == slip.text {
                 return Ok((slip.clone(), Transition::Noop));
@@ -127,6 +131,15 @@ pub fn apply_patch(slip: &Slip, patch: &Patch) -> Result<(Slip, Transition), Dom
             next.archived_at = Some(*at);
             Ok((next, Transition::Changed))
         }
+
+        Patch::SetLocked(locked) => {
+            if slip.locked == *locked {
+                return Ok((slip.clone(), Transition::Noop));
+            }
+            let mut next = slip.clone();
+            next.locked = *locked;
+            Ok((next, Transition::Changed))
+        }
     }
 }
 
@@ -154,6 +167,7 @@ mod tests {
             created_at: at_noon(),
             done_at: None,
             archived_at: None,
+            locked: false,
         }
     }
 
@@ -400,5 +414,46 @@ mod tests {
                 Err(e) => panic!("unexpected error: {e}"),
             }
         }
+    }
+
+    #[test]
+    fn locked_slip_rejects_text_edit() {
+        let mut slip = base_slip();
+        slip.locked = true;
+        assert_eq!(
+            apply_patch(&slip, &Patch::SetText("新内容".to_owned())),
+            Err(DomainError::SlipLocked)
+        );
+    }
+
+    #[test]
+    fn lock_only_locks_the_text() {
+        let mut slip = base_slip();
+        slip.locked = true;
+
+        // 定稿的待办仍然必须能被勾掉，否则这个标记会阻止任务完成。
+        let (next, transition) = apply_patch(
+            &slip,
+            &Patch::SetDone {
+                done: true,
+                at: at_noon(),
+            },
+        )
+        .unwrap();
+        assert_eq!(transition, Transition::Changed);
+        assert!(next.done);
+        assert!(next.locked, "勾选完成不该顺带解锁");
+
+        // 解锁必须可做，否则锁是单向门。
+        let (next, transition) = apply_patch(&slip, &Patch::SetLocked(false)).unwrap();
+        assert_eq!(transition, Transition::Changed);
+        assert!(!next.locked);
+    }
+
+    #[test]
+    fn set_locked_to_same_value_is_noop() {
+        let slip = base_slip();
+        let (_, transition) = apply_patch(&slip, &Patch::SetLocked(false)).unwrap();
+        assert_eq!(transition, Transition::Noop);
     }
 }

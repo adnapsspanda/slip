@@ -109,6 +109,7 @@ fn new_slip(text: &str) -> Slip {
         created_at: created(),
         done_at: None,
         archived_at: None,
+        locked: false,
     }
 }
 

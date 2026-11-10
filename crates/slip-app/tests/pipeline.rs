@@ -24,6 +24,7 @@ fn slip(text: &str) -> Slip {
         created_at: OffsetDateTime::now_utc(),
         done_at: None,
         archived_at: None,
+        locked: false,
     }
 }
 
@@ -147,6 +148,7 @@ async fn capture_of_several_lines_creates_several_slips() {
                 created_at: draft.occurred_at,
                 done_at: None,
                 archived_at: None,
+                locked: false,
             })
         })
         .collect();
@@ -186,5 +188,110 @@ async fn domain_rejection_does_not_touch_the_file() {
     assert_eq!(ack.result, AckResult::Rejected, "{ack:?}");
     assert_eq!(ack.error.unwrap().code, "domain");
     assert_eq!(std::fs::read(&inbox).unwrap_or_default(), before);
+    dispatcher.shutdown().await;
+}
+
+/// 编辑 → 撤销 → 锁定 → 拒绝改写，整条链路都在真实磁盘上跑一遍。
+#[tokio::test(flavor = "current_thread")]
+async fn edit_undo_and_lock_round_trip_through_disk() {
+    let dir = tempfile::tempdir().expect("temp vault");
+    let inbox = dir.path().join("inbox.md");
+
+    let store = Arc::new(MarkdownStore::new(&inbox));
+    let prefs = Arc::new(JsonPrefsStore::new(dir.path().join("prefs.json")));
+    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    let dispatcher = Dispatcher::spawn(store, prefs, presenter, 8);
+
+    let created = slip("原始内容");
+    let ack = dispatcher
+        .apply(String::from("r1"), vec![Mutation::Append(created.clone())])
+        .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    // 1. 改正文：磁盘与快照同时变。
+    let ack = dispatcher
+        .apply(
+            String::from("r2"),
+            vec![Mutation::Patch {
+                id: created.id,
+                patch: Patch::SetText(String::from("改过的内容")),
+            }],
+        )
+        .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+    assert!(
+        std::fs::read_to_string(&inbox)
+            .unwrap()
+            .contains("改过的内容")
+    );
+
+    // 2. 撤销把正文退回去，行本身还在。
+    let ack = dispatcher.undo(String::from("r3")).await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+    let raw = std::fs::read_to_string(&inbox).expect("read inbox");
+    assert!(raw.contains("原始内容"), "undo did not restore: {raw:?}");
+    assert!(!raw.contains("改过的内容"), "stale text on disk: {raw:?}");
+    assert_eq!(
+        dispatcher.get_snapshot().await.unwrap().slips[0].text,
+        "原始内容"
+    );
+
+    // 3. 栈空了之后，撤销必须明确拒绝，而不是假装成功。
+    let ack = dispatcher.undo(String::from("r4")).await;
+    assert_eq!(ack.result, AckResult::Rejected, "{ack:?}");
+    assert_eq!(ack.error.unwrap().code, "undo");
+
+    // 4. 锁定落到 marker 上，之后正文改不动，但完成照常。
+    let ack = dispatcher
+        .apply(
+            String::from("r5"),
+            vec![Mutation::Patch {
+                id: created.id,
+                patch: Patch::SetLocked(true),
+            }],
+        )
+        .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+    assert!(
+        std::fs::read_to_string(&inbox)
+            .unwrap()
+            .contains(";locked=1")
+    );
+    assert!(dispatcher.get_snapshot().await.unwrap().slips[0].locked);
+
+    let ack = dispatcher
+        .apply(
+            String::from("r6"),
+            vec![Mutation::Patch {
+                id: created.id,
+                patch: Patch::SetText(String::from("偷偷改掉")),
+            }],
+        )
+        .await;
+    assert_eq!(ack.result, AckResult::Rejected, "{ack:?}");
+    assert!(
+        !std::fs::read_to_string(&inbox)
+            .unwrap()
+            .contains("偷偷改掉")
+    );
+
+    let ack = dispatcher
+        .apply(
+            String::from("r7"),
+            vec![Mutation::Patch {
+                id: created.id,
+                patch: Patch::SetDone {
+                    done: true,
+                    at: OffsetDateTime::now_utc(),
+                },
+            }],
+        )
+        .await;
+    assert_eq!(
+        ack.result,
+        AckResult::Applied,
+        "lock blocked completion: {ack:?}"
+    );
+
     dispatcher.shutdown().await;
 }

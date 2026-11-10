@@ -109,6 +109,8 @@ async fn capture(
                 created_at: draft.occurred_at,
                 done_at: None,
                 archived_at: None,
+                // 新收录的纸条永远不是定稿状态。
+                locked: false,
             })
         })
         .collect();
@@ -142,6 +144,57 @@ async fn complete(
 #[tauri::command]
 async fn reload(state: tauri::State<'_, ShellState>, request_id: String) -> Result<Ack, String> {
     Ok(state.dispatcher.reload(request_id).await)
+}
+
+/// 改写一条纸条的正文。
+///
+/// 已定稿（`locked`）的纸条会在这里被领域层拒绝——外壳不做二次判断，
+/// 否则"锁"就有了两个实现，迟早会不一致。
+#[tauri::command]
+async fn edit(
+    state: tauri::State<'_, ShellState>,
+    request_id: String,
+    id: String,
+    text: String,
+) -> Result<Ack, String> {
+    let id = match SlipId::parse_strict(&id) {
+        Ok(id) => id,
+        Err(error) => {
+            return Ok(rejected(&request_id, "domain", error.to_string()));
+        }
+    };
+    let patch = Patch::SetText(text);
+    Ok(state
+        .dispatcher
+        .apply(request_id, vec![Mutation::Patch { id, patch }])
+        .await)
+}
+
+/// 切换定稿标记。锁定与解锁都必须能点，否则锁是单向门。
+#[tauri::command]
+async fn set_locked(
+    state: tauri::State<'_, ShellState>,
+    request_id: String,
+    id: String,
+    locked: bool,
+) -> Result<Ack, String> {
+    let id = match SlipId::parse_strict(&id) {
+        Ok(id) => id,
+        Err(error) => {
+            return Ok(rejected(&request_id, "domain", error.to_string()));
+        }
+    };
+    let patch = Patch::SetLocked(locked);
+    Ok(state
+        .dispatcher
+        .apply(request_id, vec![Mutation::Patch { id, patch }])
+        .await)
+}
+
+/// 回滚最近一次内容编辑或勾选。
+#[tauri::command]
+async fn undo(state: tauri::State<'_, ShellState>, request_id: String) -> Result<Ack, String> {
+    Ok(state.dispatcher.undo(request_id).await)
 }
 
 #[tauri::command]
@@ -210,6 +263,9 @@ pub fn run() {
             get_snapshot,
             capture,
             complete,
+            edit,
+            set_locked,
+            undo,
             reload,
             isolate_and_reset,
             vault_path,

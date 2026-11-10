@@ -299,6 +299,7 @@ fn classify(content: &[u8]) -> Result<Option<Record>, InvalidReason> {
     let mut raw_created: Option<&str> = None;
     let mut raw_done_at: Option<&str> = None;
     let mut raw_archived_at: Option<&str> = None;
+    let mut raw_locked: Option<bool> = None;
     let mut extras: Vec<ExtraField> = Vec::new();
 
     if !kv_part.is_empty() {
@@ -331,6 +332,17 @@ fn classify(content: &[u8]) -> Result<Option<Record>, InvalidReason> {
                         return Err(InvalidReason::DuplicateKey);
                     }
                 }
+                "locked" => {
+                    if raw_locked.is_some() {
+                        return Err(InvalidReason::DuplicateKey);
+                    }
+                    // 只认 `0`/`1`：别的写法说明有人手改错了，宁可报错也不要猜。
+                    raw_locked = Some(match value {
+                        "1" => true,
+                        "0" => false,
+                        _ => return Err(InvalidReason::BadKeyValue),
+                    });
+                }
                 _ => extras.push(ExtraField {
                     key: key.to_owned(),
                     value: value.to_owned(),
@@ -359,6 +371,7 @@ fn classify(content: &[u8]) -> Result<Option<Record>, InvalidReason> {
             created_at,
             done_at,
             archived_at,
+            locked: raw_locked.unwrap_or(false),
         },
         extras,
     }))
@@ -557,6 +570,10 @@ fn build_line(slip: &Slip, extras: &[ExtraField], terminator: Terminator) -> Vec
         text.push_str(";archived_at=");
         text.push_str(&format_time(archived_at));
     }
+    if slip.locked {
+        // 未锁定时不写这个键：缺省即未锁，老版本读到也不会当成未知字段。
+        text.push_str(";locked=1");
+    }
     for extra in extras {
         text.push(';');
         text.push_str(&extra.raw);
@@ -598,6 +615,7 @@ fn rewrite_line(raw: &[u8], terminator: Terminator, slip: &Slip) -> Vec<u8> {
 
     let mut wrote_done_at = false;
     let mut wrote_archived_at = false;
+    let mut wrote_locked = false;
     for segment in kv_part.split(';').filter(|segment| !segment.is_empty()) {
         let key = segment
             .split_once('=')
@@ -626,6 +644,12 @@ fn rewrite_line(raw: &[u8], terminator: Terminator, slip: &Slip) -> Vec<u8> {
                     out.push_str(&format_time(archived_at));
                 }
             }
+            "locked" => {
+                wrote_locked = true;
+                if slip.locked {
+                    out.push_str(";locked=1");
+                }
+            }
             _ => {
                 out.push(';');
                 out.push_str(segment);
@@ -639,6 +663,9 @@ fn rewrite_line(raw: &[u8], terminator: Terminator, slip: &Slip) -> Vec<u8> {
     if let Some(archived_at) = slip.archived_at.filter(|_| !wrote_archived_at) {
         out.push_str(";archived_at=");
         out.push_str(&format_time(archived_at));
+    }
+    if slip.locked && !wrote_locked {
+        out.push_str(";locked=1");
     }
     out.push_str(MARKER_SUFFIX);
 
@@ -762,6 +789,7 @@ mod tests {
             created_at: datetime!(2026-11-10 11:49:14 +08:00),
             done_at: None,
             archived_at: None,
+            locked: false,
         }
     }
 
@@ -1242,5 +1270,47 @@ mod tests {
             verify_roundtrip(&doc, &candidate, &expected),
             Err(RoundtripError::DuplicateId)
         );
+    }
+
+    #[test]
+    fn locked_round_trips_through_the_marker() {
+        let raw = format!("- [ ] 定稿 <!-- slip:v1;id={ID};created={CREATED};locked=1 -->\n");
+        let doc = parse_ok(raw.as_bytes());
+        assert!(doc.records[0].slip.locked);
+        // 没有改动时字节必须原样：锁定不该引起任何重写。
+        assert_eq!(render(&doc), raw.as_bytes());
+    }
+
+    #[test]
+    fn without_the_key_is_unlocked() {
+        let doc = parse_ok(record_line("普通").as_bytes());
+        assert!(!doc.records[0].slip.locked);
+    }
+
+    #[test]
+    fn lock_toggle_writes_in_place_and_keeps_unknown_kv() {
+        let raw = format!("- [ ] 旧 <!-- slip:v1;zz=9;id={ID};created={CREATED} -->\n");
+        let doc = parse_ok(raw.as_bytes());
+        let id = SlipId::parse_strict(ID).unwrap();
+
+        let (next, _) = apply(
+            &doc,
+            &[Mutation::Patch {
+                id,
+                patch: Patch::SetLocked(true),
+            }],
+        )
+        .unwrap();
+        let text = String::from_utf8(render(&next)).unwrap();
+        assert!(text.contains("zz=9;id="), "unknown kv moved: {text}");
+        assert!(text.contains(";locked=1"), "lock not persisted: {text}");
+    }
+
+    #[test]
+    fn bad_locked_value_is_reported_not_guessed() {
+        let raw = format!("- [ ] t <!-- slip:v1;id={ID};created={CREATED};locked=yes -->\n");
+        let parsed = parse(raw.as_bytes());
+        assert!(parsed.document.records.is_empty());
+        assert_eq!(parsed.problems.len(), 1, "{:?}", parsed.problems);
     }
 }

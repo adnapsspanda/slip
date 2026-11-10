@@ -39,6 +39,8 @@ pub struct SlipView {
     pub done: bool,
     /// 有效归档 = `done && archived_at.is_some()`（v11 §1.8）。
     pub archived: bool,
+    /// 定稿标记：正文不可改，但完成与归档照常。
+    pub locked: bool,
     pub created_at: String,
     pub done_at: Option<String>,
 }

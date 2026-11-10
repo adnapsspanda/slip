@@ -68,6 +68,27 @@ public static class Win {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
     [DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+    public delegate bool EnumProc(IntPtr h, IntPtr p);
+    [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
+
+    /// 该进程的全部顶层窗口。
+    public static System.Collections.Generic.List<IntPtr> TopWindowsOf(uint want) {
+        var list = new System.Collections.Generic.List<IntPtr>();
+        EnumWindows((h, p) => {
+            uint pid;
+            GetWindowThreadProcessId(h, out pid);
+            if (pid == want) list.Add(h);
+            return true;
+        }, IntPtr.Zero);
+        return list;
+    }
+
+    public static uint PidOf(IntPtr h) {
+        uint pid;
+        GetWindowThreadProcessId(h, out pid);
+        return pid;
+    }
 
     public static string ClassName(IntPtr h) {
         var sb = new StringBuilder(512);
@@ -86,6 +107,7 @@ public static class Win {
 "@
 
 $script:failed = 0
+$script:slipPid = 0
 
 function Check {
     param([string]$Label, [bool]$Ok, [string]$Detail = "")
@@ -98,19 +120,38 @@ function Check {
     }
 }
 
+# 按**进程 ID** 找窗口，不按标题/类名。
+#
+# 教训：类名 "Tauri Window" 一点都不独特——Clash Verge 之类的 Tauri 应用用的是同一个类名。
+# 早先的实现用 FindWindow("Tauri Window", NULL) 兜底，结果在同时装着别的 Tauri 应用
+# 的机器上抓到了别人的窗口，可见性与位置断言全部读错对象，报出一堆假失败。
 function Get-SlipWindow {
-    # 注意：PowerShell 把 $null 传给 [string] 形参时会变成**空字符串**，
-    # 于是 FindWindow("", "Slip") 变成"找类名为空的窗口"，永远返回 0。
-    # 要传真正的 NULL 必须用 [NullString]::Value。
-    $h = [Win]::FindWindow([NullString]::Value, "Slip")
-    if ($h -eq [IntPtr]::Zero) { $h = [Win]::FindWindow("Tauri Window", [NullString]::Value) }
-    return $h
+    if ($script:slipPid -le 0) { return [IntPtr]::Zero }
+    foreach ($h in [Win]::TopWindowsOf([uint32]$script:slipPid)) {
+        if ([Win]::ClassName($h) -eq "Tauri Window") { return $h }
+    }
+    return [IntPtr]::Zero
 }
 
 function Test-SlipVisible {
     $h = Get-SlipWindow
     if ($h -eq [IntPtr]::Zero) { return $false }
     return [Win]::IsWindowVisible($h)
+}
+
+# 在给定时间窗内**是否出现过**可见状态。
+#
+# 手动启动的意图是"让用户看见窗口"，不是"保证它一直挂着"：一旦别的应用抢走
+# 前台，失焦收走是设计行为。用"9 秒后仍可见"来断言，会在有其它程序反复抢
+# 焦点的机器上随机失败——那是断言错了，不是产品错了。
+function Wait-OnceVisible {
+    param([int]$TimeoutMs = 6000)
+    $deadline = [DateTime]::Now.AddMilliseconds($TimeoutMs)
+    while ([DateTime]::Now -lt $deadline) {
+        if (Test-SlipVisible) { return $true }
+        Start-Sleep -Milliseconds 100
+    }
+    return $false
 }
 
 function Get-SlipRect {
@@ -121,8 +162,24 @@ function Get-SlipRect {
     return $null
 }
 
+# 前台是否真的是我们：比进程 ID，不比窗口类名（理由同上）。
+function Test-SlipForeground {
+    $fg = [Win]::GetForegroundWindow()
+    if ($fg -eq [IntPtr]::Zero) { return $false }
+    return ([Win]::PidOf($fg) -eq [uint32]$script:slipPid)
+}
+
+function Start-Slip {
+    param([string[]]$Arguments = @())
+    $p = Start-Process -FilePath $exe -ArgumentList $Arguments -PassThru `
+        -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+    $script:slipPid = $p.Id
+    return $p
+}
+
 function Stop-Slip {
     Get-Process slip-shell -ErrorAction SilentlyContinue | Stop-Process -Force
+    $script:slipPid = 0
     Start-Sleep -Milliseconds 700
 }
 
@@ -136,6 +193,9 @@ function Invoke-SummonAt {
     param([int]$X, [int]$Y)
     [void][Win]::SetCursorPos($X, $Y)
     Start-Sleep -Milliseconds 400
+    # 在发热键**之前**采样光标：应用读到的就是这一刻的位置。
+    # 若等唤出之后再读，鼠标一动这段断言就会漂掉（实测能漂上百像素）。
+    $script:summonCursor = Get-CursorPoint
     [Win]::SendHotkey()
     # 轮询而不是死等固定时间：窗口一旦可见且位置稳定就往下走。
     $last = $null
@@ -199,8 +259,7 @@ $outLog = Join-Path $root 'r.log'
 # ----------------------------------------------------------------- 1. 自启启动静默
 Stop-Slip
 Reset-Vault
-$null = Start-Process -FilePath $exe -ArgumentList '--autostart' -PassThru `
-    -RedirectStandardOutput $outLog -RedirectStandardError $errLog
+$null = Start-Slip -Arguments @('--autostart')
 Start-Sleep -Seconds 9
 $visible = Test-SlipVisible
 Check "开机自启（--autostart）时窗口保持隐藏" (-not $visible) "visible=$visible"
@@ -208,11 +267,10 @@ Stop-Slip
 
 # ----------------------------------------------------------------- 2. 手动启动显示
 Reset-Vault
-$null = Start-Process -FilePath $exe -PassThru `
-    -RedirectStandardOutput $outLog -RedirectStandardError $errLog
-Start-Sleep -Seconds 9
-$visible = Test-SlipVisible
-Check "手动启动（无 --autostart）时窗口自动显示" $visible "visible=$visible"
+$null = Start-Slip
+$appeared = Wait-OnceVisible
+Check "手动启动（无 --autostart）时会主动显示窗口" $appeared "appeared=$appeared"
+Start-Sleep -Seconds 1
 
 # ----------------------------------------------------------------- 3. 位置：右下放得下
 & $bun run $probe $Port --dismiss 2>&1 | Out-Null
@@ -224,9 +282,8 @@ Check "CDP 收走后窗口不可见" (-not $visible) "visible=$visible"
 $rect = Invoke-SummonAt -X 200 -Y 200
 $visible = Test-SlipVisible
 Check "热键唤出后窗口可见" $visible "visible=$visible"
-$fgClass = [Win]::ClassName([Win]::GetForegroundWindow())
-Check "热键唤出后成为前台" ($fgClass -eq "Tauri Window") "class=$fgClass"
-Assert-Placement -Label "左上场景" -Rect $rect -Cursor (Get-CursorPoint)
+Check "热键唤出后成为前台" (Test-SlipForeground) "pid=$script:slipPid fgPid=$([Win]::PidOf([Win]::GetForegroundWindow()))"
+Assert-Placement -Label "左上场景" -Rect $rect -Cursor $script:summonCursor
 if ($rect) {
     $w = $rect.Right - $rect.Left
     $h = $rect.Bottom - $rect.Top
@@ -245,7 +302,7 @@ Check "收录成功后窗口自动收起" (-not $visible) "visible=$visible"
 $rect = Invoke-SummonAt -X 1400 -Y 900
 $visible = Test-SlipVisible
 Check "翻转场景下窗口可见" $visible "visible=$visible"
-Assert-Placement -Label "右下场景" -Rect $rect -Cursor (Get-CursorPoint) -ExpectFlip
+Assert-Placement -Label "右下场景" -Rect $rect -Cursor $script:summonCursor -ExpectFlip
 if ($rect) {
     Check "翻转后坐标不为负（未越出工作区）" (($rect.Left -ge 0) -and ($rect.Top -ge 0)) `
         "win=($($rect.Left),$($rect.Top))"
@@ -271,7 +328,7 @@ if ($null -eq $other) {
         $tx = [int]($wa.X + [Math]::Floor($wa.Width / 2))
         $ty = [int]($wa.Y + [Math]::Floor($wa.Height / 2))
         $rect = Invoke-SummonAt -X $tx -Y $ty
-        $cursor = Get-CursorPoint
+        $cursor = $script:summonCursor
         $visible = Test-SlipVisible
 
         Check "副屏上唤出后窗口可见" $visible "visible=$visible"
@@ -314,14 +371,22 @@ $inbox = Join-Path $Vault 'inbox.md'
 if (Test-Path $inbox) {
     $content = $utf8.GetString([System.IO.File]::ReadAllBytes($inbox))
     Write-Output $content
-    $intact = $content -match '- \[ \] 热键唤出后写入的一条 <!-- slip:v1;id=[0-9a-f-]+;created='
+    $intact = $content -match '- \[[ x]\] 热键唤出后写入的一条 <!-- slip:v1;id=[0-9a-f-]+;created='
     Check "磁盘上出现完整记录行" $intact ""
+    # 只要求 locked=1 落在 marker 内，不绑定字段顺序：
+    # rewrite_line 按原行已有的键顺序就地替换，后加的键（如 done_at）会排在末尾。
+    Check "锁定标记已落盘" ($content -match '<!-- slip:v1;[^\r\n]*;locked=1[^\r\n]*-->') ""
 } else {
     Check "磁盘上出现 inbox.md" $false "文件不存在"
 }
 
 Write-Output "--- 启动日志（stderr）---"
-if (Test-Path $errLog) { Write-Output $utf8.GetString([System.IO.File]::ReadAllBytes($errLog)) }
+# 应用此刻仍在运行、日志文件还被它持有，直接 ReadAllBytes 会撞共享冲突。
+try {
+    if (Test-Path $errLog) { Write-Output $utf8.GetString([System.IO.File]::ReadAllBytes($errLog)) }
+} catch {
+    Write-Output "（日志暂时不可读：$($_.Exception.GetType().Name)）"
+}
 
 Stop-Slip
 Get-Process notepad -ErrorAction SilentlyContinue | Stop-Process -Force

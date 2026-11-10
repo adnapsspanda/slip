@@ -10,12 +10,14 @@
 //!   之后，因此只能报 `unknown` 并进入 `Fatal`，绝不能假装未提交、也不要在
 //!   这个分支里去调 `store.snapshot()` 补救（锁可能已中毒）。
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
-use slip_domain::Mutation;
+use slip_domain::{Mutation, Patch};
 use slip_store::prefs::{Prefs, PrefsStore};
-use slip_store::{Store, StoreError};
+use slip_store::{Store, StoreError, StoreSnapshot};
+use time::OffsetDateTime;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 
@@ -51,6 +53,11 @@ pub enum Command {
     Apply {
         request_id: String,
         mutations: Vec<Mutation>,
+        reply: oneshot::Sender<Ack>,
+    },
+    /// 回滚最近一次可撤销的内容变更。
+    Undo {
+        request_id: String,
         reply: oneshot::Sender<Ack>,
     },
     ToggleCollapse {
@@ -150,6 +157,18 @@ impl Dispatcher {
         .await
     }
 
+    /// 回滚最近一次可撤销的内容变更。
+    ///
+    /// 撤销栈只存在于消费者内存里：**历史不是真源**，重启即清空。
+    /// 把它落盘会造出第二个真源，与"inbox.md 唯一"的约定冲突。
+    pub async fn undo(&self, request_id: String) -> Ack {
+        self.submit(request_id, |id, reply| Command::Undo {
+            request_id: id,
+            reply,
+        })
+        .await
+    }
+
     pub async fn toggle_collapse(&self, request_id: String, id: slip_domain::SlipId) -> Ack {
         self.submit(request_id, move |rid, reply| Command::ToggleCollapse {
             request_id: rid,
@@ -217,6 +236,9 @@ async fn run(
     mut sink: Box<dyn SnapshotSink>,
 ) {
     const PREFS_DEBOUNCE: Duration = Duration::from_secs(1);
+    /// 撤销栈深度。只在内存里，重启即清空。
+    const UNDO_DEPTH: usize = 50;
+    let mut undo: VecDeque<Vec<Mutation>> = VecDeque::new();
     let mut prefs_dirty = false;
     let mut prefs_due: Option<tokio::time::Instant> = None;
 
@@ -249,37 +271,45 @@ async fn run(
                     let _ = reply.send(not_executed(request_id));
                     continue;
                 }
-                let store_handle = Arc::clone(&store);
-                let result =
-                    tokio::task::spawn_blocking(move || store_handle.apply(&mutations)).await;
-                let ack = match result {
-                    Ok(outcome) => {
-                        let error = outcome.result.as_ref().err().map(map_store_error);
-                        presenter.accept(&outcome);
-                        let ui_rev = presenter.ui_rev();
-                        emit(&presenter, &mut *sink);
-                        match error {
-                            None => Ack {
-                                request_id,
-                                result: AckResult::Applied,
-                                ui_rev: Some(ui_rev),
-                                error: None,
-                            },
-                            Some((code, message)) => Ack {
-                                request_id,
-                                result: result_for_code(code),
-                                ui_rev: Some(ui_rev),
-                                error: Some(AckError {
-                                    code: code.to_owned(),
-                                    message,
-                                }),
-                            },
-                        }
-                    }
-                    // 得到 JoinError 意味着我们无法知道磁盘上到底发生了什么：
-                    // 可能 rename 已经成功。只能报 unknown 并进入 Fatal。
-                    Err(join) => fatal(&mut presenter, &mut *sink, request_id, join.to_string()),
+                // 只有"正文编辑 / 勾选"进撤销栈；追加没有对应的删除变更，
+                // 锁定与归档各有显式开关，都不需要撤销。
+                let inverse = if undoable(&mutations) {
+                    inverse_batch(&store.snapshot(), &mutations)
+                } else {
+                    None
                 };
+                let ack =
+                    run_batch(&store, &mut presenter, &mut *sink, request_id, mutations).await;
+                if matches!(ack.result, AckResult::Applied)
+                    && let Some(inverse) = inverse
+                {
+                    push_undo(&mut undo, inverse, UNDO_DEPTH);
+                }
+                let _ = reply.send(ack);
+            }
+
+            Command::Undo { request_id, reply } => {
+                if presenter.is_fatal() {
+                    let _ = reply.send(not_executed(request_id));
+                    continue;
+                }
+                let Some(inverse) = undo.pop_back() else {
+                    let _ = reply.send(rejected(request_id, "undo", "没有可撤销的操作"));
+                    continue;
+                };
+                // 撤销走与普通修改完全相同的写入路径：全有或全无、同一个提交点。
+                let ack = run_batch(
+                    &store,
+                    &mut presenter,
+                    &mut *sink,
+                    request_id,
+                    inverse.clone(),
+                )
+                .await;
+                // 撤销失败（例如目标刚被锁定）就把这一步放回去，解锁后还能再撤。
+                if !matches!(ack.result, AckResult::Applied) {
+                    push_undo(&mut undo, inverse, UNDO_DEPTH);
+                }
                 let _ = reply.send(ack);
             }
 
@@ -448,6 +478,101 @@ fn view_event_dirties_prefs(event: &ViewEvent) -> bool {
     )
 }
 
+/// 执行一批变更并产出 ACK。
+///
+/// `Apply` 与 `Undo` 共用同一段：撤销必须走**完全相同**的写入路径，
+/// 否则"提交点""全有或全无""JoinError 即未知"这些约定会出现两套实现。
+async fn run_batch(
+    store: &Arc<dyn Store>,
+    presenter: &mut Presenter,
+    sink: &mut (dyn SnapshotSink + 'static),
+    request_id: String,
+    mutations: Vec<Mutation>,
+) -> Ack {
+    let store_handle = Arc::clone(store);
+    let result = tokio::task::spawn_blocking(move || store_handle.apply(&mutations)).await;
+    match result {
+        Ok(outcome) => {
+            let error = outcome.result.as_ref().err().map(map_store_error);
+            presenter.accept(&outcome);
+            let ui_rev = presenter.ui_rev();
+            emit(presenter, sink);
+            match error {
+                None => Ack {
+                    request_id,
+                    result: AckResult::Applied,
+                    ui_rev: Some(ui_rev),
+                    error: None,
+                },
+                Some((code, message)) => Ack {
+                    request_id,
+                    result: result_for_code(code),
+                    ui_rev: Some(ui_rev),
+                    error: Some(AckError {
+                        code: code.to_owned(),
+                        message,
+                    }),
+                },
+            }
+        }
+        // 得到 JoinError 意味着我们无法知道磁盘上到底发生了什么：可能 rename
+        // 已经成功。只能报 unknown 并进入 Fatal。
+        Err(join) => fatal(presenter, sink, request_id, join.to_string()),
+    }
+}
+
+/// 这批变更是否值得进撤销栈。
+///
+/// 只认"改正文"和"改完成状态"：追加没有对应的删除变更所以撤不掉，
+/// 锁定和归档各有显式开关，点回去比撤销更直观。
+fn undoable(mutations: &[Mutation]) -> bool {
+    !mutations.is_empty()
+        && mutations.iter().all(|mutation| {
+            matches!(
+                mutation,
+                Mutation::Patch {
+                    patch: Patch::SetText(_) | Patch::SetDone { .. },
+                    ..
+                }
+            )
+        })
+}
+
+/// 用**写入前**的快照算出逆操作，顺序与原批次相反。
+///
+/// 只在 [`undoable`] 为真时调用，因此追加这类热路径不会为此多付一次快照拷贝。
+fn inverse_batch(before: &StoreSnapshot, mutations: &[Mutation]) -> Option<Vec<Mutation>> {
+    let mut inverse = Vec::with_capacity(mutations.len());
+    for mutation in mutations.iter().rev() {
+        let Mutation::Patch { id, patch } = mutation else {
+            return None;
+        };
+        let slip = before.slips.iter().find(|slip| slip.id == *id)?;
+        let patch = match patch {
+            Patch::SetText(_) => Patch::SetText(slip.text.clone()),
+            Patch::SetDone { .. } => match (slip.done, slip.done_at) {
+                // 原本已完成：恢复原来的完成时间，别用"此刻"覆盖历史。
+                (true, Some(at)) => Patch::SetDone { done: true, at },
+                // 原本未完成：逆操作是取消完成，`at` 在使用上被忽略。
+                _ => Patch::SetDone {
+                    done: false,
+                    at: OffsetDateTime::now_utc(),
+                },
+            },
+            Patch::Archive { .. } | Patch::SetLocked(_) => return None,
+        };
+        inverse.push(Mutation::Patch { id: *id, patch });
+    }
+    Some(inverse)
+}
+
+fn push_undo(undo: &mut VecDeque<Vec<Mutation>>, batch: Vec<Mutation>, depth: usize) {
+    undo.push_back(batch);
+    while undo.len() > depth {
+        undo.pop_front();
+    }
+}
+
 fn emit(presenter: &Presenter, sink: &mut (dyn SnapshotSink + 'static)) {
     if let Some(snapshot) = presenter.current() {
         // 发射失败只丢一次通知，不回滚状态；前端会靠 ACK 的 ui_rev 补取。
@@ -485,6 +610,7 @@ fn reject(command: Command) {
             request_id, reply, ..
         }
         | Command::Reload { request_id, reply }
+        | Command::Undo { request_id, reply }
         | Command::IsolateAndReset { request_id, reply } => {
             let _ = reply.send(not_executed(request_id));
         }
@@ -716,6 +842,7 @@ mod tests {
             created_at: OffsetDateTime::now_utc(),
             done_at: None,
             archived_at: None,
+            locked: false,
         }
     }
 

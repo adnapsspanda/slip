@@ -805,6 +805,7 @@ mod tests {
             created_at: datetime!(2026-11-10 12:00:00 +08:00),
             done_at: None,
             archived_at: None,
+            locked: false,
         }
     }
 

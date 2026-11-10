@@ -14,6 +14,7 @@
  * @property {boolean} archived
  * @property {string} createdAt
  * @property {string|null} doneAt
+ * @property {boolean} locked
  *
  * @typedef {object} UiSnapshot
  * @property {number} contentRev
@@ -62,6 +63,23 @@ export const capture = (requestId, text) =>
 /** @returns {Promise<Ack>} */
 export const complete = (requestId, id, done) =>
   call("complete", { requestId, id, done });
+
+/**
+ * 改写纸条正文。
+ *
+ * 参数名照抄 Rust 端的 snake_case 字段，Tauri 自己负责映射到命令形参；
+ * 这里不做任何名字翻译，否则改一次命令签名就要连带改这里。
+ * @returns {Promise<Ack>}
+ */
+export const edit = (requestId, id, text) =>
+  call("edit", { requestId, id, text });
+
+/** 锁定只锁正文，勾选与归档仍由后端判断，前端不代为拦截。 @returns {Promise<Ack>} */
+export const setLocked = (requestId, id, locked) =>
+  call("set_locked", { requestId, id, locked });
+
+/** 撤销栈在后端；前端只负责发请求，不维护自己的历史副本。 @returns {Promise<Ack>} */
+export const undo = (requestId) => call("undo", { requestId });
 
 /** @returns {Promise<Ack>} */
 export const reload = (requestId) => call("reload", { requestId });

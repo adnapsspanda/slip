@@ -23,6 +23,8 @@ pub enum DomainError {
     TooManyLines { actual: usize, max: usize },
     /// 未完成的纸条不能归档。
     ArchiveRequiresDone,
+    /// 纸条已定稿（锁定），正文不可再改。
+    SlipLocked,
 }
 
 impl fmt::Display for DomainError {
@@ -43,6 +45,7 @@ impl fmt::Display for DomainError {
                 write!(f, "capture has {actual} slips, limit is {max}")
             }
             Self::ArchiveRequiresDone => write!(f, "cannot archive a slip that is not done"),
+            Self::SlipLocked => write!(f, "slip is locked; unlock it before editing text"),
         }
     }
 }

@@ -201,6 +201,113 @@ body {
 .slip__text {
   flex: 1;
   word-break: break-word;
+  cursor: text;
+}
+
+/* 锁定只表示正文不可改，所以只降正文与锁图标，勾选框保持可点。 */
+.slip__text--locked {
+  color: var(--ink-soft);
+}
+
+.slip__text[title] {
+  /* 双击才是编辑入口，用默认指针避免暗示单击即可改。 */
+  cursor: text;
+}
+
+.slip__text:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.slip__edit {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 6px;
+  border: 1px solid var(--paper-edge);
+  border-radius: 7px;
+  background: #fffdf8;
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: var(--ink);
+  outline: none;
+  user-select: text;
+}
+
+.slip__edit:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(180 102 58 / 14%);
+}
+
+.slip__lock {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  /* 未锁定时压低存在感：它是一级操作，但低频，不该和勾选框抢注意力。 */
+  color: var(--ink-soft);
+  opacity: 0.45;
+  cursor: pointer;
+}
+
+.slip:hover .slip__lock,
+.slip__lock:focus-visible {
+  opacity: 0.85;
+}
+
+.slip__lock:hover {
+  background: #e9e1cf;
+  opacity: 1;
+}
+
+.slip__lock--on {
+  color: var(--ink);
+  opacity: 1;
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 5px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--paper-edge);
+  background: #f6f1e6;
+  font-size: 12px;
+  color: var(--ink);
+  user-select: none;
+}
+
+.notice button {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid #c98f74;
+  border-radius: 6px;
+  background: #fffdf8;
+  color: var(--accent);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.notice button:hover {
+  border-color: var(--accent);
+}
+
+.notice button:disabled {
+  color: var(--ink-soft);
+  border-color: var(--paper-edge);
+  cursor: default;
 }
 
 .slip--done .slip__text {
