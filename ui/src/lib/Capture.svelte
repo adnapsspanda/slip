@@ -9,7 +9,13 @@
    */
   let { hint = "", disabled = false, onsubmit, onescape } = $props();
 
-  /** 与 slip_domain::text / slip_domain::split 保持同口径。 */
+  /**
+   * 与领域层同值，且由 `crates/slip-domain/tests/frontend_contract.rs` 钉住：
+   * `MAX_CODEPOINTS` = `slip_domain::MAX_TEXT_CODEPOINTS`，
+   * `MAX_LINES` = `slip_domain::MAX_LINES`。改任何一边，那条测试都会红。
+   *
+   * 裁决点仍然只在领域层：这里只用来提前提示"第几行超了多少"，不作数。
+   */
   const MAX_CODEPOINTS = 2000;
   const MAX_LINES = 100;
 

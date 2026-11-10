@@ -41,12 +41,23 @@
 | R-06 | `csp: null` | `tauri.conf.json` 未设 CSP。当前无远程内容、无 `{@html}`，风险低但无纵深 | 补最小 CSP（`default-src 'self'`），确认 Svelte 内联样式与 WebView2 下仍正常：验收全过 | ✅ 见完成记录 |
 | R-07 | 前端无 lint/format | 只有 `vite build`；格式靠人。仓库其余部分都有门禁 | 引入 `prettier --check` 并接进 `.githooks/pre-commit` 与 CI；**不**引入 eslint 规则集（避免新噪音面） | 待办 |
 | R-08 | `.ps1` 必须带 BOM | `edit`/`write` 工具会剥掉 BOM，导致 `verify-hotkey.ps1` 被按 GBK 解码而报语法错，本次会话撞了 4 次 | 钩子 + CI 双向拦截：缺失则拒绝提交/构建失败，并给出修法 | ✅ 见完成记录 |
-| R-05 | 限制常量前后端各一份 | `slip-domain` 的 `MAX_TEXT_CODEPOINTS=2000` / `MAX_LINES=100` 与 `Capture.svelte` 的字面量重复，无单一来源 | 至少加双向注释互指；更理想是加一条断言两处相等的契约测试（前端值可在构建期注入） | 待办 |
+| R-05 | 限制常量前后端各一份 | `slip-domain` 的 `MAX_TEXT_CODEPOINTS=2000` / `MAX_LINES=100` 与 `Capture.svelte` 的字面量重复，无单一来源 | 加一条会红的契约测试，把两处钉在一起 | ✅ 见完成记录 |
 | R-09 | 无安装包 | `bundle.active: false`，只能分发绿色 exe | 确认是否刻意；若是，在 README「已知限制」里写明不提供安装包及原因 | 待办 |
 | R-03 | 摆放兜底居中到主屏 | **降级**：原证据（用户两次启动坐标恒为 `(965,344)`）实际来自沙盒启动，交互桌面上 `place_near_cursor` 正常跟随光标 | 仅在能复现"真实桌面下光标不可读"时再修；修法是把兜底顺序改为 光标所在屏 → 前台窗口所在屏 → 主屏 | 降级 |
 | R-01 | ~~归档撤销承诺与实现不符~~ | **撤回**：`Patch::Unarchive`（`model.rs:52`）、`apply_patch` 分支（`state.rs:135`）、`inverse_batch` 双向映射（`dispatch.rs:565-568`）、领域测试（`state.rs:304`）、端到端测试（`pipeline.rs:301` `archive_and_undo_preserve_done_state_through_disk`）全部就位 | 无需改动。文档承诺与实现**一致** | ✅ 撤回 |
 
 ## 完成记录
+
+- **R-05｜本轮**：新增 `crates/slip-domain/tests/frontend_contract.rs`，直接读
+  `ui/src/lib/Capture.svelte` 源码，把 `MAX_CODEPOINTS` / `MAX_LINES` 两个字面量与
+  `slip_domain::MAX_TEXT_CODEPOINTS` / `slip_domain::MAX_LINES` 断言相等。
+  没有选「加注释互指」那种软办法——注释不会红，测试会。
+  `declared_number` 返回 `Option`，所以「常量被改名/删掉」（None）与「数值变了」
+  （Some(99) vs Some(100)）给出可区分的失败信息。
+  双向验证：正常状态通过；把前端改成 `MAX_LINES = 99` 后
+  `assertion left == right failed: Capture.svelte 的 MAX_LINES 必须等于 slip_domain::MAX_LINES`
+  → 退出码 101；随后还原。
+  测试总数 186 → 187。
 
 - **R-08｜本轮**：编码守卫同时落在钩子与 CI。
   - `.githooks/pre-commit`：按**暂存区内容**（`git show ":$f"`）校验 `*.ps1` 的前三个
