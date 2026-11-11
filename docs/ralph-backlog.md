@@ -53,6 +53,17 @@
 
 ## 完成记录
 
+- **R61 阶段六数据存储与容灾综合验收（本轮）**：
+  - WSL 全量跑通：`domain 66 + frontend_contract 1 + store 103 + acceptance 12 +
+    archive_guard 1 + format_closure 7 + app 17 + pipeline 8 = **215 通过、0 失败**`
+    （4 项 perf 按 `#[ignore]` 跳过）。
+  - 数据安全相关测试**逐个点名**列进 `docs/phase-6-report.md`，按"提交点与原子性 /
+    冲突与外部修改 / 恢复与隔离 / 备份 / BOM 往返 / 版本号"分组——不是笼统说"都过了"。
+  - 产出阶段报告：四个真实缺陷、逐轮结论、没跑到的部分单列、两处与矩阵措辞的偏差、
+    以及"往测试模块插代码"连续四轮踩坑的根因与修正纪律。
+  - Windows 侧 `cargo test -p slip-store` 本轮试 3 次仍被 SAC 拒（测试二进制），
+    端到端同理；已如实标注，不并入上表。
+
 - **R60 版本号溢出统一为饱和递增（本轮）**：
   - 取证发现两个版本号的处理**不一致**：`ui_rev` 用 `saturating_add`，而 `content_rev`
     用裸 `+ 1`（`self.content_rev.0 + 1`）。
