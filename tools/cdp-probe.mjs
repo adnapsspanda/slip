@@ -1459,24 +1459,29 @@ const r51Flow = JSON.parse(
        await sleep(600);
 
        const rows = () => [...document.querySelectorAll('.slips .slip')];
-       const afterSubmit = rows().length;
+       // 按**内容**找自己刚创建的那条，而不是假设它排在第一位：
+       // 探针前面几段已经在同一个 vault 里写过条目，位置不保证。
+       const mine = () =>
+         rows().find((row) => row.textContent.includes('键盘闭环测试条'));
+       const afterSubmit = mine() ? 1 : 0;
 
        // ② 捕获框清空后按 ↓ 进列表首条
        key(capture, 'ArrowDown');
        await sleep(150);
        const focusedAfterDown = document.activeElement?.className ?? '';
 
-       // ③ 空格勾选
-       const first = rows()[0];
+       // ③ 空格勾选（只勾自己那条）
+       const first = mine();
        if (first) {
-         first.querySelector('.slip__text')?.focus();
-         key(first.querySelector('.slip__text') ?? first, ' ');
+         const node = first.querySelector('.slip__text') ?? first;
+         node.focus();
+         key(node, ' ');
        }
        await sleep(600);
-       const doneCount = rows().filter((r) => r.classList.contains('slip--done')).length;
+       const doneCount = first?.classList.contains('slip--done') ? 1 : 0;
 
-       // ④ Enter 进编辑，改内容后 Enter 提交
-       const target = rows()[0];
+       // ④ Enter 进编辑，改内容后 Enter 提交（仍针对自己那条）
+       const target = mine();
        const textNode = target?.querySelector('.slip__text');
        if (textNode) {
          textNode.focus();
@@ -1491,7 +1496,10 @@ const r51Flow = JSON.parse(
          }
          await sleep(600);
        }
-       const editedText = rows()[0]?.querySelector('.slip__text')?.textContent?.trim() ?? '';
+       const editedText =
+         [...document.querySelectorAll('.slips .slip')]
+           .map((row) => row.querySelector('.slip__text')?.textContent?.trim() ?? '')
+           .find((text) => text.includes('键盘闭环已编辑')) ?? '';
 
        // ⑤ Ctrl+F 过滤，输入词后按 ↓ 进首条
        const winKey = (k, extra) => document.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...extra }));

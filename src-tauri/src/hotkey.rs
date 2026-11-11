@@ -18,11 +18,8 @@ const DEFAULT_SHORTCUT: &str = "ctrl+alt+space";
 /// 前端监听此事件来把光标放进捕获框并清掉提示。
 const SUMMON_EVENT: &str = "slip://summon";
 
-/// 唤出后多久之内收到的"失焦"事件要忽略。
-///
-/// 原因：Windows 的前台锁定可能让 `set_focus()` 失败，紧接着系统就送来一个
-/// `Focused(false)`；不设宽限期就会变成"窗口一闪就没了"。
-const SUMMON_GRACE: Duration = Duration::from_millis(400);
+/// 唤出后多久之内收到的"失焦"事件要忽略（规则本体在 `slip_app::focus`）。
+const SUMMON_GRACE: Duration = slip_app::focus::SUMMON_GRACE;
 
 /// 窗口与光标之间留的缝（逻辑像素）。
 const CURSOR_GAP: f64 = 16.0;
@@ -53,14 +50,6 @@ fn note_summon() {
     if let Ok(mut slot) = LAST_SUMMON.lock() {
         *slot = Some(Instant::now());
     }
-}
-
-fn recently_summoned() -> bool {
-    LAST_SUMMON
-        .lock()
-        .ok()
-        .and_then(|slot| *slot)
-        .is_some_and(|at| at.elapsed() < SUMMON_GRACE)
 }
 
 /// 把配置里的字符串解析成一个**确定可用**的热键文本。
@@ -118,11 +107,19 @@ fn install_auto_dismiss(app: &App) {
             WindowEvent::Focused(false) => {}
             _ => return,
         }
-        // 从未聚焦过 → 不是"失去焦点"，是"还没拿到焦点"，收走等于让窗口闪现即消失。
-        if !AUTO_DISMISS_ARMED.load(Ordering::SeqCst) {
-            return;
-        }
-        if !FOCUSED_SINCE_SUMMON.load(Ordering::SeqCst) || recently_summoned() {
+        // 三道闸门（未上膛 / 从未聚焦 / 仍在宽限期）都在 `should_dismiss` 里，
+        // 那边有单测；这里只负责把静态变量与时钟读成参数。
+        let elapsed = LAST_SUMMON
+            .lock()
+            .ok()
+            .and_then(|slot| *slot)
+            .map(|at| at.elapsed());
+        if !slip_app::focus::should_dismiss(
+            AUTO_DISMISS_ARMED.load(Ordering::SeqCst),
+            FOCUSED_SINCE_SUMMON.load(Ordering::SeqCst),
+            elapsed,
+            SUMMON_GRACE,
+        ) {
             return;
         }
         if let Some(window) = handle.get_webview_window("main")
