@@ -809,5 +809,29 @@ check("恢复需要二次确认", backup.armed === "确认？", `armed=${backup.
 check("恢复成功并给出提示",
   (backup.hint ?? "").includes("已从备份恢复"), `hint=${backup.hint}`);
 
+// 20. 窗口拖动：标题栏带 data-tauri-drag-region，权限一旦收回就拖不动了。
+//     这正是收窄权限时真实踩过的坑——外观完全正常，只有拖窗口时才发现。
+const drag = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const header = document.querySelector('.paper__bar');
+       let result = 'unknown';
+       try {
+         await window.__TAURI_INTERNALS__.invoke('plugin:window|start_dragging', { label: 'main' });
+         result = 'allowed';
+       } catch (err) {
+         result = String(err).slice(0, 160);
+       }
+       return JSON.stringify({
+         hasAttr: header?.hasAttribute('data-tauri-drag-region') ?? false,
+         result,
+       });
+     })()`,
+    true,
+  ),
+);
+check("标题栏保留拖动区标记", drag.hasAttr === true, `hasAttr=${drag.hasAttr}`);
+check("收窄后的权限仍允许拖动窗口", drag.result === "allowed", `result=${drag.result}`);
+
 cdp.close();
 process.exit(failed ? 1 : 0);

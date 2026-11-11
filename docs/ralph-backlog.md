@@ -52,6 +52,23 @@
 
 ## 完成记录
 
+- **权限审计发现的真 bug｜本轮**：**窗口拖不动**。
+  - 起因是核对文档与代码是否一致：`AGENTS.md` 写"仅 `core:default` + 拖动"，
+    而 `capabilities/default.json` 里只有 `core:default`。
+  - 查 Tauri 生成的 ACL 清单：`core:default` = `core:window:default` +
+    `core:webview:default` + …，而 `core:window:default` **只含只读类命令**
+    （`allow-is-visible`、`allow-outer-position` 等），**不含 `allow-start-dragging`**。
+  - 实测确认（CDP 直接调插件命令）：
+    `window.start_dragging not allowed. Permissions associated with this command:
+    core:window:allow-start-dragging`。标题栏的 `data-tauri-drag-region` 一直是死的
+    ——**无边框窗口完全无法移动**，而外观毫无异常，只有真去拖才发现。
+    这是之前"权限收窄"那轮打出来的。
+  - 修复：capabilities 增加 `core:window:allow-start-dragging` 并同步描述；
+    验收补两条断言（标题栏仍带拖动区标记、`start_dragging` 不被拒），
+    端到端 79 → **81**。
+  - 教训：**"权限最小化"必须配一条"最小化之后功能还在"的验收**。权限是被静默拒绝的，
+    不报错、不影响启动与渲染，只在用到的那一刻失败。
+
 - **待办表核对（本轮）**：三行陈旧状态改正，**没有改任何代码**。
   - `R-09`（不提供安装包）其实早就写进 README 的「已知限制」了
     （`README.md:140-142`：说明 `bundle.active=false`、分发绿色 exe 的原因、

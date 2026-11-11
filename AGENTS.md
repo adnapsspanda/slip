@@ -21,10 +21,17 @@ docs/research/        外部项目调研。
 
 ### 权限最小化
 
-`src-tauri/capabilities/default.json` 只授 `core:default`，这不是偷懒而是审计结果：
-前端实际只用 `core.invoke`（自定义命令）与 `event.listen`（唤出事件），两者都包含在
-`core:default` 里；窗口显隐/聚焦、全局热键、开机自启全部由 Rust 侧直接调用插件 API，
-**不经过 webview IPC**，因此不需要任何 capability。
+`src-tauri/capabilities/default.json` 只授两项：`core:default` 与
+`core:window:allow-start-dragging`。这是审计结果，不是偷懒：前端实际只用
+`core.invoke`（自定义命令）与 `event.listen`（唤出事件），两者都在 `core:default` 里；
+窗口显隐/聚焦、全局热键、开机自启全部由 Rust 侧直接调用插件 API，**不经过 webview IPC**。
+
+**`core:default` 不包含 `allow-start-dragging`**（它的组成是
+`core:window:default` + `core:webview:default` + `core:app:default` + …，而
+`core:window:default` 只有只读类命令）。所以标题栏的 `data-tauri-drag-region` 必须
+单独授 `core:window:allow-start-dragging`，否则**无边框窗口完全无法移动**——而外观上
+一切正常，只有真的去拖才会发现。收窄权限时踩过这个坑，现已由验收脚本钉住
+（断言 `plugin:window|start_dragging` 不被拒）。
 
 加权限前先确认前端真的有对应调用（在 `ui/src` 里 grep 得到），否则等于把能力白送给
 一段本该做不到这些事的代码。改完必须跑 `tools/verify-hotkey.ps1`——它验证了
@@ -229,5 +236,5 @@ cargo build -p slip-shell
 ## Security & Configuration
 
 - 不把密钥、机器相关路径写进仓库；示例配置用占位值。
-- Tauri capability 只授予确实用到的权限（当前仅 `core:default` + 拖动）。
+- Tauri capability 只授予确实用到的权限（当前 `core:default` + `core:window:allow-start-dragging`）。加权限前先确认前端真的有对应调用。
 - 磁盘写入只允许经由 `slip-store`；外壳与前端都不得直接读写文件。
