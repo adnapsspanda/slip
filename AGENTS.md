@@ -219,6 +219,32 @@ pwsh -File tools/verify-hotkey.ps1
    新增/修改这些路径时，能补断言就补；补不上的（例如需要构造降级态、或要清空整个列表
    才能触发），在 `docs/ralph-backlog.md` 里写明"为什么没覆盖"，不要默默留空。
 
+### 环境陷阱：`os error 4551`（应用控制策略阻止执行）
+
+症状：`cargo test` / `cargo clippy` 报
+`应用程序控制策略已阻止此文件。 (os error 4551)`，而被点名的往往是
+`target/debug/deps/` 下某个 DLL 或刚编出来的测试二进制。
+
+诊断步骤：
+
+```powershell
+Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy" |
+    Select-Object VerifiedAndReputablePolicyState
+# 1 = Smart App Control 处于强制模式
+```
+
+实测结论（本机）：
+
+- **陈旧产物**：`cargo clean -p <crate>` 后重建通常能恢复（曾靠这条救回
+  `serde_repr` 与 `slip-shell`）。
+- **新编出来的测试二进制**：在强制模式下会被直接拒绝启动，`cargo test` 与
+  `cargo clippy`（其 build script 也是可执行文件）因此不可用。
+- **主程序 `slip-shell.exe` 仍可运行**，所以 `tools/verify-hotkey.ps1` 还能跑。
+
+遇到这种情况不要试图关闭安全策略。能做的是：静态检查（`cargo fmt`）与端到端验收
+（用已构建的 exe）照跑，把"单元测试被环境阻塞"如实记进本轮记录，等环境恢复后
+补跑——**不要把没跑过的测试写成通过**。
+
 ## 质量门禁
 
 三条门，从便宜到贵：

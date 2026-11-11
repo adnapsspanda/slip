@@ -1685,6 +1685,50 @@ mod tests {
 
     // ---------- 真实 doc.rs 的端到端 ----------
 
+    /// `validate_candidate` 是"改动过的记录必须仍然合法"的最后一道网。
+    ///
+    /// 变异验证前这里**没有任何守卫**：把它改成无条件 `Ok(())`，整套 100 项测试照样全绿。
+    /// 也就是说这道网随时可能被改坏而无人知晓。
+    #[test]
+    fn candidate_with_invalid_changed_record_is_rejected() {
+        let fixture = fixture(b"one\n");
+        let mut original = doc_literal();
+        original.records.push(doc::Record {
+            slip: slip("原有的一条"),
+            extras: Vec::new(),
+        });
+
+        // 同一位置但正文被改成空串：这是**改过的**记录，必须重新校验。
+        let mut candidate = original.clone();
+        candidate.records[0].slip.text = String::new();
+
+        let result = fixture.store.validate_candidate(&original, &candidate);
+        assert!(
+            result.is_err(),
+            "被改坏的记录必须被拒绝，实际却是 {result:?}"
+        );
+    }
+
+    /// 未改动的记录不重新校验：它们是启动时已经验过的，重复验只增加成本。
+    #[test]
+    fn untouched_records_are_not_revalidated() {
+        let fixture = fixture(b"one\n");
+        let mut original = doc_literal();
+        original.records.push(doc::Record {
+            slip: slip("合法的一条"),
+            extras: Vec::new(),
+        });
+        // 原样克隆：没有任何改动，应当直接通过。
+        let candidate = original.clone();
+
+        assert!(
+            fixture
+                .store
+                .validate_candidate(&original, &candidate)
+                .is_ok()
+        );
+    }
+
     #[test]
     fn real_pipeline_appends_and_preserves_untouched_lines() {
         let dir = tempfile::tempdir().expect("temp dir");
