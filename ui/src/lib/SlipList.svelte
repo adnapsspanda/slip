@@ -1,5 +1,6 @@
 <script>
   import { tick } from "svelte";
+  import { tokenize } from "./inline.js";
 
   /**
    * 纸片列表。
@@ -23,6 +24,8 @@
     onnotice,
     /** 在最上面一条按 ↑ 时把焦点交回捕获框。 */
     onseekcapture,
+    /** 点正文里的链接：交给上层用系统浏览器打开。 */
+    ondelink,
     /** 列表为空是因为过滤没匹配到，而不是真的没有内容。 */
     filtering = false,
     /** 双向暴露"是否正在编辑"，让 App 的 Ctrl+Z 知道该不该让路。 */
@@ -308,8 +311,33 @@
             ondblclick={() => beginEdit(slip)}
             onkeydown={(event) => handleItemKeydown(event, slip, index)}
             title={slip.locked ? "已锁定，先解锁才能修改" : "双击编辑"}
-            >{slip.text}</span
           >
+            <!--
+              逐段渲染而不是 `{@html}`：正文来自 inbox.md，这个文件用户随时可编辑，
+              当 HTML 插进 DOM 就等于给它一个执行入口。这里的每一段要么是纯文本
+              （Svelte 自动转义），要么是下面这三种已知标签。
+            -->
+            {#each tokenize(slip.text) as token}
+              {#if token.type === "bold"}
+                <strong>{token.value}</strong>
+              {:else if token.type === "code"}
+                <code>{token.value}</code>
+              {:else if token.type === "link"}
+                <a
+                  class="slip__link"
+                  href={token.href}
+                  onclick={(event) => {
+                    // 交给系统浏览器；双击链接不该顺带进入编辑。
+                    event.preventDefault();
+                    event.stopPropagation();
+                    ondelink?.(token.href);
+                  }}
+                  ondblclick={(event) => event.stopPropagation()}
+                  >{token.value}</a
+                >
+              {:else}{token.value}{/if}
+            {/each}
+          </span>
           {#if slip.done}
             <button
               type="button"

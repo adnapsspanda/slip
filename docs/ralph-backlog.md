@@ -52,6 +52,26 @@
 
 ## 完成记录
 
+- **R15｜本轮**：行内渲染（粗体 / 行内代码 / 裸链接），**不引入 HTML 注入面**。
+  - 手工切分（`ui/src/lib/inline.js`）而不是 `{@html}`：正文来自 `inbox.md`，
+    这个文件用户随时可编辑，当 HTML 插进 DOM 就等于给它一个执行入口。
+    渲染时每一段要么是纯文本（Svelte 自动转义），要么是 `<strong>`/`<code>`/`<a>`
+    三种已知标签。
+  - 链接末尾的标点（`。`、`）`、`，`…）从 href 里剥掉并还给正文——否则
+    「见 https://a.com。」的句号会消失，链接也会 404。
+  - 打开链接走新命令 `open_url`，**校验全在 Rust 侧**（`system::validate_url`）：
+    只认 http/https，拒绝 `file:`/`javascript:`/`ms-settings:` 等前缀与含空白、
+    控制字符的输入；执行用 `rundll32 url.dll,FileProtocolHandler`，URL 作为单个
+    argv 传递，**不经过 `cmd /c start`**（后者会把 `&` 当命令分隔符，那是注入）。
+  - 校验与执行拆开（`validate_url` / `open_url`），所以能单测而不真的弹浏览器：
+    3 条测试覆盖合法前缀、7 种非法前缀（含 `file:`、`javascript:`、空 host）、
+    空白与控制字符。
+  - CDP 实测（6 项全过）：`**重点**` → `<strong>`、`` `npm run build` `` → `<code>`、
+    href 去尾标点而正文保留 `。`、`open_url` 接受合法链接且**拒绝 `file:`**。
+  - **说明**：本轮未能把这几条并入 `tools/verify-hotkey.ps1`——该套件在当前
+    沙盒环境里跑不出可见窗口（见 R16 记录）。不想留下一批没跑过的断言，
+    待环境恢复后再并入。
+
 - **R16 + R18｜本轮**（合并做，因为不可分）：删除前端零入口的视图状态路径。
   `ViewEvent` 与三个命令变体一删，`Prefs` 里那些字段与 `dispatch` 的去抖机制就都成了
   孤儿——分开提交只会在中间态留下死代码。

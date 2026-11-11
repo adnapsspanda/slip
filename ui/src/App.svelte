@@ -453,6 +453,20 @@
     }
   }
 
+  /**
+   * 打开正文里的链接。
+   *
+   * 成败都不改界面状态：失败只在提示区说一句——开浏览器不是内容操作，
+   * 失败不该影响纸条本身。
+   */
+  async function handleOpenLink(url) {
+    try {
+      await bridge.openUrl(url);
+    } catch (error) {
+      hint = `打不开链接：${error}`;
+    }
+  }
+
   onMount(() => {
     let disposed = false;
     let unlisten;
@@ -599,6 +613,7 @@
     onlock={handleLock}
     onarchive={handleArchive}
     onseekcapture={() => captureRef?.focus()}
+    ondelink={handleOpenLink}
     onnotice={(message) => (hint = message)}
     bind:editing={listEditing}
   />

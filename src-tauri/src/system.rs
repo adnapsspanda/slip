@@ -202,6 +202,39 @@ fn open_inbox(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 链接**能不能开**的判定，与"怎么开"分开——这样才能单测而不真的弹浏览器。
+pub fn validate_url(url: &str) -> Result<(), String> {
+    let http = url.starts_with("http://") && url.len() > "http://".len();
+    let https = url.starts_with("https://") && url.len() > "https://".len();
+    if !http && !https {
+        return Err(String::from("只允许 http/https 链接"));
+    }
+    if url.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return Err(String::from("链接里不能有空白或控制字符"));
+    }
+    Ok(())
+}
+
+/// 用系统默认浏览器打开一个 http/https 链接。
+///
+/// 三条边界：
+/// - **只认 http/https**：别的前缀（`file:`、`javascript:`、`ms-settings:`…）一律拒绝，
+///   否则正文里写一个 `file:///C:/Windows/System32/...` 就等于给了个启动器；
+/// - 含空白或控制字符的直接拒——URL 里合法字符很多，但空白和控制字符不该出现在这里；
+/// - 用 `rundll32 url.dll,FileProtocolHandler`，**URL 作为单个 argv 传递**，
+///   不经过 `cmd /c start`：后者会把 `&` 当命令分隔符，那是注入。
+pub fn open_url(url: &str) -> Result<(), String> {
+    validate_url(url)?;
+    if let Err(error) = std::process::Command::new("rundll32.exe")
+        .arg("url.dll,FileProtocolHandler")
+        .arg(url)
+        .spawn()
+    {
+        return Err(format!("无法打开链接：{error}"));
+    }
+    Ok(())
+}
+
 /// vault 里遗留的隔离/损坏证据文件（`inbox.md.corrupt-*`），新的在前。
 ///
 /// 只认这个前缀：vault 是用户可写的目录，里面可能有他自己放的备份或笔记，
@@ -243,4 +276,44 @@ pub fn reveal_newest_corrupt(app: &AppHandle) -> Result<(), String> {
         return Err(format!("无法定位 {}: {error}", newest.display()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_url;
+
+    #[test]
+    fn accepts_plain_http_and_https() {
+        assert!(validate_url("http://example.com").is_ok());
+        assert!(validate_url("https://example.com/a?b=c&d=e#f").is_ok());
+    }
+
+    #[test]
+    fn rejects_other_schemes() {
+        // 正文是用户可编辑的文件：任何非 http(s) 前缀都不该变成启动器。
+        // 特别是 file: 与 javascript: ——前者能打开本地任意路径，后者能执行脚本。
+        for url in [
+            "file:///C:/Windows/System32/cmd.exe",
+            "javascript:alert(1)",
+            "ms-settings:privacy",
+            "vbscript:msgbox(1)",
+            "http://",
+            "https://",
+            "example.com",
+        ] {
+            assert!(validate_url(url).is_err(), "should reject {url}");
+        }
+    }
+
+    #[test]
+    fn rejects_whitespace_and_control_characters() {
+        for url in [
+            "https://example.com/a b",
+            "https://example.com/a\tb",
+            "https://example.com/a\nb",
+            "https://example.com/a\u{0}b",
+        ] {
+            assert!(validate_url(url).is_err(), "should reject {url:?}");
+        }
+    }
 }

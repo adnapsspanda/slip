@@ -159,6 +159,15 @@ fn reveal_corrupt(app: tauri::AppHandle) -> Result<(), String> {
     system::reveal_newest_corrupt(&app)
 }
 
+/// 用系统默认浏览器打开正文里的链接。
+///
+/// 校验全在 Rust 侧：前端只负责把用户写的原文递过来，**它不参与判断**
+/// "这个 URL 能不能开"——那种判断放在能被注入的地方等于没做。
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    system::open_url(&url)
+}
+
 #[tauri::command]
 async fn reload(state: tauri::State<'_, ShellState>, request_id: String) -> Result<Ack, String> {
     Ok(state.dispatcher.reload(request_id).await)
@@ -312,6 +321,7 @@ pub fn run() {
             vault_path,
             corrupt_files,
             reveal_corrupt,
+            open_url,
             hotkey::dismiss_window,
         ])
         .setup(|app| {

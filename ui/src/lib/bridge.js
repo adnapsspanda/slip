@@ -109,6 +109,14 @@ export const corruptFiles = () => call("corrupt_files");
 export const revealCorrupt = () => call("reveal_corrupt");
 
 /**
+ * 用系统默认浏览器打开链接。**校验在 Rust 侧做**，这里只递原文——
+ * "这个 URL 能不能开"的判断放在能被注入的地方等于没做。
+ * @param {string} url
+ * @returns {Promise<void>}
+ */
+export const openUrl = (url) => call("open_url", { url });
+
+/**
  * 订阅热键唤出事件。非 Tauri 环境返回一个空的退订函数。
  * @param {() => void} handler
  * @returns {Promise<() => void>}
