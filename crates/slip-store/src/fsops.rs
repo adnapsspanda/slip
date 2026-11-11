@@ -239,6 +239,21 @@ pub struct BackupInfo {
     pub stamp_ms: u64,
     /// 同一毫秒内的序号（`-2` / `-3`），没有则为 1。
     pub seq: u32,
+    /// 里面有多少条记录。**这是区分两代备份最要紧的信息**：
+    /// 只显示体积时，5 个"1.2 KB"的备份长得一模一样，很容易恢复错。
+    pub slips: usize,
+    /// 第一条记录的正文（截断），给人一眼认出来的钩子。
+    pub preview: String,
+}
+
+/// 摘要用的单行预览：压掉换行，最长 24 个字符。
+fn preview_of(text: &str) -> String {
+    let flat: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= 24 {
+        return flat;
+    }
+    let head: String = flat.chars().take(24).collect();
+    format!("{head}…")
 }
 
 /// 列出目录里的备份，**新的在前**。
@@ -253,11 +268,28 @@ pub fn list_backups(dir: &Path) -> Vec<BackupInfo> {
             continue;
         };
         let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+        // 读不出内容不算致命：备份仍可恢复，只是没有摘要可显示。
+        let (slips, preview) = match read_bytes(&entry.path()) {
+            Ok(bytes) => {
+                let parsed = crate::doc::parse(&bytes);
+                let count = parsed.document.records.len();
+                let first = parsed
+                    .document
+                    .records
+                    .first()
+                    .map(|record| preview_of(&record.slip.text))
+                    .unwrap_or_default();
+                (count, first)
+            }
+            Err(_) => (0, String::new()),
+        };
         found.push(BackupInfo {
             name,
             size,
             stamp_ms,
             seq,
+            slips,
+            preview,
         });
     }
     // 新的大在前；同毫秒则序号大的在前。
@@ -625,6 +657,28 @@ mod tests {
                 "inbox.md.bak-10"
             ]
         );
+    }
+
+    #[test]
+    fn list_backups_summarizes_content_so_generations_differ() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let first_only = concat!(
+            "- [ ] 第一代只有一条 <!-- slip:v1;id=01a1c7e0-0000-7000-8000-000000000001;",
+            "created=2026-11-10T00:00:00Z -->\n"
+        );
+        let two = format!(
+            "{first_only}- [ ] 第二代多了一条 <!-- slip:v1;id=01a1c7e0-0000-7000-8000-000000000002;created=2026-11-10T01:00:00Z -->\n"
+        );
+        write_file(&dir.path().join("inbox.md.bak-1"), first_only.as_bytes());
+        write_file(&dir.path().join("inbox.md.bak-2"), two.as_bytes());
+
+        let list = list_backups(dir.path());
+        assert_eq!(list.len(), 2);
+        // 新的在前
+        assert_eq!(list[0].name, "inbox.md.bak-2");
+        assert_eq!(list[0].slips, 2, "第二代有两条");
+        assert_eq!(list[0].preview, "第一代只有一条");
+        assert_eq!(list[1].slips, 1);
     }
 
     #[test]

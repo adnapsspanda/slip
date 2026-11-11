@@ -787,6 +787,7 @@ const backup = JSON.parse(
        const rows = [...document.querySelectorAll('.slips .slip')];
        if (rows.length === 0) return JSON.stringify({ error: '备份列表为空' });
        const count = rows.length;
+       const firstRow = rows[0].querySelector('.slip__text')?.textContent?.replace(/\\s+/g, ' ').trim() ?? '';
 
        const restore = rows[0].querySelector('.slip__archive');
        restore.click();
@@ -798,6 +799,7 @@ const backup = JSON.parse(
          error: null,
          count,
          armed,
+         firstRow,
          hint: document.querySelector('.capture__hint')?.textContent ?? '',
        });
      })()`,
@@ -805,6 +807,8 @@ const backup = JSON.parse(
   ),
 );
 check("备份面板列出一代以上的备份", (backup.count ?? 0) >= 1, `count=${backup.count}`);
+check("备份行给出条目数，能区分两代",
+  /^\d+ 条 · /.test(backup.firstRow ?? ""), `row=${backup.firstRow}`);
 check("恢复需要二次确认", backup.armed === "确认？", `armed=${backup.armed}`);
 check("恢复成功并给出提示",
   (backup.hint ?? "").includes("已从备份恢复"), `hint=${backup.hint}`);

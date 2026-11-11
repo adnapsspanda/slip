@@ -523,3 +523,9 @@ body {
   cursor: default;
   white-space: nowrap;
 }
+
+/* 备份摘要：条目数与首条内容，弱化处理避免和正文抢注意力。 */
+.slip__hint {
+  margin-left: 6px;
+  color: var(--ink-soft);
+}

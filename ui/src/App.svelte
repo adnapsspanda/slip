@@ -803,7 +803,12 @@
               datetime={new Date(backup.stampMs).toISOString()}
               >{formatStamp(backup.stampMs)}</time
             >
-            <span class="slip__text">{formatSize(backup.size)}</span>
+            <span class="slip__text">
+              {backup.slips} 条 · {formatSize(backup.size)}
+              {#if backup.preview}<span class="slip__hint"
+                  >{backup.preview}</span
+                >{/if}
+            </span>
             <button
               type="button"
               class="slip__archive"

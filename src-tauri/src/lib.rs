@@ -328,6 +328,8 @@ fn backup_list(state: tauri::State<'_, ShellState>) -> Vec<BackupRow> {
             name: info.name,
             size: info.size,
             stamp_ms: info.stamp_ms,
+            slips: info.slips,
+            preview: info.preview,
         })
         .collect()
 }
@@ -338,6 +340,10 @@ struct BackupRow {
     name: String,
     size: u64,
     stamp_ms: u64,
+    /// 这一代里有几条记录——区分两代备份最要紧的信息。
+    slips: usize,
+    /// 第一条的摘要，给人一眼认出来的钩子。
+    preview: String,
 }
 
 /// 用指定备份恢复。
