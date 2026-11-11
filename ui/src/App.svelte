@@ -884,6 +884,7 @@
             <button
               type="button"
               class="slip__archive"
+              class:slip__archive--confirm={pendingRestore === backup.name}
               aria-label={pendingRestore === backup.name
                 ? "确认恢复"
                 : "恢复这个备份"}

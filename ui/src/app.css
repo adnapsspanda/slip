@@ -10,6 +10,9 @@
   --paper-card: #fffdf8;
   --paper-edge: #e2d9c6;
   /* 纸面质感：一层顶部受光 + 一层极淡纤维纹，纯 CSS 零图片 */
+  --confirm-bg: #fbe3dd;
+  --confirm-edge: #d99483;
+  --confirm-text: #8a2f1c;
   --paper-sheen: rgb(255 255 255 / 30%);
   --paper-fiber: rgb(120 112 97 / 2.6%);
   --paper-hover: #f3ecdd;
@@ -37,9 +40,6 @@
   --banner-diag: #8c4524;
   --banner-btn-bg: #fff6f1;
   /* 三档语义色（浅色）：info 取中性纸色，warn 取现有橙调，error 取偏红的告警色 */
-  --banner-info-bg: #f4f1e8;
-  --banner-info-edge: #ddd4c1;
-  --banner-info-text: #5c5347;
   --banner-error-bg: #fbe6e2;
   --banner-error-edge: #d9a79b;
   --banner-error-text: #8a2f1c;
@@ -52,6 +52,9 @@
     --paper: #201e1b;
     --paper-card: #282521;
     --paper-edge: #3c3831;
+    --confirm-bg: #3d1e18;
+    --confirm-edge: #7c3d2d;
+    --confirm-text: #f7b7a2;
     --paper-sheen: rgb(255 255 255 / 5%);
     --paper-fiber: rgb(255 255 255 / 2%);
     --paper-hover: #322e28;
@@ -73,9 +76,6 @@
     --banner-text: #f0b497;
     --banner-diag: #d88e6a;
     --banner-btn-bg: #402418;
-    --banner-info-bg: #2a2620;
-    --banner-info-edge: #45403a;
-    --banner-info-text: #c9c0ae;
     --banner-error-bg: #3a1b16;
     --banner-error-edge: #6b3327;
     --banner-error-text: #f2a894;
@@ -268,10 +268,11 @@ body {
   user-select: text;
 }
 
+/* info 档不需要专属配色：中性卡片色就是它该有的样子。 */
 .banner--info {
-  border-color: var(--banner-info-edge);
-  background: var(--banner-info-bg);
-  color: var(--banner-info-text);
+  border-color: var(--paper-edge);
+  background: var(--paper-card);
+  color: var(--ink-soft);
 }
 
 .banner--error {
@@ -551,8 +552,7 @@ body {
 }
 
 .slip__text:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+  /* 轮廓由全局 :where([role="textbox"]) 提供，这里只补圆角让环跟着文字块走。 */
   border-radius: 4px;
 }
 
@@ -733,6 +733,29 @@ body {
 .slip__hint {
   margin-left: 6px;
   color: var(--ink-soft);
+  /*
+   * 备份预览是「这一份里有什么」的唯一线索，必须读得出来又不把行撑开：
+   * 单行 + 省略号，且允许在 flex 里收缩（同 .paper__meta，缺 min-width: 0 就不生效）。
+   */
+  display: inline-block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+/* 二次确认态：恢复会覆盖当前内容，用浅红底让"这一下会改数据"变得可感知。 */
+.slip__archive--confirm {
+  width: auto;
+  min-width: 52px;
+  padding: 0 8px;
+  border: 1px solid var(--confirm-edge);
+  background: var(--confirm-bg);
+  color: var(--confirm-text);
+  font-size: 11px;
+  font-weight: 600;
 }
 
 /*
