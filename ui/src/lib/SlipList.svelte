@@ -351,7 +351,16 @@
     </li>
   {:else}
     {#each slips as slip, index (slip.id)}
-      <li class:slip--done={slip.done} class="slip">
+      <li
+        class:slip--done={slip.done}
+        class="slip"
+        ondblclick={(event) => {
+          // 双击整行都能进编辑——原来只有点在文字上才有效，行内空白处点不动。
+          // 复选框与操作按钮自己会阻断冒泡（它们双意味着"点两下按钮"），所以这里不额外判断。
+          if (slip.locked) return;
+          beginEdit(slip);
+        }}
+      >
         <button
           type="button"
           class="slip__box"
@@ -360,6 +369,7 @@
           role="checkbox"
           aria-label={slip.done ? "标记为未完成" : "标记为完成"}
           onclick={() => ontoggle?.(slip)}
+          ondblclick={(event) => event.stopPropagation()}
         ></button>
 
         {#if editingId === slip.id}
@@ -385,7 +395,6 @@
               ? "已锁定的纸条正文"
               : "纸条正文，双击或回车编辑"}
             bind:this={itemEls[index]}
-            ondblclick={() => beginEdit(slip)}
             onkeydown={(event) => handleItemKeydown(event, slip, index)}
             title={slip.locked ? "已锁定，先解锁才能修改" : "双击编辑"}
           >
@@ -438,6 +447,7 @@
                   stroke-linejoin="round"
                 />
               </svg>
+              ondblclick={(event) => event.stopPropagation()}
             </button>
           {:else if slip.done}
             <button
@@ -462,6 +472,7 @@
                   stroke-linejoin="round"
                 />
               </svg>
+              ondblclick={(event) => event.stopPropagation()}
             </button>
           {/if}
           <button
@@ -492,6 +503,7 @@
                 stroke-width="1.4"
               />
             </svg>
+            ondblclick={(event) => event.stopPropagation()}
           </button>
           {#if !editingId}
             <!--
