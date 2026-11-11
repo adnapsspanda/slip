@@ -891,6 +891,8 @@
       unlisten?.();
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibility);
+      // 一次性定时器会在几秒内自灭，但组件先卸载时它就是悬空回调。
+      clearTimeout(isolateArmTimer);
     };
   });
 </script>

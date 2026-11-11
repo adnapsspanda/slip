@@ -1,6 +1,11 @@
 <script>
   import { stripListPrefix, cleanPastedText } from "./inline.js";
   import { submitIntent } from "./keys.js";
+  import { onDestroy } from "svelte";
+
+  /** 粘贴提示的自动清除定时器。 */
+  let pasteHintTimer = null;
+  onDestroy(() => clearTimeout(pasteHintTimer));
   /**
    * 捕获框。
    *
@@ -112,7 +117,9 @@
     hint = cleaned.includes("\n")
       ? "已去掉列表前缀，并拆成多行"
       : "已去掉列表前缀";
-    setTimeout(() => {
+    // 定时器存下来：一次性回调虽然会自灭，但组件先卸载时它就是一条悬空闭包。
+    clearTimeout(pasteHintTimer);
+    pasteHintTimer = setTimeout(() => {
       if (hint === "已去掉列表前缀" || hint === "已去掉列表前缀，并拆成多行") {
         hint = "";
       }
