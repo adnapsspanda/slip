@@ -137,6 +137,15 @@ export const exportMarkdown = () => call("export_markdown");
 export const copyDiagnostics = () => call("copy_diagnostics");
 
 /**
+ * 本次运行的热键状态（`{ text, registered }`）。
+ *
+ * 单独一条命令而不是塞进快照：`Presenter` 在热键注册之前就已创建、且由消费者任务独占，
+ * 为一条"启动即定"的信息去改那条单写者路径不值。
+ * @returns {Promise<{text: string, registered: boolean}>}
+ */
+export const hotkeyStatus = () => call("hotkey_status");
+
+/**
  * 外部修改的条数级差异（`{added, removed, changed}`）。
  * 只读解析磁盘，不改任何状态——只在 `needsReload` 为真时有意义。
  * @returns {Promise<{added: number, removed: number, changed: number}>}

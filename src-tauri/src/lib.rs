@@ -43,6 +43,15 @@ pub struct ShellState {
 /// 用这个参数区分：开机拉起 → 静默驻留托盘；手动双击 → 直接把窗口显示出来。
 const AUTOSTART_FLAG: &str = slip_app::launch::AUTOSTART_FLAG;
 
+/// 热键状态（IPC 载荷）。
+#[derive(serde::Serialize)]
+pub struct HotkeyStatus {
+    /// 美化后的热键文本；未注册时为空。
+    pub text: String,
+    /// 是否注册成功。
+    pub registered: bool,
+}
+
 /// 解析 vault 目录。
 ///
 /// 用可见路径而不是隐藏的 appdata：Markdown 是真源，用户随时会想用编辑器打开它。
@@ -359,6 +368,19 @@ async fn restore_backup(
     Ok(state.dispatcher.restore_backup(request_id, name).await)
 }
 
+/// 本次运行的热键状态。
+///
+/// 为什么单独一条命令、而不是塞进 `UiSnapshot`：`Presenter` 在热键注册**之前**就已创建，
+/// 并且由消费者任务独占（单写者）。为一条"启动即定、运行期不变"的信息去改那条路径，
+/// 换来的复杂度不值。这里读的是外壳状态，代价是一次内存读取。
+#[tauri::command]
+fn hotkey_status(state: tauri::State<'_, ShellState>) -> HotkeyStatus {
+    HotkeyStatus {
+        text: system::pretty_hotkey(&state.hotkey),
+        registered: !state.hotkey.is_empty(),
+    }
+}
+
 /// 把诊断信息写进系统剪贴板，方便用户贴给他人排查（R08）。
 ///
 /// 三条边界：
@@ -537,6 +559,7 @@ pub fn run() {
             corrupt_files,
             reveal_corrupt,
             open_url,
+            hotkey_status,
             copy_diagnostics,
             export_markdown,
             external_diff,

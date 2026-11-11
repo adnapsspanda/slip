@@ -6,7 +6,11 @@
 // 之后，一条 `bun` 命令就能验，不受环境影响。
 //
 // 用法：& "C:\Users\spand\.bun\bin\bun.exe" run tools/check-ui-logic.mjs
-import { bannerLevel, shouldShowReadonlyGuide } from "../ui/src/lib/status.js";
+import {
+  bannerLevel,
+  shouldShowReadonlyGuide,
+  hotkeyWarning,
+} from "../ui/src/lib/status.js";
 import { createSerialQueue, nextToggleTarget } from "../ui/src/lib/queue.js";
 import { confirmStep, CONFIRM_WINDOW_MS } from "../ui/src/lib/confirm.js";
 import {
@@ -211,6 +215,19 @@ check("可写时不显示指引", shouldShowReadonlyGuide({ health: { writable: 
 check("不可写时显示指引", shouldShowReadonlyGuide({ health: { writable: false } }), true);
 check("缺字段时不显示", shouldShowReadonlyGuide({}), false);
 check("没有快照时不显示", shouldShowReadonlyGuide(null), false);
+
+// ---- R68 热键未注册的提示 ----
+check("热键正常时无提示", hotkeyWarning({ registered: true, text: "Ctrl+Alt+Space" }), "");
+check("没有状态时无提示", hotkeyWarning(null), "");
+check(
+  "热键未注册时提示里说清「未注册」",
+  hotkeyWarning({ registered: false, text: "" }).includes("未注册"),
+  true,
+);
+const hkWarn = hotkeyWarning({ registered: false, text: "Ctrl+Alt+Space" });
+check("提示带上具体组合键", hkWarn.includes("Ctrl+Alt+Space"), true);
+check("提示给出可操作下一步（托盘）", hkWarn.includes("托盘"), true);
+check("提示说明原因（被占用）", hkWarn.includes("占用"), true);
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);

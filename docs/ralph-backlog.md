@@ -53,6 +53,24 @@
 
 ## 完成记录
 
+- **R68 热键被占用时的降级与提醒（本轮，含真实冲突验证）**：
+  - 取证：热键注册失败后**信息完全没到界面**——只有一条 `tracing::error!` 和托盘 tooltip。
+    用户看到的现象是"按热键没反应"，会以为是自己记错了键；而托盘 tooltip 要悬停才看得到。
+  - 实现：新增只读命令 `hotkey_status` 返回 `{ text, registered }`；界面启动时取一次，
+    未注册就在横幅里给一条 **warn** 级提示（含具体组合键与可操作下一步：用托盘打开、
+    关掉占用程序后重启）。
+  - **为什么不塞进 `UiSnapshot`**：`Presenter` 在热键注册**之前**就创建，且由消费者任务独占
+    （单写者）。为一条"启动即定、运行期不变"的信息去改那条路径，复杂度不值。这处偏差
+    已在记录里写明。
+  - **真实冲突验证**（不是模拟返回值）：用另一个进程 `RegisterHotKey` 占住 Ctrl+Alt+Space，
+    再启动 Slip：
+    - 日志：`hotkey registration failed: HotKey already registered: { ALT | CONTROL, Space }`
+    - 界面：`.banner` 文本 = "全局热键未注册，多半已被其它程序占用……"，
+      `class=banner banner--warn`，`role=status`
+  - 补 6 条纯函数断言（正常/无状态/未注册/带组合键/给下一步/说明原因），
+    **变异验证**：让 `hotkeyWarning` 恒返回空串 → 4 条红。
+  - 顺手修了文案里的一个笔误（"关掉占用它程序" → "关掉占用它的程序"）。
+
 - **R67 任务栏与 Alt+Tab 驻留（本轮：静态已验，运行时断言待执行）**：
   - **静态取证**：`src-tauri/tauri.conf.json` 里 `skipTaskbar: true`（另有 `alwaysOnTop: true`、
     `decorations: false`），且**全仓库没有任何运行时覆写**——`grep skip_taskbar src-tauri/src`

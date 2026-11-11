@@ -3,6 +3,7 @@
   import {
     bannerLevel as statusBannerLevel,
     shouldShowReadonlyGuide,
+    hotkeyWarning,
   } from "./lib/status.js";
   import { noticeAction, filterKeyIntent } from "./lib/keys.js";
   import { createSerialQueue, nextToggleTarget } from "./lib/queue.js";
@@ -31,6 +32,9 @@
    * 于是两次都发同一个目标状态。有了意图记录，第二下是从意图反转。
    */
   let pendingDone = $state({});
+
+  /** 热键状态。启动即定、运行期不变，所以只在挂载时取一次。 */
+  let hotkeyState = $state(null);
 
   /** 变更命令串行执行：避免并发请求互相踩，也避免"旧快照"导致的丢失更新。 */
   const mutating = createSerialQueue();
@@ -224,11 +228,21 @@
         ? `磁盘上的文件已被外部修改（${describeDiff(externalDiff)}），需要重新载入。`
         : "磁盘上的文件已被外部修改，需要重新载入。";
     }
-    return "";
+    // 优先级最低：内容层面的问题更急；但只要没有更急的，热键问题就必须让用户看见
+    // ——否则表现是"按热键没反应"，用户只会以为是自己记错了键。
+    return hotkeyWarning(hotkeyState);
   });
 
   // 判据抽在 lib/status.js：纯函数，能脱离应用验证（tools/check-ui-logic.mjs）。
-  let bannerLevel = $derived(statusBannerLevel(snapshot));
+  let bannerLevel = $derived.by(() => {
+    const level = statusBannerLevel(snapshot);
+    // 热键未注册不是内容危险，但确实"需要你处理"，归到 warn；
+    // 已经在 error（Fatal）时不能降级。
+    if (level === "info" && hotkeyWarning(hotkeyState) !== "") {
+      return "warn";
+    }
+    return level;
+  });
 
   let diagnostics = $derived(snapshot?.diagnostics ?? []);
 
@@ -791,6 +805,15 @@
   onMount(() => {
     let disposed = false;
     let unlisten;
+
+    // 热键状态只在启动时取一次：它由注册结果决定，运行期不会变。
+    // 取不到（非 Tauri 环境 / 命令缺失）就当作"正常"，不拿一个查询失败去吓用户。
+    bridge
+      .hotkeyStatus()
+      .then((status) => {
+        if (!disposed) hotkeyState = status;
+      })
+      .catch(() => {});
 
     // 事件订阅也走 bridge：组件不直接碰 `__TAURI__`。
     bridge

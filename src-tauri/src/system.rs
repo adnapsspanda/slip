@@ -171,7 +171,7 @@ pub fn install_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
 /// 托管状态里的值统一是小写（见 `hotkey::resolve_shortcut`），直接塞进菜单
 /// 和 tooltip 会显得粗糙；按 `+` 分段、每段首字母大写即可，不做键名语义映射
 /// ——`Space`、`F1`、`PageUp` 这类名字的具体写法由用户自己保持原样更稳妥。
-fn pretty_hotkey(raw: &str) -> String {
+pub(crate) fn pretty_hotkey(raw: &str) -> String {
     raw.split('+')
         .map(|part| {
             let part = part.trim();
