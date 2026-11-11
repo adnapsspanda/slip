@@ -7,6 +7,7 @@
 //
 // 用法：& "C:\Users\spand\.bun\bin\bun.exe" run tools/check-ui-logic.mjs
 import { bannerLevel } from "../ui/src/lib/status.js";
+import { createSerialQueue, nextToggleTarget } from "../ui/src/lib/queue.js";
 import {
   cleanPastedText,
   stripTrailingPunctuation,
@@ -137,6 +138,51 @@ check(
   toks.map((t) => (t.type === "link" ? t.value : t.value)).join(""),
   "见 https://a.com。",
 );
+
+// ---- R49 快速连续勾选：意图反转 + 串行时序 ----
+check("无意图时按快照反转", nextToggleTarget(false, undefined), true);
+check("无意图时按快照反转（已完成）", nextToggleTarget(true, undefined), false);
+check("有未落盘意图时以意图为准（连点第二下）", nextToggleTarget(false, true), false);
+check("有未落盘意图时以意图为准（反向）", nextToggleTarget(true, false), true);
+// 快照始终停在 false（还没来得及刷新），连续三次点击的目标应当是 true → false → true：
+// 第 1 下按快照反转，第 2、3 下按"上一次的意图"反转。
+const t1 = nextToggleTarget(false, undefined);
+const t2 = nextToggleTarget(false, t1);
+const t3 = nextToggleTarget(false, t2);
+check("连续三次点击：true → false → true（净效果切回原状态）", [t1, t2, t3], [true, false, true]);
+
+// 串行队列：任务必须按提交顺序执行，且一次只跑一个
+const order = [];
+let running = 0;
+let maxConcurrent = 0;
+const q = createSerialQueue();
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+const tasks = [30, 5, 1].map((ms, i) =>
+  q.run(async () => {
+    running += 1;
+    maxConcurrent = Math.max(maxConcurrent, running);
+    await delay(ms);
+    order.push(i);
+    running -= 1;
+    return i;
+  }),
+);
+const results = await Promise.all(tasks);
+check("串行队列按提交顺序执行", order, [0, 1, 2]);
+check("串行队列同时只有一个任务在跑", maxConcurrent, 1);
+check("串行队列返回各自结果", results, [0, 1, 2]);
+check("队列跑完后计数归零", q.size(), 0);
+
+// 一个任务失败不能让后续任务卡住
+const q2 = createSerialQueue();
+const ok1 = q2.run(async () => "ok");
+const bad = q2.run(async () => {
+  throw new Error("boom");
+});
+const ok2 = q2.run(async () => "after");
+check("失败任务之后的排队任务仍会执行", await ok2, "after");
+await bad.catch(() => {});
+check("失败任务之前的结果不受影响", await ok1, "ok");
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);

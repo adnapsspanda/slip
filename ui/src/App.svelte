@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
   import { bannerLevel as statusBannerLevel } from "./lib/status.js";
   import { noticeAction } from "./lib/keys.js";
+  import { createSerialQueue, nextToggleTarget } from "./lib/queue.js";
   import * as bridge from "./lib/bridge.js";
   import Capture from "./lib/Capture.svelte";
   import SlipList from "./lib/SlipList.svelte";
@@ -18,6 +19,17 @@
   let listRef = $state(null);
   /** 正在等待应答的提交；迟到 ACK 必须与这条不可变记录比较。 */
   let inFlight = $state(null);
+
+  /**
+   * 未落盘的勾选意图：`{ [slipId]: boolean }`。
+   *
+   * 没有它就会出现"连点两下只变一次"——第二次点击读到的快照还是旧的，
+   * 于是两次都发同一个目标状态。有了意图记录，第二下是从意图反转。
+   */
+  let pendingDone = $state({});
+
+  /** 变更命令串行执行：避免并发请求互相踩，也避免"旧快照"导致的丢失更新。 */
+  const mutating = createSerialQueue();
   /** 列表里的编辑态；Ctrl+Z 只在没在编辑时才抢撤销。 */
   let listEditing = $state(false);
   /** 撤销提示：与普通 hint 分开，因为只有它需要挂一个按钮。 */
@@ -365,12 +377,13 @@
   }
 
   async function handleToggle(slip) {
-    const targetDone = !slip.done;
+    // 以"未落盘的意图"为准，而不是当前快照：连点两下时快照还没跟上。
+    const targetDone = nextToggleTarget(slip.done, pendingDone[slip.id]);
+    pendingDone[slip.id] = targetDone;
     try {
-      const ack = await bridge.complete(
-        bridge.newRequestId(),
-        slip.id,
-        targetDone,
+      // 串行发送：后一次点击一定排在前一次之后，不会两个请求同时基于同一份旧快照。
+      const ack = await mutating.run(() =>
+        bridge.complete(bridge.newRequestId(), slip.id, targetDone),
       );
       await refresh();
       if (ack.result === "applied") {
@@ -385,6 +398,13 @@
     } catch (error) {
       hint = `complete 失败：${error}`;
       await refresh();
+    } finally {
+      // 快照已经等于意图就清掉记录；还不等（说明后面还有排队中的点击）就留着，
+      // 下一次反转仍然以它为准。
+      const stored = snapshot?.slips.find((item) => item.id === slip.id);
+      if (stored && stored.done === targetDone) {
+        delete pendingDone[slip.id];
+      }
     }
   }
 
