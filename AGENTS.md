@@ -221,9 +221,13 @@ pwsh -File tools/verify-hotkey.ps1
 
 ### 环境陷阱：`os error 4551`（应用控制策略阻止执行）
 
+**症状**：`cargo test` / `cargo clippy` 或直接启动产物时报
+`应用程序控制策略已阻止此文件。 (os error 4551)`，被点名的通常是
+`target/debug/deps/` 下某个 exe。
+
 **先跑自检**：`pwsh -File tools/check-environment.ps1`（加 `-Probe` 会真的启动一次产物）。
-它报告 SAC 状态、生效策略、产物的拦截记录，并直接给出处置建议；退出码 1 表示
-"产物不可运行"。PowerShell 自身是微软签名的，不受这个策略影响，所以这条自检永远可用。
+它报告 SAC 状态、生效策略、产物的拦截记录并给出建议；退出码 1 = 产物不可运行。
+PowerShell 自身是微软签名的，不受这个策略影响，所以这条自检永远可用。
 
 本机（2026-11-11）的定论：拦截来自 **Smart App Control 本体**——
 
@@ -234,8 +238,47 @@ Policy ID: 0283ac0f-fff1-49ae-ada1-8a933130cad6     （自身即 Base 策略）
 拒绝理由: did not meet the Enterprise signing level requirements
 ```
 
-`CiTool -lp` 里其余的 `.cip` 都是微软内置（驱动策略、VBS 策略、未启用的 Evaluation/
+`CiTool -lp` 里其余 `.cip` 都是微软内置（驱动策略、VBS 策略、未启用的 Evaluation/
 Lockdown 变体），没有企业自定义策略。
+
+**被拦的永远是"被加载的那份产物"，工具链从来不是目标。** 这一点必须说清，因为
+事件日志的措辞极易误读：
+
+```
+a process (…\rustup\…\bin\cargo.exe) attempted to load
+  …\target\debug\deps\slip_shell-46ad4e26a133e24c.exe that did not meet …
+```
+
+`cargo.exe` 只是**加载者**，它自己被拒的是那份测试二进制。实测 200 条拦截事件里，
+`cargo` / `rustc` / `rustup` / `rustfmt` / `clippy` 作为被加载对象出现 **0 次**；
+被拦的全是 `slip_app-*` / `slip_domain-*` / `slip_shell-*` / `acceptance-*` /
+`frontend_contract-*`。
+
+由此推出两条实操结论：
+
+- **重装 Rust 工具链没有意义**——问题从来不在 cargo 身上；
+- 直接跑 `cargo --version` / `cargo build` 永远正常，`cargo` 只是"启动产物"那一步
+  会被拒。
+
+**为什么同一份产物时好时坏**：SAC 按**文件**问云端信誉（ISG）。对未签名的新产物，
+一次查询可能返回"暂时拒绝"，过一会儿再查又变成"放行"。实测：`slip-shell.exe`
+在 17:45 被拒，17:57 同一份文件却能启动。
+
+**标准应对：重试同一个二进制，不要删了重编。**
+
+```powershell
+pwsh -File tools/cargo-test-retry.ps1   # 只对 4551 重试，且默认不删产物
+```
+
+删掉重编是**帮倒忙**：每次重编都是一个新文件，又要重新经历"首次执行被拒"。
+（这条是实测纠正过来的，脚本早期版本恰好是删了重编。）
+
+其它已经准备好的应对：
+
+- 提交钩子遇到"只有 4551、没有 `test result: FAILED`"时**放行但大声警告**，
+  把"本次提交未经完整测试验证"打在输出里；判据严格，二者缺一不放行；
+- 端到端验收用已构建的 exe，通常仍可跑；碰到拒绝就再启动一次；
+- 实在跑不了的，如实记进本轮记录并补跑——**不要把没跑过的写成通过**。
 
 **SAC 没有白名单**，以下做法全部无效，别浪费时间：
 
@@ -244,44 +287,15 @@ Lockdown 变体），没有企业自定义策略。
 | 自签名证书 + `signtool` / `Set-AuthenticodeSignature` | SAC 看云端信誉（ISG），不看本地证书链 |
 | 加补充 WDAC 策略放行 `target\**` | SAC 是签过名的平台策略，不接受用户补充策略 |
 | Defender 排除目录 / 关实时保护 / 改 SmartScreen | 都不是代码完整性机制 |
-| 换目录 / 改文件名 | 拦截按文件内容，与路径无关 |
+| 换目录 / 改文件名 / 重装工具链 | 判定按文件内容与签名，与路径和工具链无关 |
 
-真正可行的只有三条：关闭 SAC（单向开关，可能要重置系统）、换到没有 SAC 的 Windows
-环境（Windows Sandbox / Hyper-V）、换一台机器。
+**日常开发不必关 SAC**，重试即可。只有当你希望"构建产物一次就能运行"（例如要反复
+手动点开 GUI）时，才需要考虑：关闭 SAC（单向开关，关掉后再打开需重置系统）、换到
+没有 SAC 的 Windows 环境（Windows Sandbox / Hyper-V）、或换一台机器。
 
 **WSL 帮不上**：它能让 188 项（domain/store/app）测试跑起来，但 GUI 与端到端需要
 Windows 窗口、全局热键与 WebView2；而且拦截发生在 **Windows 执行 exe 时**，
-在 WSL 里交叉编译出来的 Windows exe 拷回去照样被拒。
-
-
-症状：`cargo test` / `cargo clippy` 报
-`应用程序控制策略已阻止此文件。 (os error 4551)`，而被点名的往往是
-`target/debug/deps/` 下某个 DLL 或刚编出来的测试二进制。
-
-诊断步骤：
-
-```powershell
-Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy" |
-    Select-Object VerifiedAndReputablePolicyState
-# 1 = Smart App Control 处于强制模式
-```
-
-实测结论（本机）：
-
-- **陈旧产物**：`cargo clean -p <crate>` 后重建通常能恢复（曾靠这条救回
-  `serde_repr` 与 `slip-shell`）。
-- **新编出来的测试二进制**：在强制模式下会被直接拒绝启动，`cargo test` 与
-  `cargo clippy`（其 build script 也是可执行文件）因此不可用。
-- **主程序 `slip-shell.exe` 仍可运行**，所以 `tools/verify-hotkey.ps1` 还能跑。
-
-遇到这种情况不要试图关闭安全策略。已经准备好的应对：
-
-- `pwsh -File tools/cargo-test-retry.ps1`：**只对 `os error 4551`** 重试——命中时删掉
-  被点名的产物再跑一轮，最多 5 次；其它任何失败原样上抛，绝不掩盖。
-- 提交钩子遇到"只有 4551、没有 `test result: FAILED`"时**放行但大声警告**，
-  把"本次提交未经完整测试验证"打在输出里。判据严格，二者缺一不放行。
-- 端到端验收用已构建的 exe，通常仍可跑（osolated 的测试二进制才受影响）。
-- 实在跑不了的，如实记进本轮记录并在环境恢复后补跑——**不要把没跑过的写成通过**。
+在 WSL 里交叉编译出来的 Windows exe 拷回去照样会被拦。
 
 ## 质量门禁
 

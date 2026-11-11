@@ -1,13 +1,19 @@
 ﻿# 在应用控制策略（Smart App Control）阻止新产物的环境里跑 cargo test。
 #
 # 症状：`cargo test` 报 `应用程序控制策略已阻止此文件。 (os error 4551)`，
-# 被点名的是 target/debug/deps 下某个刚编出来的测试二进制。同一个文件删掉重编后
-# 往往就能跑（策略对新建文件的放行有延迟/间歇性）。
+# 被点名的是 target/debug/deps 下某个刚编出来的测试二进制。
 #
-# 本脚本**只对这一种错误重试**：命中时把被点名的 exe 删掉再跑一轮，最多 5 次。
-# 任何其它测试失败都原样上抛，不重试、不掩盖。
+# **实测出来的规律（2026-11-11）**：拦截是**按产物**的，与谁启动它无关。
+# 一次 `cargo run` 编出的 slip-shell.exe 在 17:45 被拒，17:57 同一份文件却能跑通。
+# 所以正确策略是**对同一个二进制重试**；反过来，删掉它去重编是**帮倒忙**——
+# 每次重编都是一个新产物，又要重新经历"首次执行被拒"。
+#
+# 本脚本只对 `os error 4551` 重试，且默认**不删产物**；连续失败超过阈值后
+# 才把它当成"这个哈希被永久记住"，删一次并给出提示。其它任何失败原样上抛。
 param(
-    [int]$MaxAttempts = 5,
+    [int]$MaxAttempts = 6,
+    # 连续被拦多少次之后才认定"这个产物被永久记住"并删掉重建
+    [int]$DeleteAfter = 4,
     [string[]]$CargoArgs = @('test', '--workspace', '--locked', '--offline')
 )
 
@@ -36,14 +42,19 @@ for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         exit $code
     }
 
-    foreach ($match in $blocked) {
-        $path = $match.Groups[1].Value
-        if (Test-Path $path) {
-            Remove-Item $path -Force
-            Write-Output "[retry] 第 $attempt 次：删除被策略阻止的产物 $(Split-Path -Leaf $path)"
+    # 默认只等一等再跑同一个二进制：实测同一份文件重试几次就能过。
+    if ($attempt -ge $DeleteAfter) {
+        foreach ($match in $blocked) {
+            $path = $match.Groups[1].Value
+            if (Test-Path $path) {
+                Remove-Item $path -Force
+                Write-Output "[retry] 连续 $attempt 次被拦，认定该产物被永久记住，删除重建：$(Split-Path -Leaf $path)"
+            }
         }
+    } else {
+        Write-Output "[retry] 第 $attempt 次被拦，等待后重试同一个二进制（不删产物）"
     }
-    Start-Sleep -Seconds 2
+    Start-Sleep -Seconds 3
 }
 
 exit 1
