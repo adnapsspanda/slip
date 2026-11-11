@@ -323,7 +323,9 @@ pub fn render_plain(title: &str, slips: &[(&str, bool)]) -> String {
         let mark = if *done { "x" } else { " " };
         out.push_str(&format!("- [{mark}] {text}\n"));
     }
-    out
+    // 统一成本平台原生换行：Windows 记事本不认纯 LF，直接打开会连成一片。
+    // 不加 BOM——那会让第一行的标题解析失败。
+    slip_domain::normalize_newlines(&out)
 }
 
 /// 把导出内容写到 vault 下的 `export-<unix_ms>.md`，返回路径。
@@ -401,7 +403,26 @@ mod tests {
     fn render_plain_marks_state_and_drops_markers() {
         // 导出的东西是给人看的：不能带 <!-- slip:v1 --> 这种人造标记。
         let out = render_plain("Slip 导出", &[("买发票", false), ("已完成的", true)]);
-        assert_eq!(out, "# Slip 导出\n\n- [ ] 买发票\n- [x] 已完成的\n");
+        // 换行是**平台原生**的（Windows 记事本不认纯 LF），所以断言要用同一个来源，
+        // 不能写死 \n——否则这条测试在 Windows 上必红。
+        let nl = slip_domain::native_newline();
+        assert_eq!(
+            out,
+            format!("# Slip 导出{nl}{nl}- [ ] 买发票{nl}- [x] 已完成的{nl}")
+        );
+    }
+
+    /// 导出文件在 Windows 上必须是 CRLF，且**不能带 BOM**。
+    #[test]
+    fn render_plain_uses_native_newlines_without_bom() {
+        let out = render_plain("导出", &[("一条", false)]);
+        if cfg!(windows) {
+            assert!(out.contains("\r\n"), "Windows 上应当是 CRLF：{out:?}");
+            assert!(!out.contains("\n\n"), "不应残留纯 LF 换行");
+        } else {
+            assert!(!out.contains('\r'), "非 Windows 上不应出现 CR：{out:?}");
+        }
+        assert!(!out.starts_with('\u{feff}'), "导出内容不应带 BOM");
     }
 
     #[test]

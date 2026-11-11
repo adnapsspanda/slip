@@ -15,4 +15,7 @@ pub use id::SlipId;
 pub use model::{ContentRev, Draft, Mutation, Patch, Slip, Transition};
 pub use split::{MAX_LINES, split_drafts};
 pub use state::{apply_patch, validate_slip, validate_time};
-pub use text::{MAX_TEXT_CODEPOINTS, codepoint_len, normalize_text};
+pub use text::{
+    MAX_TEXT_CODEPOINTS, codepoint_len, native_newline, normalize_newlines, normalize_text,
+    with_newline_style,
+};
