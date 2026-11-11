@@ -367,6 +367,23 @@ cargo build -p slip-shell
 - 禁止引入：文件 watcher、内容去重、回调/扩展点、事件总线、SQLite 索引、
   物理归档目录、跨字段或时钟合法性校验。
 
+### 这些约束由谁守着
+
+"写在文档里"不等于"有人守"。逐条列出当前的守护方式，新增约束时按同一格式补一行：
+
+| 约束 | 守护方式 | 能不能被机器发现 |
+|---|---|---|
+| 未修改行逐字节保留 | `format_closure.rs` 5 条往返测试 + `real_pipeline_appends_and_preserves_untouched_lines` | 能 |
+| 提交点 = `rename`；之后只记 `DurabilityUnconfirmed` | `commit_ack_survives_backup_failure`、`commit_ack_survives_directory_sync_failure`、`sync_dir_failure_is_observable_after_commit` | 能 |
+| `ui_rev` 每次递增 / `GetSnapshot` 不递增 | `accept_increments_ui_rev_even_when_content_rev_is_unchanged`、`current_does_not_bump_ui_rev` | 能 |
+| 单队列单消费者、`presenter` 不上锁 | `tools/check-forbidden.ps1` 查 `Mutex<Presenter>` / `RwLock<Presenter>` | 能（Grep 级） |
+| 禁止引入 watcher / SQLite / 物理归档 | `tools/check-forbidden.ps1`（查依赖与 `archive.md`） | 能（Grep 级） |
+| 前端不注入 HTML | `tools/check-forbidden.ps1` 查 `{@html`（跳过注释） | 能 |
+| **禁止内容去重 / 回调扩展点 / 事件总线 / 跨字段与时钟校验** | **没有自动守护** | **不能**——它们不是文本模式，只能靠评审时对照本节 |
+
+`tools/check-forbidden.ps1` 同时接在提交钩子与 CI 里；它被设计成**只报文本证据**，
+查不出的绝不假装覆盖（例如"禁止全文重序列化"要靠往返测试，不在里面）。
+
 ## Security & Configuration
 
 - 不把密钥、机器相关路径写进仓库；示例配置用占位值。

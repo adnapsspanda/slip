@@ -73,6 +73,13 @@ else
   step "PowerShell 语法检查（跳过：环境里没有 pwsh）"
 fi
 
+# 「不可回退的约束」里能被文本证据判定的部分。纯 grep，毫秒级。
+# 这些条目一旦被破坏代价是架构级返工，而它们原本只靠人记。
+if command -v pwsh >/dev/null 2>&1; then
+  step "不可回退的约束（禁止引入清单）"
+  pwsh -NoProfile -File tools/check-forbidden.ps1
+fi
+
 # 前端格式：prettier 3 **不会**自动加载插件，所以 ui/.prettierrc.json 里必须显式
 # 声明 prettier-plugin-svelte，否则 *.svelte 会被静默跳过（表现为"检查通过"，
 # 其实根本没检查）。这条曾经骗过我一次。
