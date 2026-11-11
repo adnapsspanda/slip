@@ -1052,6 +1052,12 @@ const viewReset = JSON.parse(
        filter.dispatchEvent(new Event('input', { bubbles: true }));
        await wait(300);
        const filtered = document.querySelectorAll('.slip').length;
+
+       // 收起前先制造一个带撤销按钮的提示，检验它是否也跨唤出残留
+       document.querySelector('.slip__box')?.click();
+       await wait(1300);
+       const noticeBefore = document.querySelector('.notice')?.textContent ?? '';
+
        await window.__TAURI__.core.invoke('dismiss_window');
        await wait(800);
 
@@ -1060,6 +1066,8 @@ const viewReset = JSON.parse(
        await wait(600);
        return JSON.stringify({
          filtered,
+         noticeBefore,
+         noticeAfterSummon: document.querySelector('.notice') !== null,
          filterOpenAfterSummon: document.querySelector('.filter__input') !== null,
          rowsAfterSummon: document.querySelectorAll('.slip').length,
        });
@@ -1072,6 +1080,10 @@ check("再唤出后过滤条被收起", viewReset.filterOpenAfterSummon === fals
   `filterOpen=${viewReset.filterOpenAfterSummon}`);
 check("再唤出后列表恢复全量", viewReset.rowsAfterSummon > viewReset.filtered,
   `rows=${viewReset.rowsAfterSummon} filtered=${viewReset.filtered}`);
+check("收起前确实挂着撤销提示", (viewReset.noticeBefore ?? "").includes("撤销"),
+  `notice=${viewReset.noticeBefore}`);
+check("再唤出后撤销提示已过期清除", viewReset.noticeAfterSummon === false,
+  `noticeAfter=${viewReset.noticeAfterSummon}`);
 
 cdp.close();
 process.exit(failed ? 1 : 0);
