@@ -7,12 +7,12 @@
 
 | 项 | 数值 |
 |---|---|
-| 总提交 | 64 |
+| 总提交 | 69（本目标内 46） |
 | 本次迭代内提交 | 41 |
-| Rust 代码 | 8802 行 |
+| Rust 代码 | 8870 行 |
 | 前端代码（svelte/js/css） | 2157 行 |
-| 文档（含设计文档、AGENTS、README） | 2127 行 |
-| 集成测试文件 | 5 |
+| 文档（设计文档、AGENTS、README、报告等） | 2293 行 |
+| 集成测试文件 | 6 |
 | 端到端检查点 | 探针 74 条断言 + 验收脚本 30 个检查点（部分按运行条件触发）；最后一次实测 **100 通过 / 1 跳过** |
 | 门禁/检查脚本 | 6 个（`tools/*.ps1`） |
 
@@ -98,7 +98,7 @@ cargo clippy -D warnings     ✅
 cargo test --workspace       ✅ 221 项（4 项 perf 忽略）
 # 此后新增 1 条 crates/slip-store/tests/archive_guard.rs，本机被 SAC 拦、尚未首次执行，
 # 首次执行由 CI 完成；它一旦跑通，总数变为 222
-tools/verify-hotkey.ps1      ✅ 104 项 / 0 失败（2026-11-11 当天复跑两次，均为 104/104）
+tools/verify-hotkey.ps1      ✅ 104 项 / 0 失败（2026-11-11 当天复跑三次，均为 104/104）
 tools/check-forbidden.ps1    ✅ 5 项
 ```
 
@@ -110,3 +110,35 @@ tools/check-forbidden.ps1    ✅ 5 项
 3. **R31–R50 矩阵**：贴一次，我按既有标准继续（实现 → 门禁全绿 → 一项一提交 → 证据入档）。
 
 三项都不需要我猜测——这也是我没有继续硬凑轮次的原因。
+
+## 七、终局状态（最后一轮复核）
+
+| 检查项 | 最后一次实测 | 说明 |
+|---|---|---|
+| 端到端 `verify-hotkey.ps1` | **104 项 / 0 失败**（当天第三次，三次都是 104/104） | 主程序与界面行为稳定 |
+| `cargo fmt --check` | 通过 | — |
+| `cargo clippy -D warnings` | 通过 | — |
+| `tools/check-forbidden.ps1` | 通过（5 项约束） | — |
+| `cargo test --workspace` | **221 项此前完整通过**；本轮受 SAC 影响只能跑部分 | 见下 |
+| `archive_guard.rs`（新增） | **尚未执行**，仅通过 `cargo check --tests` | 首次执行交给 CI |
+
+### 两个仍然锁死的门（都不是代码问题）
+
+1. **执行**：Smart App Control（`VerifiedAndReputableDesktop`）按文件拒绝我们的未签名产物。
+   规律：**新编出的二进制首次执行常被拒，同一文件隔一会儿重试往往就过**；
+   所以日常开发不必关 SAC，重试即可（`tools/cargo-test-retry.ps1` 已按此实现）。
+   只有需要"一次就能打开 GUI"时才值得关 SAC 或换 Sandbox/VM。
+2. **依赖**：`crates.io` 解析到 `198.18.1.197`（本地代理的假 IP 段）且 TLS 失败，
+   `github.com` 同样不可达。**这直接让 R03/R08/R28/R29 无法进行**——不是权限问题，
+   是拿不到 `tauri-plugin-notification` / `tauri-plugin-clipboard-manager`。
+   本地无镜像、无 vendor、无缓存。
+
+### 因此未做的轮次（逐项原因）
+
+| 轮次 | 原因 |
+|---|---|
+| R03 气泡通知 / R08 复制诊断 / R28 剪贴板导入 / R29 复制文本 | **依赖下载被代理阻断**（见上）；权限审批只是第二道门 |
+| R13 单条删除 / R22 物理擦除 / R25 `archive.md` | 与既有不变量冲突，已确认不做 |
+| R48 `panic = "abort"` | 打死 `JoinError` 契约，已确认不做 |
+| R40 混合 DPI | 本机所有显示器同缩放，无法验证 |
+| R31–R50 其余 | **该矩阵不在本次会话上下文中，拒绝猜测** |
