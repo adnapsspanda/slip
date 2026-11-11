@@ -53,6 +53,19 @@
 
 ## 完成记录
 
+- **R35 统一键盘焦点环（本轮）**：原来三种情况不一致，其中一处**等于没有焦点提示**。
+  - `.slip__lock` / `.slip__archive` 的 `:focus-visible` 只改 `opacity: 0.85`——而这两颗按钮
+    平时就是半透明，1 → 0.85 肉眼看不出来，键盘用户无法知道焦点在哪。
+  - `.slip__text` 用 `1px solid var(--accent)`；输入框则是半透明光晕 `box-shadow`（装饰性，
+    不满足 ≥3:1）。
+  - 统一做法：新增实心 `--focus-ring`（浅色 `#a8552c` 对纸色 **4.91:1**、深色 `#f0a173`
+    **7.96:1**，均 ≥3:1），并用 **`:where(...)`（特异性 0）** 给
+    `button/input/textarea/select/a/[tabindex]/[role=textbox]/[role=checkbox]` 统一
+    `outline: 2px solid + offset 2px`——组件自有样式仍可覆盖，不会出现"更具体却盖不住"的坑。
+  - 只对 `:focus-visible` 生效：鼠标点击不出环，键盘才出。
+  - 静态证据：产物 CSS 含 `--focus-ring` 与 `outline:2px solid`；体积 9.63 KB。
+  - 对比度是我用 WCAG 相对亮度公式**现算**的（`#a8552c` 4.91、`#f0a173` 7.96），不是估的。
+
 - **R38 纸面质感（本轮）**：纯 CSS 两层叠加，零图片、零网络请求。
   - ① 顶部径向受光 `radial-gradient(120% 90% at 50% -20%, ...)`——模拟纸面微弯、光从上方来；
   - ② 45° 细斜纹 `repeating-linear-gradient` 做纤维感，透明度压到 2.6%（浅）/2%（深）。

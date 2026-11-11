@@ -26,6 +26,8 @@
   --scrollbar-thumb: rgb(120 112 97 / 32%);
   --scrollbar-thumb-hover: rgb(120 112 97 / 55%);
   --accent-focus-ring: rgb(180 102 58 / 14%);
+  /* 键盘焦点环：实心色，对纸色 4.91:1（≥3:1 要求） */
+  --focus-ring: #a8552c;
   --paper-shadow:
     0 0 0 1px rgb(43 38 32 / 35%), 0 18px 40px rgb(43 38 32 / 22%),
     0 2px 6px rgb(43 38 32 / 14%);
@@ -61,6 +63,8 @@
     --scrollbar-thumb: rgb(168 159 141 / 28%);
     --scrollbar-thumb-hover: rgb(168 159 141 / 50%);
     --accent-focus-ring: rgb(224 122 71 / 20%);
+    /* 深色：对纸色 7.96:1 */
+    --focus-ring: #f0a173;
     --paper-shadow:
       0 0 0 1px rgb(255 255 255 / 12%), 0 18px 40px rgb(0 0 0 / 60%),
       0 2px 8px rgb(0 0 0 / 40%);
@@ -538,9 +542,30 @@ body {
 }
 
 .slip__text:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: 4px;
+}
+
+/*
+ * 统一的键盘焦点：2px 实心环 + 2px 偏移（Windows 11 的观感）。
+ *
+ * 为什么用 `:where()` 包起来：特异性为 0，任何组件的自有规则都能覆盖它，
+ * 不会出现"我写了更具体的选择器却盖不住全局焦点样式"这种坑。
+ * 只对 `:focus-visible` 生效——鼠标点击不出环，键盘才出。
+ */
+:where(
+  button,
+  input,
+  textarea,
+  select,
+  a,
+  [tabindex],
+  [role="textbox"],
+  [role="checkbox"]
+):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 /* 行内样式：只加强层次，不改字号——列表的节奏靠行高而不是字号跳动。 */
@@ -613,6 +638,11 @@ body {
 .slip__lock:focus-visible,
 .slip__archive:focus-visible {
   opacity: 0.85;
+  /* 只改透明度是不够的：这两颗按钮平时就是半透明，1 到 0.85 的差别肉眼看不出来。
+     必须给实心焦点环，否则键盘用户等于没有焦点提示。 */
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .slip__lock:hover,
