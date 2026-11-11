@@ -6,6 +6,7 @@
 pub mod dispatch;
 pub mod geometry;
 pub mod presenter;
+pub mod tray;
 
 use std::collections::BTreeSet;
 

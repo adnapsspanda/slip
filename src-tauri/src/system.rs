@@ -15,23 +15,76 @@ use tauri::{App, AppHandle, Manager};
 use tauri_plugin_autostart::ManagerExt;
 
 /// 退出时把非阻塞的收尾放到这里。
+/// 托盘里"待办摘要"那一行的句柄。
+///
+/// 为什么不重建整个菜单：菜单重建会打断用户正在展开的菜单，而且每次变更都重建是浪费。
+/// 只 `set_text` 一行就够，且**只有计数变化时才调用**。
+pub struct TraySummary(pub MenuItem<tauri::Wry>);
+
+/// 读取当前未完成条数。拿不到快照时按 0 处理（托盘不该因为读状态失败而消失）。
+fn current_pending(app: &App) -> usize {
+    let handle = app.handle().clone();
+    let Some(state) = handle.try_state::<crate::ShellState>() else {
+        return 0;
+    };
+    match tauri::async_runtime::block_on(state.dispatcher.get_snapshot()) {
+        Ok(snapshot) => snapshot.slips.iter().filter(|slip| !slip.done).count(),
+        Err(_) => 0,
+    }
+}
+
+/// 把托盘的摘要行与 tooltip 更新到最新计数。
+///
+/// 幂等：调用方只需在**计数变化时**调它。
+pub fn refresh_tray(app: &tauri::AppHandle, pending: usize) {
+    // 留一条日志：托盘是"看不见的状态"，出问题时没有痕迹就只能靠猜。
+    tracing::info!("tray summary: {}", slip_app::tray::summary(pending));
+    if let Some(summary) = app.try_state::<TraySummary>() {
+        let _ = summary.0.set_text(slip_app::tray::summary(pending));
+    }
+    if let Some(tray) = app.tray_by_id("slip") {
+        let pretty = app
+            .try_state::<crate::ShellState>()
+            .map(|state| pretty_hotkey(&state.hotkey))
+            .unwrap_or_default();
+        let _ = tray.set_tooltip(Some(slip_app::tray::tooltip(&pretty, pending)));
+    }
+}
+
 pub fn install_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     // 热键从托管状态读：`hotkey` 已经过解析校验，解析失败时也已回落默认值，
     // 所以这里拿到的就是**此刻真正生效**的那一组键。
     let hotkey = app.state::<crate::ShellState>().hotkey.clone();
     let pretty = pretty_hotkey(&hotkey);
-    let (tooltip, hotkey_text) = if hotkey.is_empty() {
-        (
-            String::from("Slip · 热键未注册"),
-            String::from("热键：未注册"),
-        )
+    let hotkey_text = if hotkey.is_empty() {
+        String::from("热键：未注册")
     } else {
-        (format!("Slip · {pretty} 唤出"), format!("热键：{pretty}"))
+        format!("热键：{pretty}")
     };
 
     // 置灰的信息项放在最上面：用户第一眼看到的就是"这东西怎么叫出来"。
     // enabled = false 让它不可点击，纯粹当一行说明用（回调里因此不需要分支）。
     let hotkey_item = MenuItem::with_id(app, "hotkey", hotkey_text, false, None::<&str>)?;
+    // 待办摘要：同样是**置灰的信息项**，随快照更新（见 `refresh_tray`）。
+    // 初值取此刻的实时快照——启动时任务栏/托盘就该是准确的，不能等第一次变更。
+    let pending_now = current_pending(app);
+    // tooltip 与菜单摘要用同一份计数：悬停气泡和菜单不能各说各话。
+    let tooltip = slip_app::tray::tooltip(
+        if hotkey.is_empty() {
+            ""
+        } else {
+            pretty.as_str()
+        },
+        pending_now,
+    );
+    let summary_item = MenuItem::with_id(
+        app,
+        "summary",
+        slip_app::tray::summary(pending_now),
+        false,
+        None::<&str>,
+    )?;
+    let summary_for_state = summary_item.clone();
     let separator = PredefinedMenuItem::separator(app)?;
     let show = MenuItem::with_id(app, "show", "显示 Slip", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "打开 Inbox", true, None::<&str>)?;
@@ -47,7 +100,15 @@ pub fn install_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
-        &[&hotkey_item, &separator, &show, &open, &autostart, &quit],
+        &[
+            &hotkey_item,
+            &summary_item,
+            &separator,
+            &show,
+            &open,
+            &autostart,
+            &quit,
+        ],
     )?;
 
     // 菜单事件回调里要改勾选状态，所以把句柄搬进闭包（内部是 Arc，克隆很便宜）。
@@ -101,9 +162,10 @@ pub fn install_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
 
     // 有这条日志，`tray install failed` 的缺席才算有意义。
     tracing::info!("tray installed: {tooltip}");
+    // 句柄托管必须在返回之前：刷新任务要靠它拿到那一行去 set_text。
+    app.manage(TraySummary(summary_for_state));
     Ok(())
 }
-
 /// 把小写的热键文本美化成给人看的形式：`ctrl+alt+space` → `Ctrl+Alt+Space`。
 ///
 /// 托管状态里的值统一是小写（见 `hotkey::resolve_shortcut`），直接塞进菜单

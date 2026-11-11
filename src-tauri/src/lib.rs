@@ -610,6 +610,35 @@ pub fn run() {
                 tracing::error!("tray install failed: {error}");
             }
 
+            // 托盘摘要随快照更新。
+            //
+            // 前端是**拉取式**的（命令返回后自己 `refresh()`），没有快照推送事件；
+            // 而本项目刻意不引入回调扩展点。所以这里用一个低频轮询：每秒半看一次，
+            // **只在计数变化时**才动托盘——避免无谓的 UI 调用，也避免用户正在展开的菜单被打断。
+            {
+                let tray_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let mut last: Option<usize> = None;
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                        let pending = {
+                            let state = tray_handle.state::<ShellState>();
+                            match state.dispatcher.get_snapshot().await {
+                                Ok(snapshot) => {
+                                    snapshot.slips.iter().filter(|slip| !slip.done).count()
+                                }
+                                Err(_) => continue,
+                            }
+                        };
+                        if last == Some(pending) {
+                            continue;
+                        }
+                        last = Some(pending);
+                        system::refresh_tray(&tray_handle, pending);
+                    }
+                });
+            }
+
             // 手动启动（双击 exe）时把窗口显示出来：召唤式应用静默启动会让用户
             // 以为没跑起来。开机自启被拉起时才真正静默。
             //
