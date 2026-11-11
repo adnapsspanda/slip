@@ -52,6 +52,21 @@
 
 ## 完成记录
 
+- **R08 尝试未果：加依赖撞上同一堵墙（本轮）**：用户修好代理后，`cargo search` 恢复
+  （EXIT=0），依赖也**下载成功**（`arboard`、`clipboard-win`、`block-buffer` 等）。
+  - 代码改动已完成并暂存：`tauri-plugin-clipboard-manager = "2"`、
+    `.plugin(tauri_plugin_clipboard_manager::init())`、
+    capability 加 **仅写** 的 `clipboard-manager:allow-write-text`。
+  - **但编译卡在新依赖的 build script 上**，且是持久的：
+    `crc32fast` 与 `tauri-plugin-clipboard-manager` 的 `build-script-build` 各 12+ 次
+    全被 `os error 4551` 拒（手动反复加载、清理重建、等 40 秒 × 4 轮均无效）。
+  - 处置：改动整体 `git stash`（`stash@{0}`，名为"R08 clipboard 复制诊断"），
+    工作区回到可构建状态（`cargo check` 通过）。等 build script 被放行后
+    `git stash pop` 即可继续。
+  - 结论修正：**修好网络只解决了"下载"，没解决"新依赖的 build script 被执行"**。
+    在当前 SAC 状态下，加任何新依赖都会撞这一下；之前 `slip-shell` 自己的 build script
+    是约 1.5 小时后才被放行的，所以这条能等，但**不能靠重试立刻绕过**。
+
 - **升级 Win11 专业版后的复核（本轮）**：SAC 策略状态**没变**（仍是强制），但实际可用性
   明显改善——`cargo check --tests` 从"持久失败于 build script"变成**通过**；
   `cargo build`、端到端（104/104）都正常；**9 个测试目标逐个执行全部通过，合计 225 项**，
