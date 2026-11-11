@@ -325,6 +325,24 @@ body {
   padding: 22px 6px 18px;
   color: var(--ink-soft);
   text-align: left;
+
+  /*
+   * 首次启动时这张纸是空的，界面需要一点"刚展开"的感觉——但**不能晃动**：
+   * 位移只有 4px、时长 0.28s，人在等它出现时不会觉得被打断。
+   * 只动 opacity + translateY：这两样 GPU 合成，不触发布局。
+   */
+  animation: slip-rise 0.28s ease-out both;
+}
+
+@keyframes slip-rise {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .slips__empty-title {
@@ -363,7 +381,14 @@ body {
   border: 1px solid var(--paper-edge);
   border-bottom-width: 2px;
   border-radius: 5px;
+  /*
+   * 键帽质感全靠这三层：顶部一道内高光（受光）、底部一道较深的外投影（离纸面有距离）、
+   * 底边加厚（键帽侧壁）。纯 CSS，零图片。
+   */
   background: var(--paper-card);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 55%),
+    0 1px 0 rgb(43 38 32 / 12%);
   color: var(--ink);
   font-family: inherit;
   font-size: 12px;
@@ -595,4 +620,20 @@ body {
 .slip__hint {
   margin-left: 6px;
   color: var(--ink-soft);
+}
+
+/*
+ * 尊重系统设置：`prefers-reduced-motion: reduce` 时把动画和过渡全部关掉。
+ * 这类用户对位移/缩放敏感，微动效对他们不是"精致"而是"难受"。
+ * 注意是 **none 而不是更短的时长**——问题在"动"本身，不在"动多久"。
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
