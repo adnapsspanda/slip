@@ -53,6 +53,21 @@
 
 ## 完成记录
 
+- **R42 Ctrl+Enter 与输入法保护（本轮）**：
+  - 现状取证：`Ctrl+Enter` **本来就能提交**——但那是因为原代码只判断了 `shiftKey`，
+    属于巧合而非设计，且没有任何测试守着。中文输入法下"回车确认候选词"这条更是裸奔。
+  - 抽出纯函数 `ui/src/lib/keys.js` 的 `submitIntent(event)`，返回值四态：
+    `composing`（组合期，任何提交键都不提交）/ `newline`（Shift+Enter）/
+    `submit`（Enter 与 Ctrl/Cmd+Enter 完全等价）/ `none`。
+  - **判定顺序有讲究**：输入法判断放在最前——组合期里 Shift+Enter 也不能换行，
+    否则候选词没确认就把半截拼音留在框里。Shift 优先于 Ctrl：`Shift+Ctrl+Enter`
+    仍是换行，否则用户想换行却把内容提交了。
+  - `Capture.svelte` 改用该函数，`ArrowDown`（空闲时进列表）仍保留在 `none` 分支。
+  - 检查脚本补 **11 条断言**（Enter / Ctrl / Cmd / Shift / Shift+Ctrl / 组合期三种 /
+    keyCode 229 兜底 / 无关按键），已接进钩子与 CI。
+  - **变异验证**：把输入法判断改成 `if (false)` → **4 条**断言红（组合期 Enter、
+    组合期 Ctrl+Enter、keyCode 229、组合期 Shift+Enter）；还原后 11 条全绿。
+
 - **R41 阶段四视觉回归与结项（本轮）**：
   - 把 6 项视觉细节固化成 **8 条 CDP 计算样式断言**，写进 `tools/cdp-probe.mjs`
     （R32 发丝轮廓、R33 动效名、R35 焦点环 2px 实心、R36 `scrollbar-width`、

@@ -7,6 +7,7 @@
 //
 // 用法：& "C:\Users\spand\.bun\bin\bun.exe" run tools/check-ui-logic.mjs
 import { bannerLevel } from "../ui/src/lib/status.js";
+import { submitIntent } from "../ui/src/lib/keys.js";
 
 let failed = 0;
 const check = (label, actual, expected) => {
@@ -34,6 +35,31 @@ check(
   "error",
 );
 check("缺字段也不炸 → info", bannerLevel({}), "info");
+
+// ---- R42 捕获框提交意图：回车 / Ctrl+Enter / Shift+Enter / 输入法组合期 ----
+check("Enter 提交", submitIntent({ key: "Enter" }), "submit");
+check("Ctrl+Enter 与 Enter 等价", submitIntent({ key: "Enter", ctrlKey: true }), "submit");
+check("Cmd+Enter 等价（macOS）", submitIntent({ key: "Enter", metaKey: true }), "submit");
+check("Shift+Enter 换行", submitIntent({ key: "Enter", shiftKey: true }), "newline");
+check("Shift+Ctrl+Enter 仍是换行", submitIntent({ key: "Enter", shiftKey: true, ctrlKey: true }), "newline");
+check(
+  "输入法组合期 Enter 不提交",
+  submitIntent({ key: "Enter", isComposing: true }),
+  "composing",
+);
+check(
+  "输入法组合期 Ctrl+Enter 也不提交",
+  submitIntent({ key: "Enter", isComposing: true, ctrlKey: true }),
+  "composing",
+);
+check(
+  "WebView2 兜底 keyCode 229 不提交",
+  submitIntent({ key: "Enter", keyCode: 229 }),
+  "composing",
+);
+check("输入法组合期 Shift+Enter 不换行也不提交", submitIntent({ key: "Enter", isComposing: true, shiftKey: true }), "composing");
+check("无关按键返回 none", submitIntent({ key: "a" }), "none");
+check("ArrowDown 与本模块无关", submitIntent({ key: "ArrowDown" }), "none");
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);

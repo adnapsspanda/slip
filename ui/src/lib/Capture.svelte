@@ -1,5 +1,6 @@
 <script>
   import { stripListPrefix } from "./inline.js";
+  import { submitIntent } from "./keys.js";
   /**
    * 捕获框。
    *
@@ -94,16 +95,22 @@
       return;
     }
 
-    if (event.key !== "Enter" || event.shiftKey) {
+    const intent = submitIntent(event);
+    // 输入法组合期：回车是"确认候选词"，Shift/Ctrl 都不改变这个含义，一律放行给 IME。
+    if (intent === "composing") {
+      return;
+    }
+    if (intent !== "submit") {
+      // 换行（Shift+Enter）交给 textarea 自己处理，这里不拦。
+      if (intent === "newline") {
+        return;
+      }
       // 输入框为空时按 ↓ 直接进入列表：让"录入 → 浏览"不必摸鼠标。
       // 有内容时不劫持 ↓——那时用户多半就是想移动光标。
       if (event.key === "ArrowDown" && text.trim().length === 0) {
         event.preventDefault();
         onseeklist?.();
       }
-      return;
-    }
-    if (composing || event.isComposing || event.keyCode === 229) {
       return;
     }
     event.preventDefault();
