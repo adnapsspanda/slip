@@ -9,6 +9,9 @@
   --paper: #fbf7ee;
   --paper-card: #fffdf8;
   --paper-edge: #e2d9c6;
+  /* 纸面质感：一层顶部受光 + 一层极淡纤维纹，纯 CSS 零图片 */
+  --paper-sheen: rgb(255 255 255 / 30%);
+  --paper-fiber: rgb(120 112 97 / 2.6%);
   --paper-hover: #f3ecdd;
   --paper-active: #e9e1cf;
   --paper-disabled: #f6f1e6;
@@ -47,6 +50,8 @@
     --paper: #201e1b;
     --paper-card: #282521;
     --paper-edge: #3c3831;
+    --paper-sheen: rgb(255 255 255 / 5%);
+    --paper-fiber: rgb(255 255 255 / 2%);
     --paper-hover: #322e28;
     --paper-active: #3e3932;
     --paper-disabled: #25221e;
@@ -104,7 +109,21 @@ body {
   height: 100%;
   border-radius: var(--radius);
   border: 1px solid var(--paper-edge);
-  background: var(--paper);
+  /*
+   * 纸面质感靠两层极淡的叠加，不是贴图：
+   *   ① 顶部径向受光——模拟纸面微微弯起，光从上方来；
+   *   ② 45° 细斜纹——纤维感，透明度低到只在纯色上勉强可见。
+   * 两层都压得很低，**不参与文字对比度**（正文对比度由 --ink 对 --paper 决定）。
+   * 不用 repeating-radial-gradient 做噪点：那会显著增加绘制成本，滚动时掉帧。
+   */
+  background:
+    radial-gradient(120% 90% at 50% -20%, var(--paper-sheen), transparent 62%),
+    repeating-linear-gradient(
+      45deg,
+      var(--paper-fiber) 0 1px,
+      transparent 1px 3px
+    ),
+    var(--paper);
   /*
    * 边界识别：纸色 #fbf7ee 在纯白壁纸上只有 1.07:1，原边框 1.40:1，都近乎不可见；
    * 深色壁纸上纸色本身就有 15.6:1，不需要额外手段。
