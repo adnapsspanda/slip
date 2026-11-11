@@ -53,6 +53,22 @@
 
 ## 完成记录
 
+- **R53 备份枚举健壮性（本轮）**：矩阵关切的是"非标准命名的残留文件不能被当成备份"。
+  - 取证：`list_backups` 已经会跳过无法解析的名字、`restore_backup` 已有目录检查、
+    `prune_backups` 只统计可解析的——大方向本来是对的。
+  - **但 `parse_backup_name` 有两个真漏洞**：①多余的段被忽略（`inbox.md.bak-1-2-3`
+    会被读成 `(1, 2)`）；②**不校验路径分隔符**，`a/b.bak-1` 也能解析成功——
+    虽然 `restore_backup` 另有一道目录检查，但让这种名字通过解析本身就是隐患。
+  - 收紧为：拒绝含 `/` 或 `\\`、拒绝空前缀、拒绝多余段、`u64`/`u32` 解析失败即拒。
+  - 新增 2 条测试（`parse_backup_name_rejects_malformed_names` 覆盖 7 种畸形名字 +
+    `malformed_backup_names_are_ignored_and_not_restorable` 验证"既不列出也不可恢复"）。
+  - **变异验证**：去掉"多余段"检查 → 测试红；还原后 WSL 里 slip-store 全部 **100 项通过**。
+  - **与矩阵措辞的偏差**：矩阵说"标记为 corrupt"，本项目里 corrupt 专指
+    `inbox.md.corrupt-*`（真实数据丢失的证据）。把名字不合规的备份也标成 corrupt 会污染
+    这个概念，所以选择**忽略**——既不当备份、也不出现在 corrupt 列表里。
+  - 过程中的教训：我用行切片修 `#[test]` 时把一条属性弄重复（rustc 报 duplicated attribute），
+    说明**脚本改 Rust 源码后必须跑 clippy**（能编译通过 ≠ 属性没重复）。
+
 - **R52 「隔离并重建」两步确认（本轮）**：原来**一次点击就把当前 inbox 换成空文件**，
   手滑点错就是"当前内容没了"。
   - 新增纯函数 `confirmStep({armedAt, now, windowMs})`（`ui/src/lib/confirm.js`）：

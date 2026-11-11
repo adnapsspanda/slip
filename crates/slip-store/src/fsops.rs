@@ -347,14 +347,31 @@ pub fn prune_backups(dir: &Path, keep: usize) -> Result<(), IoKind> {
 }
 
 /// 从 `inbox.md.bak-<unix_ms>[-n]` 解析出 `(unix_ms, n)`。
+///
+/// **必须是我们自己生成的那种名字**才认：结构不合规的一律返回 `None`。
+/// 之前的实现有两处漏洞，都会让"随便一个文件"被当成备份：
+/// - 多余的段被忽略（`inbox.md.bak-1-2-3` 会被读成 `(1, 2)`）；
+/// - 不校验前缀与分隔符，`/`、`\` 也能混进来（回到 `restore_backup` 就是路径穿越的
+///   潜在入口，虽然那里还有一道目录检查）。
 fn parse_backup_name(name: &str) -> Option<(u64, u32)> {
+    if name.contains('/') || name.contains('\\') {
+        return None;
+    }
     let index = name.rfind(".bak-")?;
+    // 前缀不能为空：`.bak-1` 这种不是备份，是别的什么东西。
+    if index == 0 {
+        return None;
+    }
     let mut parts = name[index + ".bak-".len()..].split('-');
-    let stamp = parts.next()?.parse().ok()?;
-    let n = match parts.next() {
+    let stamp: u64 = parts.next()?.parse().ok()?;
+    let n: u32 = match parts.next() {
         Some(raw) => raw.parse().ok()?,
         None => 1,
     };
+    // 还剩下段说明这个名字不是我们生成的（我们最多两段）。
+    if parts.next().is_some() {
+        return None;
+    }
     Some((stamp, n))
 }
 
@@ -679,6 +696,54 @@ mod tests {
         assert_eq!(list[0].slips, 2, "第二代有两条");
         assert_eq!(list[0].preview, "第一代只有一条");
         assert_eq!(list[1].slips, 1);
+    }
+
+    /// 结构不合规的名字一个都不能被认成备份。
+    #[test]
+    fn parse_backup_name_rejects_malformed_names() {
+        // 正常形态
+        assert_eq!(
+            parse_backup_name("inbox.md.bak-1700000000000"),
+            Some((1700000000000, 1))
+        );
+        assert_eq!(
+            parse_backup_name("inbox.md.bak-1700000000000-3"),
+            Some((1700000000000, 3))
+        );
+        // 各种畸形
+        for bad in [
+            "inbox.md.bak-",
+            "inbox.md.bak-abc",
+            "inbox.md.bak--1",
+            "inbox.md.bak-1700000000000-",
+            "inbox.md.bak-1700000000000-1-2",
+            ".bak-1700000000000",
+            "inbox.md.bak-99999999999999999999999999",
+        ] {
+            assert_eq!(parse_backup_name(bad), None, "不该被认成备份：{bad}");
+        }
+        // 路径分隔符一律拒绝
+        assert_eq!(parse_backup_name("a/b.bak-1"), None);
+        assert_eq!(parse_backup_name("a\\b.bak-1"), None);
+    }
+
+    /// 多余段的文件既不列出，也不能被恢复——它根本不是我们生成的备份。
+    #[test]
+    fn malformed_backup_names_are_ignored_and_not_restorable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("inbox.md.bak-1-2-3"), b"- [ ] x\n").unwrap();
+        std::fs::write(dir.path().join("inbox.md.bak-1000-1"), b"- [ ] y\n").unwrap();
+
+        let list = list_backups(dir.path());
+        assert_eq!(list.len(), 1, "只有合规的那个应当被列出");
+        assert_eq!(list[0].name, "inbox.md.bak-1000-1");
+
+        let inbox = dir.path().join("inbox.md");
+        std::fs::write(&inbox, b"").unwrap();
+        assert!(
+            restore_backup(&inbox, "inbox.md.bak-1-2-3").is_err(),
+            "结构不合规的名字不能被恢复"
+        );
     }
 
     #[test]
