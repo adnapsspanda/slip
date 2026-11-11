@@ -12,10 +12,50 @@ use crate::text::normalize_text;
 /// 单次捕获的条数上限。
 pub const MAX_LINES: usize = 100;
 
+/// 剥掉行首的列表标记：`- ` / `* ` / `+ ` / `1. ` / `1) `，以及紧随其后的 checkbox。
+///
+/// 粘贴 Markdown 待办清单是常见操作，不剥的话会写出 `- [ ] - 买发票` 这种双重标记。
+///
+/// 三条刻意的保守规则：
+/// 1. 分隔符后**必须跟空格**——`1.5 倍`、`-5 度`、`-- 注意` 都不是列表前缀；
+/// 2. 只剥**一层**；`- - 嵌套` 得到 `- 嵌套`，不做多轮；
+/// 3. 有序列表的数字最多 3 位，`2026.11.11` 这种日期不会被当成序号。
+fn strip_list_prefix(line: &str) -> &str {
+    let s = line.trim_start();
+
+    let after_marker = s
+        .strip_prefix("- ")
+        .or_else(|| s.strip_prefix("* "))
+        .or_else(|| s.strip_prefix("+ "))
+        .or_else(|| strip_ordered_marker(s));
+
+    let Some(rest) = after_marker else {
+        return s;
+    };
+
+    // checkbox 只在列表标记之后才剥：裸的 `[ ]` 更像是正文里的方括号。
+    for checkbox in ["[ ] ", "[x] ", "[X] "] {
+        if let Some(body) = rest.strip_prefix(checkbox) {
+            return body;
+        }
+    }
+    rest
+}
+
+/// `1. ` 与 `1) ` 两种有序列表前缀。数字 1~3 位，且后面必须有空格。
+fn strip_ordered_marker(s: &str) -> Option<&str> {
+    let digits = s.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 || digits > 3 {
+        return None;
+    }
+    let rest = &s[digits..];
+    rest.strip_prefix(". ").or_else(|| rest.strip_prefix(") "))
+}
+
 /// 把一次捕获的原始文本拆成若干草稿。
 ///
 /// - 按 `\r\n | \r | \n` 切分；
-/// - 每行去首尾空白后为空则丢弃；
+/// - 每行先剥掉列表前缀（见 [`strip_list_prefix`]），去首尾空白后为空则丢弃；
 /// - 每行走 [`normalize_text`] 的完整校验；
 /// - 去空白后的条数为 `1..=MAX_LINES`，超出**整批拒绝**（不截断）；
 /// - 全部为空 → [`DomainError::EmptyCapture`]；
@@ -27,8 +67,13 @@ pub fn split_drafts(raw: &str, occurred_at: OffsetDateTime) -> Result<Vec<Draft>
         if line.trim().is_empty() {
             continue;
         }
+        // 只在下标前缀之后还剩东西时才继续：`- ` 这种空列表项按空行处理。
+        let stripped = strip_list_prefix(line);
+        if stripped.trim().is_empty() {
+            continue;
+        }
         // normalize_text 自己会 trim，这里不预 trim，保持单一裁决点。
-        let text = normalize_text(line)?;
+        let text = normalize_text(stripped)?;
         drafts.push(Draft { text, occurred_at });
 
         // 先加后判：能准确报出"至少超到几条"。
@@ -151,5 +196,59 @@ mod tests {
             split_drafts(&raw, at()),
             Err(DomainError::TextTooLong { .. })
         ));
+    }
+
+    // ---------------- 列表前缀清洗 ----------------
+
+    #[test]
+    fn strips_common_list_prefixes() {
+        // 粘贴 Markdown 清单是常见操作：不剥会写出 `- [ ] - 买发票` 这种双重标记。
+        assert_eq!(
+            texts("- 买发票\n* 问 X 要收据\n+ third").unwrap(),
+            vec!["买发票", "问 X 要收据", "third"]
+        );
+        assert_eq!(texts("1. 第一\n2) 第二").unwrap(), vec!["第一", "第二"]);
+    }
+
+    #[test]
+    fn strips_checkbox_only_after_a_list_marker() {
+        assert_eq!(
+            texts("- [ ] 待办\n- [x] 已完成").unwrap(),
+            vec!["待办", "已完成"]
+        );
+        // 裸的 `[ ]` 更像正文里的方括号，不剥。
+        assert_eq!(texts("[ ] 不是列表").unwrap(), vec!["[ ] 不是列表"]);
+    }
+
+    #[test]
+    fn keeps_things_that_only_look_like_prefixes() {
+        for line in [
+            "1.5 倍",          // 数字后是小数点，不是 "点+空格"
+            "-5 度",           // 没有空格分隔
+            "-- 注意",         // 不是单层标记
+            "2026.11.11 发布", // 4 位数字不算序号
+            "**重点**",        // 与列表无关
+        ] {
+            assert_eq!(texts(line).unwrap(), vec![line], "不该剥：{line}");
+        }
+    }
+
+    #[test]
+    fn strips_only_one_level() {
+        assert_eq!(texts("- - 嵌套").unwrap(), vec!["- 嵌套"]);
+    }
+
+    #[test]
+    fn empty_list_item_is_dropped_like_a_blank_line() {
+        // 「- 」本身没有内容，按空行处理；一个只剩空列表项的捕获等于空捕获。
+        assert_eq!(texts("a\n- \nb").unwrap(), vec!["a", "b"]);
+        assert_eq!(texts("- "), Err(DomainError::EmptyCapture));
+    }
+
+    #[test]
+    fn stripped_lines_still_respect_the_per_line_limit() {
+        // 剥前缀之后才判长度：`- ` 不该占掉两个码点配额。
+        let long = format!("- {}", "a".repeat(crate::MAX_TEXT_CODEPOINTS));
+        assert!(split_drafts(&long, at()).is_ok());
     }
 }
