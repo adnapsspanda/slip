@@ -52,6 +52,14 @@
 
 ## 完成记录
 
+- **守卫补强（随 R17）**：`tools/verify-hotkey.ps1` 的时序守卫原先只比 `ui/dist` 与 exe，
+  现在**也比 Rust 源码与 exe**。R17 我就是靠这条错误白查了一轮：改了 `slip-domain`
+  却只跑 `cargo test -p slip-domain`，验收跑的是旧二进制，结果是"改动没生效"。
+  负向验证：把某个 `.rs` 的时间戳摸新 3 分钟 → `[STALE] Rust 源码比 slip-shell.exe 新`
+  并以退出码 2 拦住；重编后恢复。
+  **环境恢复**：本次复跑端到端 **59 PASS / 0 FAIL / 1 SKIP**，之前 R15/R16 期间的
+  4 项红确认为沙盒导致（当时已用"回退到上一提交同样红"与"explorer 启动正常"双重证明）。
+
 - **R17｜本轮**：粘贴 Markdown 清单时剥掉列表前缀。
   - 实现在 `slip-domain/split.rs::strip_list_prefix`，三条刻意的保守规则：
     ① 分隔符后**必须跟空格**（`1.5 倍`、`-5 度`、`-- 注意` 都不是前缀）；

@@ -37,14 +37,39 @@ if (-not (Test-Path $exe)) { throw "找不到 $exe —— 先跑 cargo build -p 
 # 时序守卫：`ui/dist` 是**编译期**被嵌进 exe 的（tauri::generate_context!）。
 # 因此 dist 比 exe 新，说明二进制里装的是旧界面——此时跑验收等于验一个不存在的东西，
 # 而症状会伪装成"界面没更新"这种极难定位的样子。宁可在这里直接说清楚。
+$exeTime = (Get-Item $exe).LastWriteTime
 $distDir = Join-Path $root 'ui\dist'
 if (Test-Path $distDir) {
     $distTime = (Get-ChildItem $distDir -Recurse -File |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1).LastWriteTime
-    if ($distTime -gt (Get-Item $exe).LastWriteTime) {
+    if ($distTime -gt $exeTime) {
         Write-Output "[STALE] ui/dist 比 slip-shell.exe 新，二进制里嵌的是旧界面。"
         Write-Output "        dist 最新改动: $distTime"
-        Write-Output "        exe 构建时间:  $((Get-Item $exe).LastWriteTime)"
+        Write-Output "        exe 构建时间:  $exeTime"
+        Write-Output "        先跑：cargo build -p slip-shell"
+        exit 2
+    }
+}
+
+# 同一类错误的另一半：改了 Rust 源码却只跑了 `cargo test -p <crate>`，没重编 shell。
+# 我因此验过一次旧二进制，看到的是"改动没生效"，白查一轮。
+$rustInputs = @()
+foreach ($dir in @('crates', 'src-tauri\src', 'src-tauri\capabilities')) {
+    $path = Join-Path $root $dir
+    if (Test-Path $path) {
+        $rustInputs += Get-ChildItem $path -Recurse -File -Include *.rs, *.toml, *.json -ErrorAction SilentlyContinue
+    }
+}
+foreach ($name in @('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'src-tauri\tauri.conf.json')) {
+    $path = Join-Path $root $name
+    if (Test-Path $path) { $rustInputs += Get-Item $path }
+}
+if ($rustInputs.Count -gt 0) {
+    $newest = $rustInputs | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($newest.LastWriteTime -gt $exeTime) {
+        Write-Output "[STALE] Rust 源码比 slip-shell.exe 新，跑的是旧二进制。"
+        Write-Output "        最新改动: $($newest.FullName) @ $($newest.LastWriteTime)"
+        Write-Output "        exe 构建时间: $exeTime"
         Write-Output "        先跑：cargo build -p slip-shell"
         exit 2
     }
