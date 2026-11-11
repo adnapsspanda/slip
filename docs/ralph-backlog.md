@@ -52,6 +52,23 @@
 
 ## 完成记录
 
+- **变异验证审计（本轮）**：给四条早期关键断言补做"去掉修复会不会红"的验证。
+  **全部有效**，没有发现空壳：
+
+    | 守卫 | 变异 | 结果 |
+    |---|---|---|
+    | `retry_rides_out_a_short_lock`（R07） | `ATTEMPTS 5 → 1` | FAILED ✅ |
+    | 前缀清洗 5 条测试（R17） | `strip_list_prefix` 直接返回原行 | 5 条 FAILED ✅ |
+    | `sharing_violation_maps_to_busy`（R07） | 去掉 32/33 判定 | FAILED（left: Other）✅ |
+    | 端到端「再唤出后过滤条被收起」（R22） | 删 `summon()` 里的 `filtering = false` | FAILED（filterOpen=true）✅ |
+
+  - 每次变异后都还原并复跑确认恢复绿（端到端 100/100，工作区 clean）。
+  - 把这套做法写进 `AGENTS.md` 的 Testing Guidelines：**断言写完要变异验证一次**，
+    并列出"已验证"与"尚未验证"两栏——后者如实标注，避免读文档的人误以为全都验过。
+  - 为什么值得单独立一轮：`R24` 已经因此抓到一条空断言。变异验证的成本是两次
+    `cargo test -p <crate> --lib <过滤词>`（秒级），而漏掉一条空断言的代价是
+    某人将来"照着绿测试改代码"，改坏了也没人知道。
+
 - **变异测试揭穿了一个空断言（本轮）**：补 `IsolateAndReset` 清栈的断言后，按惯例做
   变异验证（去掉 `undo.clear()` 看测试会不会红）——**它居然还是绿的**。
   - 追下去发现真凶：上一轮修 `Reload` 时，我把 `undo.clear()` 插进了 `Ok(outcome)`

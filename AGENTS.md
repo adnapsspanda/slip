@@ -264,6 +264,28 @@ cargo build -p slip-shell
 
 ## Testing Guidelines
 
+### 断言写完要**变异验证**一次
+
+"测试通过"不是证据——它只说明在**当前实现**下测试没红。"去掉修复后测试会红"才是。
+本项目已经因此抓到过一条永远绿、却什么都没守住的断言（见 backlog 的 R24 记录）。
+
+做法很简单：把修复临时改掉（把常量改成不可能成立的值、把清理语句注释掉、让函数直接
+返回原值），跑那条测试，确认它**变红**，然后还原。两次 `cargo test -p <crate> --lib
+<过滤词>` 就够，不必跑整套。
+
+已做过变异验证的守卫（改动这些地方时请重新验证）：
+
+| 守卫 | 变异方式 | 结果 |
+|---|---|---|
+| `retry_rides_out_a_short_lock` | `ATTEMPTS: 5 → 1` | FAILED ✅ |
+| `strips_common_list_prefixes` 等 5 条 | `strip_list_prefix` 直接返回原行 | 5 条 FAILED ✅ |
+| `sharing_violation_maps_to_busy` | `if false && (code == 32 \|\| code == 33)` | FAILED（left: Other）✅ |
+| 端到端「再唤出后过滤条被收起」 | 删掉 `summon()` 里的 `filtering = false` | FAILED（filterOpen=true）✅ |
+
+**尚未**做变异验证的：`isolate_and_reset_clears_the_undo_stack` 已做过（见 R24）；
+其余前端断言、以及所有只靠"跑绿了"确认的测试，都还没验证过。
+
+
 - 领域层与调度层用**纯内存**测试，禁止碰真磁盘。
 - 事务层与格式闭包必须用**真实临时目录 + 真实文件**（`tests/acceptance.rs`），
   因为这些测试要验证的正是"磁盘上到底发生了什么"，mock 掉磁盘等于没测。
