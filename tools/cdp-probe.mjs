@@ -732,9 +732,14 @@ let externalState = { error: "未能改写文件" };
 try {
   const before = readFileSync(vaultInbox, "utf8");
   const extraId = "01a1c7e0-0000-7000-8000-00000000e001";
+  // 必须保证上一行以换行结束，否则追加的那行会和最后一条记录粘成一行——
+  // 那样测出来的"消失 1"是粘连假象，不是真删除（我第一版就踩了这个）。
+  const separator = before === "" || before.endsWith("\n") ? "" : "\n";
   writeFileSync(
     vaultInbox,
-    before + `- [ ] 外部写入的一条 <!-- slip:v1;id=${extraId};created=2026-11-10T03:00:00Z -->\n`,
+    before +
+      separator +
+      `- [ ] 外部写入的一条 <!-- slip:v1;id=${extraId};created=2026-11-10T03:00:00Z -->\n`,
     "utf8",
   );
 
@@ -765,6 +770,9 @@ check("外部改动后写入被拦并置 needsReload",
   `needsReload=${externalState.needsReload} ${JSON.stringify(externalState)}`);
 check("横幅说清外部改了多少条",
   /新增 1/.test(externalState.banner ?? ""), `banner=${externalState.banner}`);
+// 纯追加不该报"消失"：报了就说明有一条被粘连或误判。
+check("纯追加不会误报『消失』",
+  !/消失/.test(externalState.banner ?? ""), `banner=${externalState.banner}`);
 
 // 19. 备份面板：列出备份，两步确认后恢复（恢复前的内容也会再留一代）。
 const backup = JSON.parse(
