@@ -27,6 +27,13 @@
 | 14 | 澄清 | §9.7 的 `spike_*` 命令集已随实现删除 | 自检并入 `src-tauri/src/diag.rs`，只在 `SLIP_LOG=debug` 输出；IPC 不再暴露任何窗口开关（§9.7.1） |
 | 15 | **删除** | 展示层视图通路（`ViewEvent` 四变体、`ToggleCollapse`、`Prefs.order/collapsed/dock_side`、`FlushPrefs` 与 1s 去抖）在**前端从未产生过事件**，是实打实的死路径 | 整块删除（净减 522 行）；`Prefs` 收窄为只剩 `hotkey`；`dispatch` 主循环少一个 `select!` 分支与 dirty/due 状态机。将来若要重新引入拖拽/折叠，**必须先给出 UI 入口与验收用例**（§1.8、§3.5、§6.1、§9.7） |
 | 16 | 修正 | 权限收窄后 `data-tauri-drag-region` 失效（`core:default` 不含 `allow-start-dragging`），无边框窗口无法移动 | 补授该权限，并在验收脚本里钉住「`start_dragging` 不被拒」；`AGENTS.md` 写清原因（§9.3） |
+| 17 | 新增 | 长列表可读性：完成态沉降、滚动条降噪、横幅三档语义、焦点环统一、纸面质感（R32–R38） | 视觉与语义在 §9.3 之外新增一节；焦点环对比度按 WCAG 现算（4.91 / 7.96），不是估的 |
+| 18 | 新增 | 纯键盘闭环：`Ctrl+Enter` 等价提交、输入法组合期任何提交键都不提交、`PageUp/Down/Home/End`、编辑态 `Tab` 切换、粘贴即清列表前缀、过滤框 ↓/Enter 进首项 | 键位语义集中在 `ui/src/lib/keys.js` 的纯函数里，可脱离 GUI 验证（R42–R50） |
+| 19 | 新增 | 数据容灾：隔离重建二次确认（4 秒窗口）、备份名解析收紧、写盘指数退避（20→320ms）、`content_rev` 饱和递增、空文件视为健康 | R52–R60；`retry_delay` / `ContentRev::next` 均为可测纯函数 |
+| 20 | 新增 | 外壳：多屏定位四种拓扑、托盘待办摘要（1.5s 轮询，仅计数变化时更新）、失焦防护三闸门、启动参数精确匹配 | R62–R70；`geometry` / `tray` / `focus` / `launch` 四个模块从 `src-tauri` 下沉到 `slip-app`，测试不再受 GUI 环境影响 |
+| 21 | 新增 | 诊断能力：`copy_diagnostics`（显示器 / 缩放 / 平台）、`hotkey_status` + 热键被占用的横幅提醒、只读排查指引 | R57 / R68 / R54；写剪贴板在 Rust 侧完成，capability 仍是两项 |
+| 22 | 修正 | 用户可见错误消息原为英文（`DomainError` / `BlockingError` 的 Display、`map_store_error` 三条 message） | 全部中文化，并加机器守卫：码集合变动或消息不含中文即红（R77） |
+| 23 | 修正 | 设计文档自身的数字失真：写着"7 个 IPC 命令"，实际 21 个；总测试数 167 早已过期 | 新增 `tools/check-doc-sync.ps1` 机器核对命令数与 capability 清单（R78） |
 
 ---
 
@@ -875,9 +882,9 @@ M0 验收子集：§9.1 第 1、6 条；§9.2 中"文本往返""原字节保留"
 | `slip-store` · 验收 | 真实临时目录 + 真实文件：格式闭包、时钟回拨、元数据可见性、冲突不落字节、恢复、陈旧视图、提交点 | 12 |
 | `slip-app` | `Presenter`（合成 + `ui_rev` 全事件递增）、`Dispatcher`（单队列单消费者、`spawn_blocking`、错误映射、`Fatal`、`Full`/`Closed`/`Shutdown` drain） | 20 |
 | `slip-app` · 流水线 | 真实磁盘 + 真实 store + 真实 dispatcher：捕获落盘并回读、重启后读回、多行拆条、领域拒绝不碰文件 | 4 |
-| `src-tauri` + `ui` | 窗口外壳、7 个 IPC 命令、Svelte 5 前端（捕获框、列表、勾选、状态条、spike 面板） | — |
+| `src-tauri` + `ui` | 窗口外壳、**21 个 IPC 命令**、Svelte 5 前端（捕获框、列表、勾选、过滤、归档抽屉、备份面板、横幅与提示条） | — |
 
-**合计 167 个测试通过，0 个 `#[ignore]`**；`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo fmt --all --check` 均干净。仓库无任何 `todo!()` / `unimplemented!()`。
+**合计 241 个测试通过**（WSL 实测；另有 4 项性能测试按 `#[ignore]` 单独跑）；`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo fmt --all --check` 均干净。仓库无任何 `todo!()` / `unimplemented!()`。
 
 M0 验收子集（§9.1 第 1、6 条；§9.2 的文本往返、原字节保留、追加、文法、事务、提交点、冲突）**已由 `crates/slip-store/tests/acceptance.rs` 覆盖**，且刻意不使用 mock——验证的就是"磁盘上到底发生了什么"。
 

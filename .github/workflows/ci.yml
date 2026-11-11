@@ -55,6 +55,9 @@ jobs:
 
       # 「不可回退的约束」里能被文本证据判定的部分（禁止引入的依赖、物理归档、
       # presenter 上锁、前端 HTML 注入）。纯 grep，毫秒级，与提交钩子共用同一份实现。
+      - name: 设计文档与代码同步
+        run: pwsh -NoProfile -File tools/check-doc-sync.ps1
+
       - name: 门禁对等性（钩子与 CI 零漂移）
         run: pwsh -NoProfile -File tools/check-ci-parity.ps1
 
