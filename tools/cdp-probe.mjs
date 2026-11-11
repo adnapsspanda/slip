@@ -10,6 +10,11 @@ import { join } from "node:path";
 const port = process.argv[2] ?? "9222";
 // --dismiss：只把窗口收走就退出，用于验收脚本准备状态。
 const dismissOnly = process.argv.includes("--dismiss");
+// --type <文本>：往捕获框里放一段草稿但不提交，用于验收"草稿是否跨越隐藏"。
+const typeIndex = process.argv.indexOf("--type");
+const typeText = typeIndex > 0 ? process.argv[typeIndex + 1] : null;
+// --input：只打印当前输入框内容与可见状态，供脚本断言。
+const reportInput = process.argv.includes("--input");
 const ENDPOINT = `http://127.0.0.1:${port}`;
 
 function connect(url) {
@@ -63,6 +68,35 @@ async function evaluate(expression, awaitPromise = false) {
     return JSON.stringify({ __exception: result.exceptionDetails.text });
   }
   return result.result.value;
+}
+
+if (typeText !== null) {
+  await evaluate(
+    `(() => {
+       const ta = document.querySelector('.capture__input');
+       if (!ta) return 'no-input';
+       ta.focus();
+       ta.value = ${JSON.stringify(typeText)};
+       ta.dispatchEvent(new Event('input', { bubbles: true }));
+       return 'typed';
+     })()`,
+    true,
+  );
+  cdp.close();
+  process.exit(0);
+}
+
+if (reportInput) {
+  const value = await evaluate(
+    `JSON.stringify({
+       value: document.querySelector('.capture__input')?.value ?? null,
+       focused: document.activeElement === document.querySelector('.capture__input'),
+     })`,
+    true,
+  );
+  console.log(value);
+  cdp.close();
+  process.exit(0);
 }
 
 if (dismissOnly) {

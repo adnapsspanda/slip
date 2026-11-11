@@ -448,11 +448,18 @@ if (Test-Path $inbox) {
 # --- 多实例：第二个进程应当转发给第一个，并把窗口唤出来 ---
 # 这条链路完全没有其它覆盖：单实例插件的回调一旦接错，表现是"点第二次图标没反应"，
 # 而进程数、日志、界面全都正常——只能靠这个场景测出来。
-Write-Output "--- 多实例转发 ---"
+Write-Output "--- 多实例转发与草稿保留 ---"
+# 输入到一半就收走，是这个产品最要紧的场景之一：用户想到了点什么、还没按回车，
+# 先去看一眼别的东西。收起再唤出，那段字必须还在。
+$draft = "输入到一半的想法"
+& $bun run $probe $Port --type $draft 2>&1 | Out-Null
 & $bun run $probe $Port --dismiss 2>&1 | Out-Null
 Start-Sleep -Milliseconds 900
 $hiddenBeforeSecond = -not (Test-SlipVisible)
 Check "第二个实例启动前窗口已收走" $hiddenBeforeSecond "visible=$(-not $hiddenBeforeSecond)"
+
+$afterHide = (& $bun run $probe $Port --input 2>&1 | Select-Object -Last 1) | ConvertFrom-Json
+Check "收走窗口后草稿仍在" ($afterHide.value -eq $draft) "value=$($afterHide.value)"
 
 $secondLog = Join-Path $env:TEMP ("slip-second-" + [guid]::NewGuid().ToString("N") + ".log")
 $second = Start-Process -FilePath $exe -PassThru `
@@ -462,6 +469,11 @@ Check "第二个进程自行退出" $second.HasExited "hasExited=$($second.HasEx
 Check "转发后窗口被唤出" (Test-SlipVisible) "visible=$(Test-SlipVisible)"
 $count = (Get-Process slip-shell -ErrorAction SilentlyContinue | Measure-Object).Count
 Check "只剩一个实例" ($count -eq 1) "进程数=$count"
+
+# 被唤出之后草稿还在、且焦点回到输入框——否则用户得重新点一下才能继续打字。
+$afterSummon = (& $bun run $probe $Port --input 2>&1 | Select-Object -Last 1) | ConvertFrom-Json
+Check "唤出后草稿仍在" ($afterSummon.value -eq $draft) "value=$($afterSummon.value)"
+Check "唤出后焦点回到捕获框" ($afterSummon.focused -eq $true) "focused=$($afterSummon.focused)"
 
 Write-Output "--- 启动日志（stderr）---"
 # 应用此刻仍在运行、日志文件还被它持有，直接 ReadAllBytes 会撞共享冲突。
