@@ -24,6 +24,7 @@ fn slip(text: &str) -> Slip {
         done_at: None,
         archived_at: None,
         locked: false,
+        pinned: false,
     }
 }
 
@@ -144,6 +145,7 @@ async fn capture_of_several_lines_creates_several_slips() {
                 done_at: None,
                 archived_at: None,
                 locked: false,
+                pinned: false,
             })
         })
         .collect();

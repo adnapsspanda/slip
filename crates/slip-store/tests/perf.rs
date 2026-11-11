@@ -115,6 +115,7 @@ fn new_slip(text: &str) -> Slip {
         done_at: None,
         archived_at: None,
         locked: false,
+        pinned: false,
     }
 }
 

@@ -1057,6 +1057,7 @@ mod tests {
             done_at: None,
             archived_at: None,
             locked: false,
+            pinned: false,
         }
     }
 

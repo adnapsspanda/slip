@@ -39,6 +39,7 @@ fn slip(id: &str, text: &str) -> Slip {
         text: text.to_owned(),
         done: false,
         locked: false,
+        pinned: false,
         created_at: datetime!(2026-11-10 0:00 UTC),
         done_at: None,
         archived_at: None,

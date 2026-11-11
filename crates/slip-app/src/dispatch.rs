@@ -507,7 +507,10 @@ fn inverse_batch(before: &StoreSnapshot, mutations: &[Mutation]) -> Option<Vec<M
                 Some(at) => Patch::Archive { at },
                 None => Patch::Unarchive,
             },
+            // 置顶与定稿同类：它们是"标注"，不是内容编辑。撤销一条正文改动时
+            // 不该顺带把用户刚点的置顶也翻回去——那会让撤销变成不可预测的连带操作。
             Patch::SetLocked(_) => return None,
+            Patch::SetPinned(_) => return None,
         };
         inverse.push(Mutation::Patch { id: *id, patch });
     }
@@ -771,6 +774,7 @@ mod tests {
             done_at: None,
             archived_at: None,
             locked: false,
+            pinned: false,
         }
     }
 

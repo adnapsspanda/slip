@@ -300,6 +300,7 @@ fn classify(content: &[u8]) -> Result<Option<Record>, InvalidReason> {
     let mut raw_done_at: Option<&str> = None;
     let mut raw_archived_at: Option<&str> = None;
     let mut raw_locked: Option<bool> = None;
+    let mut raw_pinned: Option<bool> = None;
     let mut extras: Vec<ExtraField> = Vec::new();
 
     if !kv_part.is_empty() {
@@ -343,6 +344,17 @@ fn classify(content: &[u8]) -> Result<Option<Record>, InvalidReason> {
                         _ => return Err(InvalidReason::BadKeyValue),
                     });
                 }
+                "pinned" => {
+                    // 与 `locked` 同一套严格规则：只认 `0`/`1`，手改错宁可报错。
+                    if raw_pinned.is_some() {
+                        return Err(InvalidReason::DuplicateKey);
+                    }
+                    raw_pinned = Some(match value {
+                        "1" => true,
+                        "0" => false,
+                        _ => return Err(InvalidReason::BadKeyValue),
+                    });
+                }
                 _ => extras.push(ExtraField {
                     key: key.to_owned(),
                     value: value.to_owned(),
@@ -372,6 +384,7 @@ fn classify(content: &[u8]) -> Result<Option<Record>, InvalidReason> {
             done_at,
             archived_at,
             locked: raw_locked.unwrap_or(false),
+            pinned: raw_pinned.unwrap_or(false),
         },
         extras,
     }))
@@ -574,6 +587,10 @@ fn build_line(slip: &Slip, extras: &[ExtraField], terminator: Terminator) -> Vec
         // 未锁定时不写这个键：缺省即未锁，老版本读到也不会当成未知字段。
         text.push_str(";locked=1");
     }
+    if slip.pinned {
+        // 与 locked 同理：未置顶时不写这个键，缺省即不置顶。
+        text.push_str(";pinned=1");
+    }
     for extra in extras {
         text.push(';');
         text.push_str(&extra.raw);
@@ -616,6 +633,7 @@ fn rewrite_line(raw: &[u8], terminator: Terminator, slip: &Slip) -> Vec<u8> {
     let mut wrote_done_at = false;
     let mut wrote_archived_at = false;
     let mut wrote_locked = false;
+    let mut wrote_pinned = false;
     for segment in kv_part.split(';').filter(|segment| !segment.is_empty()) {
         let key = segment
             .split_once('=')
@@ -650,6 +668,12 @@ fn rewrite_line(raw: &[u8], terminator: Terminator, slip: &Slip) -> Vec<u8> {
                     out.push_str(";locked=1");
                 }
             }
+            "pinned" => {
+                wrote_pinned = true;
+                if slip.pinned {
+                    out.push_str(";pinned=1");
+                }
+            }
             _ => {
                 out.push(';');
                 out.push_str(segment);
@@ -666,6 +690,9 @@ fn rewrite_line(raw: &[u8], terminator: Terminator, slip: &Slip) -> Vec<u8> {
     }
     if slip.locked && !wrote_locked {
         out.push_str(";locked=1");
+    }
+    if slip.pinned && !wrote_pinned {
+        out.push_str(";pinned=1");
     }
     out.push_str(MARKER_SUFFIX);
 
@@ -790,6 +817,7 @@ mod tests {
             done_at: None,
             archived_at: None,
             locked: false,
+            pinned: false,
         }
     }
 
@@ -1270,6 +1298,55 @@ mod tests {
             verify_roundtrip(&doc, &candidate, &expected),
             Err(RoundtripError::DuplicateId)
         );
+    }
+
+    // ---------- 置顶（R93）：与 locked 同一套严格规则 ----------
+
+    #[test]
+    fn pinned_round_trips_through_the_marker() {
+        let raw = format!("- [ ] 置顶的 <!-- slip:v1;id={ID};created={CREATED};pinned=1 -->\n");
+        let doc = parse_ok(raw.as_bytes());
+        assert!(doc.records[0].slip.pinned);
+        // 没有改动时必须逐字节原样：置顶不该引起任何重写。
+        assert_eq!(render(&doc), raw.as_bytes());
+    }
+
+    #[test]
+    fn without_the_pinned_key_it_is_not_pinned() {
+        let doc = parse_ok(record_line("普通").as_bytes());
+        assert!(!doc.records[0].slip.pinned);
+    }
+
+    #[test]
+    fn bad_pinned_value_is_reported_not_guessed() {
+        // 与 locked 同一取向：`pinned=yes` 这种手改错，宁可报错也不要猜成 true。
+        let raw = format!("- [ ] t <!-- slip:v1;id={ID};created={CREATED};pinned=yes -->\n");
+        let parsed = parse(raw.as_bytes());
+        assert!(parsed.document.records.is_empty(), "坏值不该产出记录");
+        assert_eq!(parsed.problems.len(), 1, "{:?}", parsed.problems);
+    }
+
+    #[test]
+    fn pinned_toggle_writes_in_place_and_keeps_unknown_kv() {
+        // 原位替换：置顶写进原键位，未知键（zz=9）必须原样保留。
+        //
+        // 必须走 `apply`——`render` 只是把 `line.raw` 拼起来（Markdown 才是真源），
+        // 直接改 `slip.pinned` 不会产生任何字节变化。这个区别正是"未修改行逐字节保留"
+        // 的实现方式，也坑过我一次。
+        let raw = format!("- [ ] 旧 <!-- slip:v1;zz=9;id={ID};created={CREATED} -->\n");
+        let doc = parse_ok(raw.as_bytes());
+        let id = doc.records[0].slip.id;
+        let (next, _) = apply(
+            &doc,
+            &[Mutation::Patch {
+                id,
+                patch: Patch::SetPinned(true),
+            }],
+        )
+        .unwrap();
+        let out = String::from_utf8(render(&next)).expect("utf8");
+        assert!(out.contains(";pinned=1"), "置顶没写进 marker：{out}");
+        assert!(out.contains("zz=9"), "未知键被吞了：{out}");
     }
 
     #[test]

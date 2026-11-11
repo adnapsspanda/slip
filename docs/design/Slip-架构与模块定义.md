@@ -71,6 +71,7 @@ pub struct Slip {
     pub done_at: Option<OffsetDateTime>,
     pub archived_at: Option<OffsetDateTime>,
     pub locked: bool,
+    pub pinned: bool,
 }
 
 pub enum Patch {
@@ -79,6 +80,7 @@ pub enum Patch {
     Archive { at: OffsetDateTime },
     Unarchive,
     SetLocked(bool),
+    SetPinned(bool),
 }
 pub enum Mutation { Append(Slip), Patch { id: SlipId, patch: Patch } }
 pub enum Transition { Changed, Noop }
@@ -98,6 +100,7 @@ pub enum Transition { Changed, Noop }
 | `Unarchive` | `archived_at.is_some()` | `archived_at=None`，保留 `done` 与 `done_at` |
 | `Unarchive` | `archived_at.is_none()` | `Noop` |
 | `SetLocked(b)` | id 存在 | `locked=b`；与原值相同则 `Noop` |
+| `SetPinned(b)` | id 存在 | `pinned=b`；与原值相同则 `Noop` |
 | `Append(s)` | `validate_slip(s)` 通过且 id 不存在 | 追加 |
 
 跨字段异常组合允许从文件载入，并允许文本编辑保留它们。应用不自动"修复"元数据；`Append` 不承担跨字段修复。

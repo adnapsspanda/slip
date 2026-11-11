@@ -149,6 +149,16 @@ pub fn apply_patch(slip: &Slip, patch: &Patch) -> Result<(Slip, Transition), Dom
             next.locked = *locked;
             Ok((next, Transition::Changed))
         }
+
+        Patch::SetPinned(pinned) => {
+            // 与定稿同理：置顶是用户的显式开关，重复点同一状态不该再写盘一次。
+            if slip.pinned == *pinned {
+                return Ok((slip.clone(), Transition::Noop));
+            }
+            let mut next = slip.clone();
+            next.pinned = *pinned;
+            Ok((next, Transition::Changed))
+        }
     }
 }
 
@@ -177,6 +187,7 @@ mod tests {
             done_at: None,
             archived_at: None,
             locked: false,
+            pinned: false,
         }
     }
 
@@ -430,6 +441,7 @@ mod tests {
                 at: at_noon(),
             },
             Patch::Archive { at: at_noon() },
+            Patch::SetPinned(true),
         ];
         for patch in cases {
             match apply_patch(&slip, &patch) {
@@ -480,5 +492,64 @@ mod tests {
         let slip = base_slip();
         let (_, transition) = apply_patch(&slip, &Patch::SetLocked(false)).unwrap();
         assert_eq!(transition, Transition::Noop);
+    }
+
+    // ---------- 置顶 ----------
+
+    #[test]
+    fn set_pinned_true_marks_changed_and_keeps_other_fields() {
+        let slip = base_slip();
+        let (next, transition) = apply_patch(&slip, &Patch::SetPinned(true)).unwrap();
+        assert_eq!(transition, Transition::Changed);
+        assert!(next.pinned);
+        // 置顶只动 pinned：内容、完成、归档、定稿都必须原样保留。
+        assert_eq!(next.text, slip.text);
+        assert_eq!(next.done, slip.done);
+        assert_eq!(next.done_at, slip.done_at);
+        assert_eq!(next.archived_at, slip.archived_at);
+        assert_eq!(next.locked, slip.locked);
+        validate_slip(&next).unwrap();
+    }
+
+    #[test]
+    fn set_pinned_to_same_value_is_noop() {
+        // 已置顶再置顶、未置顶再取消：两个方向都不该多写一次盘。
+        let pinned = {
+            let (next, _) = apply_patch(&base_slip(), &Patch::SetPinned(true)).unwrap();
+            next
+        };
+        let (_, transition) = apply_patch(&pinned, &Patch::SetPinned(true)).unwrap();
+        assert_eq!(transition, Transition::Noop);
+
+        let (_, transition) = apply_patch(&base_slip(), &Patch::SetPinned(false)).unwrap();
+        assert_eq!(transition, Transition::Noop);
+    }
+
+    #[test]
+    fn set_pinned_false_unpins() {
+        // 置顶必须是单向门的反面：能置顶就能取消。
+        let mut slip = base_slip();
+        slip.pinned = true;
+        let (next, transition) = apply_patch(&slip, &Patch::SetPinned(false)).unwrap();
+        assert_eq!(transition, Transition::Changed);
+        assert!(!next.pinned);
+    }
+
+    #[test]
+    fn pin_and_lock_are_independent() {
+        // 定稿只锁正文：锁住的纸条仍然可以被置顶，且改正文时 pinned 不受影响。
+        let mut slip = base_slip();
+        slip.locked = true;
+        let (next, transition) = apply_patch(&slip, &Patch::SetPinned(true)).unwrap();
+        assert_eq!(transition, Transition::Changed);
+        assert!(next.pinned);
+        assert!(next.locked, "置顶不该顺带解锁");
+
+        // 反方向：置顶后再改正文，pinned 必须保留。
+        let mut unpinned_locked = base_slip();
+        unpinned_locked.pinned = true;
+        let (next, _) =
+            apply_patch(&unpinned_locked, &Patch::SetText("改个说法".to_owned())).unwrap();
+        assert!(next.pinned, "改正文不该丢掉置顶标记");
     }
 }
