@@ -131,6 +131,17 @@ public static class Win {
     [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     public delegate bool EnumProc(IntPtr h, IntPtr p);
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
+    [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int nIndex);
+
+    /// 窗口是否置顶（WS_EX_TOPMOST）。
+    ///
+    /// 这是"唤出后窗口一定在最前面"唯一可靠的程序化判据——截屏比对太脆，
+    /// 而 `GetForegroundWindow` 只能说明"此刻是前台"，不能说明窗口属性。
+    public static bool IsTopmost(IntPtr h) {
+        const int GWL_EXSTYLE = -20;
+        const int WS_EX_TOPMOST = 0x00000008;
+        return (GetWindowLong(h, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    }
 
     /// 该进程的全部顶层窗口。
     public static System.Collections.Generic.List<IntPtr> TopWindowsOf(uint want) {
@@ -477,6 +488,11 @@ Check "只剩一个实例" ($count -eq 1) "进程数=$count"
 $afterSummon = (& $bun run $probe $Port --input 2>&1 | Select-Object -Last 1) | ConvertFrom-Json
 Check "唤出后草稿仍在" ($afterSummon.value -eq $draft) "value=$($afterSummon.value)"
 Check "唤出后焦点回到捕获框" ($afterSummon.focused -eq $true) "focused=$($afterSummon.focused)"
+
+# 置顶（WS_EX_TOPMOST）：矩阵 R66 要求的"唤出时触发一次窗口置顶"。
+# 之前没有任何断言守着它——去掉 set_always_on_top 也照样全绿。
+$slipWindow = Get-SlipWindow
+Check "唤出后窗口置顶" ([Win]::IsTopmost($slipWindow)) "topmost=$([Win]::IsTopmost($slipWindow))"
 
 # --- 复制诊断：webview 没有剪贴板权限，所以从 PowerShell 侧读出来核对 ---
 Write-Output "--- 复制诊断（剪贴板）---"
