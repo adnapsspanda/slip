@@ -582,5 +582,55 @@ check("无匹配时提示的是『没有匹配』而不是空态引导",
   filtered.emptyTitle === "没有匹配的纸条", `title=${filtered.emptyTitle}`);
 check("Esc 退出过滤", filtered.closed === true, `closed=${filtered.closed}`);
 
+// 14. 行内渲染（粗体/代码/链接）与相对时间。
+//     正文来自 inbox.md——用户可编辑的文件。渲染必须是结构化标签，不能是 HTML 注入。
+const inline = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const wait = (ms) => new Promise(r => setTimeout(r, ms));
+       const ta = document.querySelector('.capture__input');
+       ta.focus();
+       ta.value = '见 **重点** 与 \`npm run build\` 见 https://example.com/a?x=1&y=2。';
+       ta.dispatchEvent(new Event('input', { bubbles: true }));
+       ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+       await wait(1600);
+
+       const rows = [...document.querySelectorAll('.slip')];
+       const last = rows[rows.length - 1];
+       const body = last?.querySelector('.slip__text');
+       const time = last?.querySelector('.slip__time');
+
+       // 校验层：open_url 必须拒绝非 http/https
+       let rejected = false;
+       try {
+         await window.__TAURI__.core.invoke('open_url', { url: 'file:///C:/Windows/System32/cmd.exe' });
+       } catch {
+         rejected = true;
+       }
+
+       return JSON.stringify({
+         strong: body?.querySelector('strong')?.textContent ?? null,
+         code: body?.querySelector('code')?.textContent ?? null,
+         href: body?.querySelector('a.slip__link')?.getAttribute('href') ?? null,
+         fullText: body?.textContent ?? '',
+         timeLabel: time?.textContent ?? '',
+         timeAttr: time?.getAttribute('datetime') ?? '',
+         rejected,
+       });
+     })()`,
+    true,
+  ),
+);
+check("粗体渲染成 strong", inline.strong === "重点", `strong=${inline.strong}`);
+check("行内代码渲染成 code", inline.code === "npm run build", `code=${inline.code}`);
+check("链接 href 剥掉了尾部标点", inline.href === "https://example.com/a?x=1&y=2",
+  `href=${inline.href}`);
+check("被剥掉的标点仍在正文里", (inline.fullText ?? "").includes("。"),
+  `text=${inline.fullText}`);
+check("open_url 拒绝 file: 协议", inline.rejected === true, `rejected=${inline.rejected}`);
+check("新收录的纸条显示『刚刚』", inline.timeLabel === "刚刚", `label=${inline.timeLabel}`);
+check("<time> 带 RFC3339 的 datetime", /^\d{4}-\d{2}-\d{2}T/.test(inline.timeAttr ?? ""),
+  `datetime=${inline.timeAttr}`);
+
 cdp.close();
 process.exit(failed ? 1 : 0);
