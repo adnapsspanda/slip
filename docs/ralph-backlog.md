@@ -52,6 +52,18 @@
 | R-01 | ~~归档撤销承诺与实现不符~~ | **撤回**：`Patch::Unarchive`（`model.rs:52`）、`apply_patch` 分支（`state.rs:135`）、`inverse_batch` 双向映射（`dispatch.rs:565-568`）、领域测试（`state.rs:304`）、端到端测试（`pipeline.rs:301` `archive_and_undo_preserve_done_state_through_disk`）全部就位 | 无需改动。文档承诺与实现**一致** | ✅ 撤回 |
 
 ## 完成记录
+- **R57 诊断补显示器 / 缩放 / 平台（本轮）**：
+  - `copy_diagnostics` 新增三项：
+    `display: <宽>x<高> @ <缩放>x`（主显示器）、`monitors: ...`（多屏时逐块列出）、
+    `platform: <os> / <arch>`。
+  - 动机很实际：窗口定位错乱、字太小这类问题，**没有分辨率和缩放比例根本没法聊**；
+    而这几个数字在 Rust 侧一次调用就能拿到，不需要前端配合。
+  - **一处与矩阵的偏差**：矩阵要"操作系统构建版本"。取真实 build 号需要调用原生 API
+    （`RtlGetVersion`）或引入 `windows` crate 直连依赖——为本机诊断这一项去改依赖图，
+    风险（新 build script 被 SAC 拒、依赖漂移）大于收益。本轮只报 `os / arch`，
+    并在记录里明说这个缺口，而不是含糊过去。
+  - 验证：`cargo clippy -D warnings` 与 `cargo build` 均通过；**运行时验证待补**
+    （exe 仍被 SAC 拒绝，见阶段记录）。
 
 - **R56 损坏文件定位：原样已是既有能力（本轮只补证据，不重复劳动）**：
   - 界面：`ui/src/App.svelte` 在有损坏文件时渲染「定位」按钮（`title` 里列出全部文件名）。

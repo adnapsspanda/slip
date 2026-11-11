@@ -380,6 +380,38 @@ async fn copy_diagnostics(
 
     let mut text = String::from("Slip 诊断\n");
     text.push_str(&format!("vault: {}\n", state.vault.display()));
+    // 显示器与缩放：窗口定位错乱、字太小/太大这类问题，没有这两个数字根本没法聊。
+    // 取主显示器（列表第一项）；多屏时把每个都列出来。
+    match app.primary_monitor() {
+        Ok(Some(monitor)) => {
+            let size = monitor.size();
+            let scale = monitor.scale_factor();
+            text.push_str(&format!(
+                "display: {}x{} @ {scale}x\n",
+                size.width, size.height
+            ));
+        }
+        _ => text.push_str("display: <读取失败>\n"),
+    }
+    match app.available_monitors() {
+        Ok(monitors) if monitors.len() > 1 => {
+            let list: Vec<String> = monitors
+                .iter()
+                .map(|monitor| {
+                    let size = monitor.size();
+                    format!("{}x{}@{}x", size.width, size.height, monitor.scale_factor())
+                })
+                .collect();
+            text.push_str(&format!("monitors: {}\n", list.join(", ")));
+        }
+        _ => {}
+    }
+    // 平台与架构：能直接给出，不需要任何额外依赖。
+    text.push_str(&format!(
+        "platform: {} / {}\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ));
     let hotkey = if state.hotkey.is_empty() {
         "<未注册>"
     } else {
