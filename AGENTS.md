@@ -1,5 +1,9 @@
 # Repository Guidelines
 
+> **第一次接手？先读 [`docs/handover.md`](docs/handover.md)**：里面写了什么能跑、
+> 什么被 Smart App Control 挡住、以及**哪些绕法已经被证明无效（别再试）**。
+
+
 Slip 是一个 Windows 11 桌面便签式待办工具：热键唤出捕获框，输入即落进本地
 `inbox.md`，桌面上一张纸就能勾掉。核心设计见
 `docs/design/Slip-架构与模块定义.md`（**唯一真源**，实现与文档冲突时先改文档）。
