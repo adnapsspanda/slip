@@ -248,6 +248,26 @@ Resolve-DnsName crates.io -Type A                  # 若解析到 198.18.x.x，�
 修法是用户侧的事：让代理正常工作、或临时关掉代理直连、或配置
 `~/.cargo/config.toml` 的 `[source]` 指向可用镜像。
 
+### 环境变化记录：升级 Windows 11 专业版之后（2026-11-11 晚）
+
+升级到 **Windows 11 专业版（Build 26300）** 后实测：
+
+- **SAC 策略没有因此改变**：`VerifiedAndReputablePolicyState` 仍是 `1`（强制），
+  `CodeIntegrityPolicyEnforcementStatus` 仍是 `2`；
+- 但**实际可用性明显改善**：
+
+    | 项 | 升级前 | 升级后 |
+    |---|---|---|
+    | `cargo check --tests` | 持久失败（build script 被拒） | **通过** |
+    | `cargo build -p slip-shell` | 时好时坏 | **通过** |
+    | 端到端 `verify-hotkey.ps1` | 时好时坏 | **104/104** |
+    | 单元测试 | 多数被拒 | **9 个目标逐个执行全部通过，合计 225 项** |
+    | 一次性 `cargo test --workspace` | 中断 | **仍会随机被拦掉一个二进制**（216 项后中断） |
+
+- 结论：**别指望升级系统版本或搬 Dev Drive 来"关闭"这个拦截**（策略状态没变）。
+  真正的变化是"被拦的产物随时间会被放行"，所以**逐目标执行 + 重试**才是最稳的跑法；
+  `cargo test --workspace` 一次跑完仍可能被随机拦，**失败时先怀疑这个，别怀疑代码**。
+
 ### 环境陷阱：`os error 4551`（应用控制策略阻止执行）
 
 **症状**：`cargo test` / `cargo clippy` 或直接启动产物时报

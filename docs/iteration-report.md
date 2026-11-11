@@ -119,8 +119,8 @@ tools/check-forbidden.ps1    ✅ 5 项
 | `cargo fmt --check` | 通过 | — |
 | `cargo clippy -D warnings` | 通过 | — |
 | `tools/check-forbidden.ps1` | 通过（5 项约束） | — |
-| `cargo test --workspace` | **221 项此前完整通过**；本轮受 SAC 影响只能跑部分 | 见下 |
-| `archive_guard.rs`（新增） | **尚未执行**，仅通过 `cargo check --tests` | 首次执行交给 CI |
+| `cargo test`（逐目标） | **9 个目标全部通过，合计 225 项**（升级专业版后实测） | `--workspace` 一次跑完仍可能被随机拦掉一个二进制 |
+| `archive_guard.rs`（新增） | **已执行并通过**（1 项） | 升级专业版后取得执行窗口 |
 
 ### 两个仍然锁死的门（都不是代码问题）
 
@@ -181,3 +181,17 @@ cargo test --workspace                  → 87 项后 4551
 | `cargo test --workspace` 的完整绿灯 | 上一次完整通过是 221 项；此后环境只允许部分执行 |
 | R03/R08/R28/R29 | 依赖下载被代理阻断 |
 | R31–R50 其余 | 矩阵不在上下文中 |
+
+## 九、升级 Windows 11 专业版后的复核（2026-11-11 晚）
+
+| 检查 | 结果 |
+|---|---|
+| `cargo check --tests` | **通过**（升级前持久失败于 build script） |
+| `cargo build -p slip-shell` | 通过 |
+| 端到端 `verify-hotkey.ps1` | **104 项 / 0 失败** |
+| 单元与集成测试（逐目标） | **9 个目标全部通过，合计 225 项** |
+| `cargo test --workspace`（一次跑完） | 216 项后仍会随机被拦掉一个二进制 |
+| `cargo fmt` / `clippy` / 约束检查 | 通过 |
+
+**SAC 策略状态没变**（仍是强制），所以这不是"升级解除了拦截"，而是"被拦的产物随时间
+会被放行"这一规律在起作用。稳定跑法是**逐目标执行 + 失败重试**。
