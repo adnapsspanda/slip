@@ -142,3 +142,42 @@ tools/check-forbidden.ps1    ✅ 5 项
 | R48 `panic = "abort"` | 打死 `JoinError` 契约，已确认不做 |
 | R40 混合 DPI | 本机所有显示器同缩放，无法验证 |
 | R31–R50 其余 | **该矩阵不在本次会话上下文中，拒绝猜测** |
+
+## 八、收官（第 40 轮，最后一轮）
+
+最后一轮的三次探测结果一致：**网络仍不可达、被拦的二进制仍被拦**。
+
+```
+cargo search tauri-plugin-notification  → 失败（crates.io 不可达）
+cargo test -p slip-store --test archive_guard → 4551
+cargo test --workspace                  → 87 项后 4551
+```
+
+因此本轮不再制造改动，把交付物收束为：
+
+| 交付物 | 位置 |
+|---|---|
+| 迭代结项报告（本文件） | `docs/iteration-report.md` |
+| 逐轮记录与判据 | `docs/ralph-backlog.md` |
+| 工程约定（含 3 个环境陷阱） | `AGENTS.md` |
+| 阶段体检报告 | `docs/phase-1-report.md`、`docs/phase-2-report.md` |
+| 性能基线 | `docs/perf-baseline.md` |
+| 环境自检 | `tools/check-environment.ps1` |
+| 约束机器化检查 | `tools/check-forbidden.ps1` |
+| 测试重试（只对 4551，不删产物） | `tools/cargo-test-retry.ps1` |
+
+### 重启迭代的三个入口（任一即可）
+
+1. **修好网络**（让 `cargo search` 能返回结果）→ 解锁 R03 / R08 / R28 / R29；
+2. **贴出 R31–R50 矩阵** → 按既有标准继续；
+3. **给一个无 SAC 的 Windows 环境**（Sandbox/VM/另一台机）→ 门禁可以每轮全绿，
+   包括目前只能交给 CI 首次执行的 `archive_guard.rs`。
+
+### 已知欠账（明确列出，不假装完成）
+
+| 欠账 | 状态 |
+|---|---|
+| `crates/slip-store/tests/archive_guard.rs` | 通过 `cargo check --tests`，**从未执行过**；首次执行交给 CI |
+| `cargo test --workspace` 的完整绿灯 | 上一次完整通过是 221 项；此后环境只允许部分执行 |
+| R03/R08/R28/R29 | 依赖下载被代理阻断 |
+| R31–R50 其余 | 矩阵不在上下文中 |
