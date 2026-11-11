@@ -53,6 +53,16 @@
 
 ## 完成记录
 
+- **R34 完成态沉降与勾选微动效（本轮）**：
+  - 勾选框：`background/border` 加 0.15s 过渡（避免"啪一下变色"）；勾出现时
+    `slip-tick` 从 0.72 倍缩放淡入回原尺寸，**只动 transform + opacity**。
+  - 已完成正文：颜色 0.15s 过渡（"沉下去"而不是"突然变灰"），划线与文字留缝
+    （`text-decoration-thickness: 1px` + `underline-offset`），中文小字下更清楚。
+  - **不抖动是硬要求**：动画只走合成属性，勾选框尺寸不变，所以狂按 Space 也不会让列表
+    位移；`prefers-reduced-motion` 的全局规则会把这两个动效一并压掉。
+  - 静态证据：产物 CSS 含 `slip-tick` 与 `transition`；体积 8.55 KB（预算 10 KB 内）。
+  - 待补：矩阵里"Space 切换依然流畅"属 CDP 项，与其它视觉项一并待补（exe 仍被拒）。
+
 - **R33 空态动效与键帽质感（本轮）**：
   - 空态加 `slip-rise` 微淡入：**位移只有 4px、0.28s ease-out**，只动 `opacity`/`translateY`
     （GPU 合成，不触发布局）。首次启动时界面需要一点"刚展开"的感觉，但不能晃。

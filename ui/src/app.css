@@ -440,6 +440,13 @@ body {
   background: var(--accent);
 }
 
+.slip__box {
+  /* 勾选是高频操作：颜色与边框都做短过渡，避免"啪一下变色"的生硬感。 */
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease;
+}
+
 .slip__box--done::after {
   content: "";
   position: absolute;
@@ -449,7 +456,22 @@ body {
   height: 8px;
   border: solid var(--paper-card);
   border-width: 0 2px 2px 0;
-  transform: rotate(42deg);
+  /*
+   * 勾出现时轻微"弹一下"：42deg 是最终角度，这里从 0.7 倍缩放淡入再回到原尺寸。
+   * 只动 transform + opacity——**不触发布局**，所以狂按 Space 也不会让列表抖动。
+   */
+  animation: slip-tick 0.18s ease-out both;
+}
+
+@keyframes slip-tick {
+  from {
+    transform: rotate(42deg) scale(0.72);
+    opacity: 0;
+  }
+  to {
+    transform: rotate(42deg) scale(1);
+    opacity: 1;
+  }
 }
 
 .slip__text {
@@ -597,6 +619,11 @@ body {
 .slip--done .slip__text {
   color: var(--ink-soft);
   text-decoration: line-through;
+  /* 文本装饰没法过渡，但颜色可以：完成态是"沉下去"而不是"突然变灰"。 */
+  transition: color 0.15s ease;
+  /* 划线与文字之间留一点缝，中文小字下更清楚。 */
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
 }
 
 /* 超出单条上限 / 条数上限时的本地提示：比普通提示更醒目，但不抢走输入焦点。 */
