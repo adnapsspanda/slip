@@ -108,6 +108,21 @@ $env:PATH = "C:\Users\spand\.cargo\bin;" + $env:PATH
 遇到"进程在跑但没窗口"，先跑 `pwsh -File tools/diag-window.ps1`，
 再确认启动它的终端是不是普通交互终端。这不是程序缺陷。
 
+### 同一类沙盒症状的第二种表现（窗口存在但不显示）
+
+沙盒有时不表现为"没有窗口"，而是**窗口存在、`WS_VISIBLE` 为假，但 Tauri 自己
+报告 `visible=true`**（它返回的是自己缓存的状态，不是 Win32 真值）。此时：
+
+- `EnumWindows` 能找到 `Tauri Window`，`IsWindowVisible` 却是 `false`；
+- 验收脚本里所有"窗口可见"断言全红，而应用日志写着 `visible=true focused=true`。
+
+判定方法（本会话实测过）：让 **explorer.exe** 启动同一个 exe——
+`& explorer.exe .\target\debug\slip-shell.exe`。若那样启动窗口 `vis=True`，
+就是父进程沙箱的问题，代码没坏。
+
+**不要在沙盒里跑验收后就断定"改动破坏了窗口"。** 先拿上一版提交（`git stash` 后
+重编）跑同一条断言：如果它也红，问题在环境。
+
 改动窗口、热键、或捕获链路之后，**必须**跑一次：
 
 ```powershell

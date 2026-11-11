@@ -4,26 +4,11 @@
 
 use std::path::{Path, PathBuf};
 
-use slip_domain::SlipId;
-
 use crate::fsops;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum DockSide {
-    #[default]
-    Left,
-    Right,
-    Top,
-    Bottom,
-}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Prefs {
-    pub order: Vec<SlipId>,
-    pub collapsed: Vec<SlipId>,
-    pub dock_side: DockSide,
     /// 全局热键，例如 `ctrl+alt+space`；`None` 表示用外壳的默认值。
     ///
     /// 刻意存成**不透明字符串**：键名的文法属于 GUI 外壳（`tauri-plugin-global-shortcut`），
@@ -31,6 +16,10 @@ pub struct Prefs {
     ///
     /// 它严格说不是"展示偏好"，但为它单开一个配置文件不值当；损坏时的处理
     /// 语义也完全一致（回默认值、不阻塞 Markdown）。
+    ///
+    /// **旧版 `ui-state.json` 里还有 `order` / `collapsed` / `dockSide` 三个字段**，
+    /// 它们服务的视图通路已删除（前端从未产生过任何视图事件）。serde 默认忽略未知字段，
+    /// 所以老文件照常能读——那几个键会被静默丢弃，它们本来也不再生效。
     #[serde(default)]
     pub hotkey: Option<String>,
 }
@@ -106,9 +95,6 @@ mod tests {
 
     fn sample_prefs() -> Prefs {
         Prefs {
-            order: vec![SlipId::new_v7(), SlipId::new_v7()],
-            collapsed: vec![SlipId::new_v7()],
-            dock_side: DockSide::Bottom,
             hotkey: Some(String::from("ctrl+alt+space")),
         }
     }
@@ -136,7 +122,6 @@ mod tests {
 
         let prefs = Prefs {
             hotkey: Some(weird.clone()),
-            ..Prefs::default()
         };
         store.save_prefs(&prefs).expect("save");
 

@@ -13,7 +13,6 @@ use slip_app::presenter::Presenter;
 use slip_domain::{Mutation, Patch, Slip, SlipId};
 use slip_store::MarkdownStore;
 use slip_store::Store;
-use slip_store::prefs::JsonPrefsStore;
 use time::OffsetDateTime;
 
 fn slip(text: &str) -> Slip {
@@ -34,9 +33,8 @@ async fn capture_writes_through_to_disk_and_back_to_the_snapshot() {
     let inbox = dir.path().join("inbox.md");
 
     let store = Arc::new(MarkdownStore::new(&inbox));
-    let prefs = Arc::new(JsonPrefsStore::new(dir.path().join("prefs.json")));
     let presenter = Presenter::with_view(store.snapshot(), Default::default());
-    let dispatcher = Dispatcher::spawn(store, prefs, presenter, 8);
+    let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     let created = slip("买发票");
     let ack = dispatcher
@@ -104,9 +102,8 @@ async fn restarting_the_shell_reads_the_same_content_back() {
 
     {
         let store = Arc::new(MarkdownStore::new(&inbox));
-        let prefs = Arc::new(JsonPrefsStore::new(dir.path().join("prefs.json")));
         let presenter = Presenter::with_view(store.snapshot(), Default::default());
-        let dispatcher = Dispatcher::spawn(store, prefs, presenter, 8);
+        let dispatcher = Dispatcher::spawn(store, presenter, 8);
         let ack = dispatcher
             .apply(String::from("r1"), vec![Mutation::Append(slip("一次写入"))])
             .await;
@@ -117,8 +114,7 @@ async fn restarting_the_shell_reads_the_same_content_back() {
     // 模拟重新启动：全新的 store 读同一个文件。
     let store = Arc::new(MarkdownStore::new(&inbox));
     let presenter = Presenter::with_view(store.snapshot(), Default::default());
-    let prefs = Arc::new(JsonPrefsStore::new(dir.path().join("prefs.json")));
-    let dispatcher = Dispatcher::spawn(store, prefs, presenter, 8);
+    let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     let snapshot = dispatcher.get_snapshot().await.unwrap();
     assert_eq!(snapshot.slips.len(), 1);
@@ -131,9 +127,8 @@ async fn capture_of_several_lines_creates_several_slips() {
     let dir = tempfile::tempdir().expect("temp vault");
     let inbox = dir.path().join("inbox.md");
     let store = Arc::new(MarkdownStore::new(&inbox));
-    let prefs = Arc::new(JsonPrefsStore::new(dir.path().join("prefs.json")));
     let presenter = Presenter::with_view(store.snapshot(), Default::default());
-    let dispatcher = Dispatcher::spawn(store, prefs, presenter, 8);
+    let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     // 外壳把多行文本交给 split_drafts，这里直接复现那条路径。
     let now = OffsetDateTime::now_utc();
@@ -175,9 +170,8 @@ async fn domain_rejection_does_not_touch_the_file() {
     let dir = tempfile::tempdir().expect("temp vault");
     let inbox = dir.path().join("inbox.md");
     let store = Arc::new(MarkdownStore::new(&inbox));
-    let prefs = Arc::new(JsonPrefsStore::new(dir.path().join("prefs.json")));
     let presenter = Presenter::with_view(store.snapshot(), Default::default());
-    let dispatcher = Dispatcher::spawn(store, prefs, presenter, 8);
+    let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     let before = std::fs::read(&inbox).unwrap_or_default();
     // 空白正文在领域层就该被拒。
@@ -198,9 +192,8 @@ async fn edit_undo_and_lock_round_trip_through_disk() {
     let inbox = dir.path().join("inbox.md");
 
     let store = Arc::new(MarkdownStore::new(&inbox));
-    let prefs = Arc::new(JsonPrefsStore::new(dir.path().join("prefs.json")));
     let presenter = Presenter::with_view(store.snapshot(), Default::default());
-    let dispatcher = Dispatcher::spawn(store, prefs, presenter, 8);
+    let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     let created = slip("原始内容");
     let ack = dispatcher
@@ -303,9 +296,8 @@ async fn archive_and_undo_preserve_done_state_through_disk() {
     let inbox = dir.path().join("inbox.md");
 
     let store = Arc::new(MarkdownStore::new(&inbox));
-    let prefs = Arc::new(JsonPrefsStore::new(dir.path().join("prefs.json")));
     let presenter = Presenter::with_view(store.snapshot(), Default::default());
-    let dispatcher = Dispatcher::spawn(store, prefs, presenter, 8);
+    let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     let first = slip("交水电费");
     let second = slip("寄快递");

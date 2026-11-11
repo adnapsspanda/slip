@@ -52,6 +52,28 @@
 
 ## 完成记录
 
+- **R16 + R18｜本轮**（合并做，因为不可分）：删除前端零入口的视图状态路径。
+  `ViewEvent` 与三个命令变体一删，`Prefs` 里那些字段与 `dispatch` 的去抖机制就都成了
+  孤儿——分开提交只会在中间态留下死代码。
+
+  删除清单：`MonitorSnapshot` / `MonitorGeometry` / `ViewEvent`（四个变体）/
+  `Command::ToggleCollapse` / `Command::ViewEvent` / `Command::FlushPrefs` /
+  `PaperViewSet` 的 `order`/`collapsed`/`dock_side`/`monitors` 与 `ordered`/`drag`/
+  `toggle_collapsed` 方法 / `Presenter::apply_view_event` 等五个方法 /
+  `PREFS_DEBOUNCE` + `prefs_dirty` + `prefs_due` + `persist_prefs` +
+  `view_event_dirties_prefs` / `Prefs` 的 `order`/`collapsed`/`dock_side` / `DockSide` /
+  `flush_prefs` IPC 与 `bridge.flushPrefs`。
+
+  **净变化：6 个文件，+50 / −522 行。** 测试 204 → 198（少掉的是只为死路径存在的用例）。
+  兼容性：旧 `ui-state.json` 里的 `order`/`collapsed`/`dockSide` 会被 serde 忽略，
+  老文件照常能读——`prefs_written_before_hotkey_existed_still_load` 覆盖了同类场景。
+
+  **本轮验收的诚实说明**：`cargo test` 198 项、fmt、clippy 全绿；但 **59 项端到端
+  在本次环境里无法通过**——原因是启动它的终端有沙箱，窗口 `WS_VISIBLE` 恒为假。
+  已用两种方式证明这与本次改动无关：① `git stash` 回到上一提交重编，同一条断言
+  一模一样的失败；② 由 `explorer.exe` 启动同一个 exe，窗口 `vis=True`。
+  该症状已补进 `AGENTS.md` 的验收先决条件（"窗口存在但不显示"）。
+
 - **R14｜本轮**：本地即时过滤（Ctrl+F）。纯内存，不引入任何索引。
   - 设计：`filter` 只影响显示。撤销栈按**后端真实提交顺序**记录，过滤若参与排序或
     索引，`Ctrl+Z` 就会撤错东西——所以过滤严格留在视图层。

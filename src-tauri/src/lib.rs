@@ -255,11 +255,6 @@ fn vault_path(state: tauri::State<'_, ShellState>) -> String {
     state.vault.to_string_lossy().into_owned()
 }
 
-#[tauri::command]
-fn flush_prefs(state: tauri::State<'_, ShellState>) {
-    state.dispatcher.flush_prefs();
-}
-
 // ---------------------------------------------------------------- 启动
 
 /// 初始化日志。
@@ -317,7 +312,6 @@ pub fn run() {
             vault_path,
             corrupt_files,
             reveal_corrupt,
-            flush_prefs,
             hotkey::dismiss_window,
         ])
         .setup(|app| {
@@ -325,21 +319,22 @@ pub fn run() {
             let prefs_path = vault.join("ui-state.json");
             // 启动 I/O 放到阻塞线程：UI 线程只等结果，不亲自读盘。
             let init_vault = vault.clone();
-            let (store, prefs, loaded) = std::thread::spawn(move || {
+            let (store, loaded) = std::thread::spawn(move || {
                 if let Err(kind) = slip_store::fsops::ensure_dir(&init_vault) {
                     panic!("cannot create vault {init_vault:?}: {kind:?}");
                 }
                 let store = Arc::new(MarkdownStore::new(init_vault.join("inbox.md")));
-                let prefs = Arc::new(JsonPrefsStore::new(init_vault.join("ui-state.json")));
+                // 偏好只在启动时读一次：热键由外壳解析，运行期不再写回。
+                let prefs = JsonPrefsStore::new(init_vault.join("ui-state.json"));
                 let loaded = prefs.load_prefs();
-                (store, prefs, loaded)
+                (store, loaded)
             })
             .join()
             .expect("vault initialization failed");
             // 热键的合法性属于外壳：存储层只存字符串。这里做解析 + 回落。
             let hotkey = hotkey::resolve_shortcut(loaded.hotkey.as_deref());
             let initial = store.snapshot();
-            let view = PaperViewSet::from_prefs(&loaded, &initial.slips);
+            let view = PaperViewSet::from_prefs(&loaded);
             let presenter = Presenter::with_view(initial, view);
 
             // 调度器要一个长期运行时；Tauri 自己的 async_runtime 不能保证
@@ -351,7 +346,7 @@ pub fn run() {
                 .expect("failed to build the shell runtime");
             let dispatcher = {
                 let _guard = runtime.enter();
-                Dispatcher::spawn(store, prefs, presenter, 64)
+                Dispatcher::spawn(store, presenter, 64)
             };
 
             println!("[slip] vault: {}", vault.display());

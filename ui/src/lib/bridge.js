@@ -108,8 +108,6 @@ export const corruptFiles = () => call("corrupt_files");
  */
 export const revealCorrupt = () => call("reveal_corrupt");
 
-export const flushPrefs = () => call("flush_prefs");
-
 /**
  * 订阅热键唤出事件。非 Tauri 环境返回一个空的退订函数。
  * @param {() => void} handler

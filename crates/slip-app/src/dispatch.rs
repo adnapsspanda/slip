@@ -12,16 +12,14 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Duration;
 
 use slip_domain::{Mutation, Patch};
-use slip_store::prefs::{Prefs, PrefsStore};
 use slip_store::{Store, StoreError, StoreSnapshot};
 use time::OffsetDateTime;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::presenter::{Presenter, ViewEvent};
+use crate::presenter::Presenter;
 use crate::{Ack, AckError, AckResult, QueryError, RuntimeStatus, UiSnapshot};
 
 /// 入队结果。`Full` 与 `Closed` 都表示**尚未执行**。
@@ -60,11 +58,6 @@ pub enum Command {
         request_id: String,
         reply: oneshot::Sender<Ack>,
     },
-    ToggleCollapse {
-        request_id: String,
-        id: slip_domain::SlipId,
-        reply: oneshot::Sender<Ack>,
-    },
     Reload {
         request_id: String,
         reply: oneshot::Sender<Ack>,
@@ -76,8 +69,6 @@ pub enum Command {
     GetSnapshot {
         reply: oneshot::Sender<Result<UiSnapshot, QueryError>>,
     },
-    ViewEvent(ViewEvent),
-    FlushPrefs,
     Shutdown {
         reply: oneshot::Sender<()>,
     },
@@ -93,24 +84,18 @@ impl Dispatcher {
     ///
     /// `presenter` 必须由调用方用**已载入的初始快照**构造好——初始读盘是阻塞
     /// I/O，应该由调用方在 `spawn_blocking` 里完成，不在 UI 线程直接做。
-    pub fn spawn(
-        store: Arc<dyn Store>,
-        prefs: Arc<dyn PrefsStore>,
-        presenter: Presenter,
-        capacity: usize,
-    ) -> Self {
-        Self::spawn_with_sink(store, prefs, presenter, Box::new(NoopSink), capacity)
+    pub fn spawn(store: Arc<dyn Store>, presenter: Presenter, capacity: usize) -> Self {
+        Self::spawn_with_sink(store, presenter, Box::new(NoopSink), capacity)
     }
 
     fn spawn_with_sink(
         store: Arc<dyn Store>,
-        prefs: Arc<dyn PrefsStore>,
         presenter: Presenter,
         sink: Box<dyn SnapshotSink>,
         capacity: usize,
     ) -> Self {
         let (tx, rx) = mpsc::channel(capacity);
-        tokio::spawn(run(rx, store, prefs, presenter, sink));
+        tokio::spawn(run(rx, store, presenter, sink));
         Self { tx }
     }
 
@@ -169,15 +154,6 @@ impl Dispatcher {
         .await
     }
 
-    pub async fn toggle_collapse(&self, request_id: String, id: slip_domain::SlipId) -> Ack {
-        self.submit(request_id, move |rid, reply| Command::ToggleCollapse {
-            request_id: rid,
-            id,
-            reply,
-        })
-        .await
-    }
-
     pub async fn reload(&self, request_id: String) -> Ack {
         self.submit(request_id, move |id, reply| Command::Reload {
             request_id: id,
@@ -192,15 +168,6 @@ impl Dispatcher {
             reply,
         })
         .await
-    }
-
-    /// 视图事件是 fire-and-forget：没有应答，也**不保证送达**。
-    pub fn view_event(&self, event: ViewEvent) {
-        let _ = self.tx.try_send(Command::ViewEvent(event));
-    }
-
-    pub fn flush_prefs(&self) {
-        let _ = self.tx.try_send(Command::FlushPrefs);
     }
 
     pub async fn get_snapshot(&self) -> Result<UiSnapshot, QueryError> {
@@ -231,33 +198,15 @@ impl Dispatcher {
 async fn run(
     mut rx: mpsc::Receiver<Command>,
     store: Arc<dyn Store>,
-    prefs: Arc<dyn PrefsStore>,
     mut presenter: Presenter,
     mut sink: Box<dyn SnapshotSink>,
 ) {
-    const PREFS_DEBOUNCE: Duration = Duration::from_secs(1);
-    /// 撤销栈深度。只在内存里，重启即清空。
+    // 撤销栈深度。只在内存里，重启即清空。
     const UNDO_DEPTH: usize = 50;
     let mut undo: VecDeque<Vec<Mutation>> = VecDeque::new();
-    let mut prefs_dirty = false;
-    let mut prefs_due: Option<tokio::time::Instant> = None;
 
     loop {
-        let received = if let Some(due) = prefs_due {
-            tokio::select! {
-                command = rx.recv() => command,
-                _ = tokio::time::sleep_until(due) => {
-                    if prefs_dirty && !presenter.is_fatal() {
-                        prefs_dirty = !persist_prefs(&prefs, presenter.view().to_prefs()).await;
-                    }
-                    prefs_due = None;
-                    continue;
-                }
-            }
-        } else {
-            rx.recv().await
-        };
-        let Some(command) = received else {
+        let Some(command) = rx.recv().await else {
             break;
         };
 
@@ -386,48 +335,6 @@ async fn run(
                 let _ = reply.send(ack);
             }
 
-            // 折叠只改展示，不碰磁盘；但它**会**改变几何，因此必须发布新版本。
-            Command::ToggleCollapse {
-                request_id,
-                id,
-                reply,
-            } => {
-                if presenter.is_fatal() {
-                    let _ = reply.send(not_executed(request_id));
-                    continue;
-                }
-                presenter.toggle_collapse(id);
-                prefs_dirty = true;
-                prefs_due = Some(tokio::time::Instant::now() + PREFS_DEBOUNCE);
-                let ui_rev = presenter.ui_rev();
-                emit(&presenter, &mut *sink);
-                let _ = reply.send(Ack {
-                    request_id,
-                    result: AckResult::Applied,
-                    ui_rev: Some(ui_rev),
-                    error: None,
-                });
-            }
-
-            // 视图事件没有应答；失败也不影响内容。
-            Command::ViewEvent(event) => {
-                if !presenter.is_fatal() {
-                    presenter.apply_view_event(&event);
-                    emit(&presenter, &mut *sink);
-                    if view_event_dirties_prefs(&event) {
-                        prefs_dirty = true;
-                        prefs_due = Some(tokio::time::Instant::now() + PREFS_DEBOUNCE);
-                    }
-                }
-            }
-
-            Command::FlushPrefs => {
-                if prefs_dirty && !presenter.is_fatal() {
-                    prefs_dirty = !persist_prefs(&prefs, presenter.view().to_prefs()).await;
-                }
-                prefs_due = None;
-            }
-
             // 查询不递增 ui_rev：它只是把已保存的那份再交一次。
             Command::GetSnapshot { reply } => {
                 let result = presenter
@@ -443,39 +350,11 @@ async fn run(
                 while let Some(command) = rx.recv().await {
                     reject(command);
                 }
-                if prefs_dirty && !presenter.is_fatal() {
-                    let _ = persist_prefs(&prefs, presenter.view().to_prefs()).await;
-                }
                 let _ = reply.send(());
                 break;
             }
         }
     }
-}
-
-/// 偏好保存失败只记日志并保持 dirty；下一次变更或退出时再试一次。
-async fn persist_prefs(prefs: &Arc<dyn PrefsStore>, value: Prefs) -> bool {
-    let handle = Arc::clone(prefs);
-    match tokio::task::spawn_blocking(move || handle.save_prefs(&value)).await {
-        Ok(Ok(())) => true,
-        Ok(Err(error)) => {
-            tracing::warn!(?error, "prefs save failed; keeping dirty");
-            false
-        }
-        Err(error) => {
-            tracing::error!(%error, "prefs save task failed; keeping dirty");
-            false
-        }
-    }
-}
-
-fn view_event_dirties_prefs(event: &ViewEvent) -> bool {
-    matches!(
-        event,
-        ViewEvent::DragEnd { .. }
-            | ViewEvent::DockSideChanged(_)
-            | ViewEvent::CollapseToggled { .. }
-    )
 }
 
 /// 执行一批变更并产出 ACK。
@@ -523,8 +402,8 @@ async fn run_batch(
 
 /// 这批变更是否值得进撤销栈。
 ///
-/// 覆盖"改正文""改完成状态"与"归档"：归档后纸条会从默认视图消失，没有原地
-/// 按钮可点回去，必须允许 `Ctrl+Z` 恢复；追加没有删除变更，锁定有显式开关。
+/// 只认"改正文""改完成状态"和"归档/取消归档"：追加没有对应的删除变更所以撤不掉，
+/// 锁定有显式开关，点回去比撤销更直观。
 fn undoable(mutations: &[Mutation]) -> bool {
     !mutations.is_empty()
         && mutations.iter().all(|mutation| {
@@ -613,9 +492,6 @@ fn reject(command: Command) {
         Command::Apply {
             request_id, reply, ..
         }
-        | Command::ToggleCollapse {
-            request_id, reply, ..
-        }
         | Command::Reload { request_id, reply }
         | Command::Undo { request_id, reply }
         | Command::IsolateAndReset { request_id, reply } => {
@@ -625,7 +501,6 @@ fn reject(command: Command) {
             let _ = reply.send(Err(QueryError(String::from("notExecuted"))));
         }
         // 没有应答句柄的命令无从通知，直接丢弃。
-        Command::ViewEvent(_) | Command::FlushPrefs => {}
         Command::Shutdown { reply } => {
             let _ = reply.send(());
         }
@@ -689,12 +564,10 @@ fn result_for_code(code: &str) -> AckResult {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
     use std::sync::{Arc, Mutex};
 
     use slip_domain::{ContentRev, Slip, SlipId};
-    use slip_store::prefs::Prefs;
-    use slip_store::{Availability, Health, RecoveryState, StoreOutcome, StoreSnapshot};
+    use slip_store::{Health, RecoveryState, StoreOutcome, StoreSnapshot};
     use time::OffsetDateTime;
 
     use super::*;
@@ -773,18 +646,6 @@ mod tests {
         }
     }
 
-    struct MockPrefs;
-
-    impl PrefsStore for MockPrefs {
-        fn load_prefs(&self) -> Prefs {
-            Prefs::default()
-        }
-
-        fn save_prefs(&self, _prefs: &Prefs) -> Result<(), slip_store::prefs::PrefsError> {
-            Ok(())
-        }
-    }
-
     /// 记录每次发射的内容版本，用来断言"执行/接纳"的交替顺序。
     struct RecordingSink {
         log: Arc<Mutex<Vec<String>>>,
@@ -819,7 +680,7 @@ mod tests {
     fn build(
         log: Arc<Mutex<Vec<String>>>,
         behavior: Behavior,
-        gate: Option<Mutex<std::sync::mpsc::Receiver<()>>>,
+        gate: Option<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
         failures_left: usize,
         capacity: usize,
     ) -> Dispatcher {
@@ -833,13 +694,7 @@ mod tests {
             log: Arc::clone(&log),
             failures_left,
         };
-        Dispatcher::spawn_with_sink(
-            store,
-            Arc::new(MockPrefs),
-            Presenter::new(initial()),
-            Box::new(sink),
-            capacity,
-        )
+        Dispatcher::spawn_with_sink(store, Presenter::new(initial()), Box::new(sink), capacity)
     }
 
     fn slip(text: &str) -> Slip {
@@ -897,14 +752,6 @@ mod tests {
             .await;
         assert!(after_apply.ui_rev.unwrap() > first.ui_rev);
 
-        // 视图事件没有 ACK，但**必须**递增版本，否则前端会按 ui_rev 去重丢弃它。
-        dispatcher.view_event(ViewEvent::MonitorsChanged(
-            crate::presenter::MonitorSnapshot::default(),
-        ));
-        tokio::task::yield_now().await;
-
-        let latest = dispatcher.get_snapshot().await.unwrap();
-        assert!(latest.ui_rev > after_apply.ui_rev.unwrap());
         dispatcher.shutdown().await;
     }
 
@@ -1091,29 +938,5 @@ mod tests {
             .await;
         assert_eq!(ack.result, AckResult::Rejected);
         assert_eq!(ack.error.unwrap().code, "notExecuted");
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn toggle_collapse_publishes_without_touching_store() {
-        let log = Arc::new(Mutex::new(Vec::new()));
-        let dispatcher = build(Arc::clone(&log), Behavior::Ok, None, 0, 8);
-
-        let ack = dispatcher
-            .toggle_collapse(String::from("r1"), SlipId::new_v7())
-            .await;
-        assert_eq!(ack.result, AckResult::Applied);
-        assert!(
-            log.lock().unwrap().iter().all(|e| !e.starts_with("exec:")),
-            "折叠不应触发磁盘写入"
-        );
-        dispatcher.shutdown().await;
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn health_defaults_to_writable_and_warnings_empty() {
-        // 防止有人把 Health::default() 改成 Degraded 而静默禁掉所有写入。
-        let health = Health::default();
-        assert_eq!(health.availability, Availability::ReadWrite);
-        assert_eq!(health.warnings, BTreeSet::new());
     }
 }
