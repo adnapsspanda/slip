@@ -507,15 +507,28 @@
    * 同一时刻只放一个请求进去：撤销栈是后进先出的，并发请求会让用户
    * 多按的那一下撤掉一条并不是他刚看到的那次修改。
    */
+  /**
+   * 撤销一步。
+   *
+   * 只说"已撤销"是不够的：过滤视图下被撤销的那条可能根本不在视野里，用户会看到
+   * 列表毫无变化、以为撤销失灵（实测过）。所以这里用**前后快照对比**找出到底哪条
+   * 变了，并在它不可见时明说。
+   */
   async function handleUndo() {
     if (undoing) return;
     undoing = true;
+    const before = new Map(
+      (snapshot?.slips ?? []).map((slip) => [
+        slip.id,
+        `${slip.text}\u0000${slip.done}`,
+      ]),
+    );
     try {
       const ack = await bridge.undo(bridge.newRequestId());
       await refresh();
       if (ack.result === "applied") {
         hint = DEFAULT_HINT;
-        notice = { message: "已撤销", undo: false };
+        notice = { message: describeUndo(before), undo: false };
       } else {
         hint = `撤销失败：${formatAckError(ack)}`;
       }
@@ -524,6 +537,29 @@
     } finally {
       undoing = false;
     }
+  }
+
+  /**
+   * 从"撤销前后"的快照差里找出被动到的那一条，并据此组织一句有用的提示。
+   *
+   * 找不到差异（例如撤销的是归档导致的隐藏）时退回"已撤销"——不能编造是哪条。
+   */
+  function describeUndo(before) {
+    const changed = (snapshot?.slips ?? []).filter((slip) => {
+      const was = before.get(slip.id);
+      const now = `${slip.text}\u0000${slip.done}`;
+      return was !== undefined && was !== now;
+    });
+    const affected = changed[0];
+    if (!affected) return "已撤销";
+    const hidden = !visible.some((slip) => slip.id === affected.id);
+    const name =
+      affected.text.length > 12
+        ? `${affected.text.slice(0, 12)}…`
+        : affected.text;
+    return hidden
+      ? `已撤销：「${name}」（不在当前过滤结果里）`
+      : `已撤销：「${name}」`;
   }
 
   /**

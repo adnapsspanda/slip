@@ -903,5 +903,56 @@ check("带清单前缀的 2000 字输入不被前端误拦",
 check("落盘时前缀已剥、长度正好 2000",
   prefixLimit.stored === 1, `stored=${prefixLimit.stored}`);
 
+// 22. 过滤视图下撤销一条看不见的条目：必须说清撤的是哪条、且它不在视野里。
+//     只说"已撤销"会让用户以为失灵——列表毫无变化（实测过这个困惑）。
+const hiddenUndo = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const wait = (ms) => new Promise(r => setTimeout(r, ms));
+       const ta = document.querySelector('.capture__input');
+       const capture = async (text) => {
+         ta.focus();
+         ta.value = text;
+         ta.dispatchEvent(new Event('input', { bubbles: true }));
+         ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+         await wait(1400);
+       };
+
+       await capture('撤销可见性-甲');
+       await capture('撤销可见性-乙');
+
+       const rows = () => [...document.querySelectorAll('.slip')];
+       const target = rows().find((r) =>
+         r.querySelector('.slip__text')?.textContent === '撤销可见性-乙');
+       target.querySelector('.slip__box').click();
+       await wait(1300);
+
+       // 过滤到只剩"甲"：被撤销的对象将不在视野里
+       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
+       await wait(200);
+       const filter = document.querySelector('.filter__input');
+       filter.value = '撤销可见性-甲';
+       filter.dispatchEvent(new Event('input', { bubbles: true }));
+       await wait(250);
+       const beforeUndo = rows().length;
+
+       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+       await wait(1700);
+       const notice = document.querySelector('.notice')?.textContent?.replace(/\s+/g, ' ').trim() ?? '';
+       const afterUndo = rows().length;
+
+       // 收尾：退出过滤，别把状态留给后面的步骤
+       filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+       await wait(200);
+       return JSON.stringify({ beforeUndo, afterUndo, notice });
+     })()`,
+    true,
+  ),
+);
+check("视野外撤销会说明对象不在过滤结果里",
+  (hiddenUndo.notice ?? "").includes("不在当前过滤结果里"), `notice=${hiddenUndo.notice}`);
+check("提示里点名了被撤销的那一条",
+  (hiddenUndo.notice ?? "").includes("撤销可见性-乙"), `notice=${hiddenUndo.notice}`);
+
 cdp.close();
 process.exit(failed ? 1 : 0);
