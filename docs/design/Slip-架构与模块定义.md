@@ -26,6 +26,7 @@
 | 13 | **切分** | 25 条不变量压在第一步 | §12 切分 M0/M1/M2，明确各阶段验收子集 |
 | 14 | 澄清 | §9.7 的 `spike_*` 命令集已随实现删除 | 自检并入 `src-tauri/src/diag.rs`，只在 `SLIP_LOG=debug` 输出；IPC 不再暴露任何窗口开关（§9.7.1） |
 | 15 | **删除** | 展示层视图通路（`ViewEvent` 四变体、`ToggleCollapse`、`Prefs.order/collapsed/dock_side`、`FlushPrefs` 与 1s 去抖）在**前端从未产生过事件**，是实打实的死路径 | 整块删除（净减 522 行）；`Prefs` 收窄为只剩 `hotkey`；`dispatch` 主循环少一个 `select!` 分支与 dirty/due 状态机。将来若要重新引入拖拽/折叠，**必须先给出 UI 入口与验收用例**（§1.8、§3.5、§6.1、§9.7） |
+| 16 | 修正 | 权限收窄后 `data-tauri-drag-region` 失效（`core:default` 不含 `allow-start-dragging`），无边框窗口无法移动 | 补授该权限，并在验收脚本里钉住「`start_dragging` 不被拒」；`AGENTS.md` 写清原因（§9.3） |
 
 ---
 
@@ -926,8 +927,16 @@ M0 验收子集（§9.1 第 1、6 条；§9.2 的文本往返、原字节保留�
 插件：`tauri-plugin-global-shortcut`、`tauri-plugin-autostart`、`tauri-plugin-single-instance`
 （单实例**必须最先注册**，否则其它插件可能在它判定前就建好窗口）。`tauri` 开启 `tray-icon` feature。
 
-Capability 只加了实际用到的：`core:window:allow-hide/show/set-focus`、`core:event:default`、
-`global-shortcut:allow-register/unregister`、`autostart:allow-enable/disable/is-enabled`。
+Capability 只有两项：`core:default` 与 `core:window:allow-start-dragging`。
+
+- 前端实际只用 `core.invoke`（自定义命令）与 `event.listen`（唤出事件），两者都在
+  `core:default` 里；
+- 窗口显隐/聚焦、全局热键、开机自启全部由 Rust 侧直接调用插件 API，**不经过 webview IPC**，
+  因此不需要对应 capability；
+- **`core:default` 不含 `allow-start-dragging`**（它的组成是 `core:window:default` +
+  `core:webview:default` + …，而 `core:window:default` 只有只读类命令）。
+  标题栏的 `data-tauri-drag-region` 因此必须单独授这一条，否则**无边框窗口完全无法移动**，
+  而外观毫无异常。收窄权限时踩过这个坑，现由验收脚本钉住（修订 16）。
 
 **真实热键验收**（Win32 `keybd_event` 发真键 + CDP 读界面 + 文件系统读磁盘 + `GetForegroundWindow` 读焦点）：
 

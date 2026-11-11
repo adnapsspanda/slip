@@ -388,4 +388,8 @@ cargo build -p slip-shell
 
 - 不把密钥、机器相关路径写进仓库；示例配置用占位值。
 - Tauri capability 只授予确实用到的权限（当前 `core:default` + `core:window:allow-start-dragging`）。加权限前先确认前端真的有对应调用。
-- 磁盘写入只允许经由 `slip-store`；外壳与前端都不得直接读写文件。
+- **`inbox.md` 的读写只允许经由 `slip-store`。** 外壳可以碰两类东西：它自己产出的
+  附件（`export-<ms>.md`）与只读的目录枚举（损坏证据 `inbox.md.corrupt-*` 的名字与时间）。
+  外壳**不得**直接读写 `inbox.md` 的内容——读它要走 `slip_store::peek_slips`，
+  写它只能经 `Store` 的方法。前端一律不碰文件系统（它连路径都拿不到，只有 `vault_path`
+  这一个字符串用于显示）。

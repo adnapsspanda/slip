@@ -52,6 +52,21 @@
 
 ## 完成记录
 
+- **安全/配置章节与代码对齐（本轮）**：两处文档与实现不符。
+  - ① 设计文档写着 capability 含 `core:window:allow-hide/show/set-focus`、
+    `core:event:default` 等——实际只有 `core:default` + `core:window:allow-start-dragging`。
+    已按现状重写，并写清"**`core:default` 不含 `allow-start-dragging`**，
+    少了它无边框窗口完全无法移动"，修订表补第 16 行。
+  - ② `AGENTS.md` 的写入边界写得过宽（"外壳与前端都不得直接读写文件"），而外壳确实
+    要写导出产物。改为精确表述：**`inbox.md` 的读写只经 `slip-store`**；外壳可以碰
+    两类东西——自己产出的附件（`export-<ms>.md`）与只读的目录枚举（损坏证据）。
+  - 逐项核对了代码侧的事实：外壳**零处**直接写 `inbox.md`（唯一写点是导出产物
+    `system.rs:336`）；读它走 `peek_slips`；前端**零**处文件系统 API。
+  - 顺带做了上轮承诺的自查：全仓库**无残留 `[MUTATION]` 标记**，
+    `ATTEMPTS=5`/`code == 32 || 33`/`validate_candidate` 循环/`doc.bom` 分支/
+    `strip_list_prefix` 全部完好——十几次变异都还原干净了。
+  - 本轮改动纯文档，`fmt`/`clippy`/不可回退约束检查全绿；测试仍受 4551 影响。
+
 - **BOM 处理此前零覆盖（本轮）**：`doc.rs` 里写着"解析时识别 BOM、渲染时按原样写回；
   真正提交时统一输出无 BOM"，但**没有任何测试**——把 `render` 的 BOM 分支删掉也不会红。
   - 补 2 条测试：`bom_is_detected_and_written_back_byte_identically`（无改动时
