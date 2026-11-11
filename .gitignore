@@ -30,3 +30,6 @@ src-tauri/gen/
 
 # 架构图产物（archify 生成，可重新生成，不进版本库）
 slip-architecture*.html
+# 发布包产物（R80）
+dist-release/
+dist-release-test/
