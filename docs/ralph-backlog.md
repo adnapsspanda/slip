@@ -53,6 +53,27 @@
 
 ## 完成记录
 
+- **R77 用户可见错误消息全部中文化（本轮）**：
+  - **审计发现三处英文**会漏给用户：
+    - `DomainError` 的 Display：`"text is empty after trimming"`、`"invalid slip id"`、
+      `"cannot archive a slip that is not done"` 等 9 条；
+    - `BlockingError` 的 Display：`"duplicate slip id: …"`、`"unsupported marker version"`；
+    - `map_store_error` 里 `conflict` / `needsReload` / `readOnly` 三条 `message`。
+  - 危险点在于：前端对 `domain` / `blocking` / `io` 这几个码**直接把 message 显示给用户**，
+    于是中文界面会突然冒出一句英文。而 `conflict`/`needsReload`/`readOnly` 三条虽然前端
+    按 code 覆盖了文案，但只要将来有人把 message 直接显示出来就会漏。
+  - **全部改成中文，且写成"该怎么做"而不是复述错误码**，例如
+    `"未完成的纸条不能归档"`、`"太长了：2001 个字，上限 2000 个字"`、
+    `"第 7 行的记录不是合法的 UTF-8"`。
+  - **加了机器守卫** `user_facing_error_messages_are_chinese`：遍历 10 个代表性错误，
+    断言①消息含中文（CJK 区间）②不泄漏 Debug 结构体③产生的码集合恰为
+    `blocking/conflict/domain/io/needsReload/readOnly`——**码集合一变动就会红**，
+    提醒同步前端 `formatAckError`。
+  - **变异验证**：把一条消息改回英文 → 测试立刻红并打印
+    "错误码 domain 的消息不是中文，用户会看到英文：text is empty after trimming"。
+  - 顺带更新了唯一一条依赖英文文案的既有断言（`contains("duplicate")` → `contains("编号重复")`）。
+  - WSL 全套：**241 项通过**（domain 66 / store 103 / acceptance 12 / app 43 / 其它 17）。
+
 - **R76 钩子与 CI 零漂移 + 机械化检测（本轮）**：
   - **先修了一处真漂移**：钩子只在 `ui/dist/index.html` **缺失时**才构建前端，而 CI 每次都构建。
     后果很实：改了 `ui/src` 但 dist 还在时，钩子会拿**旧产物**跑 prettier / 纯逻辑 /

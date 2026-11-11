@@ -133,15 +133,17 @@ impl std::fmt::Display for IoKind {
 impl std::fmt::Display for BlockingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            // 同 DomainError：这些句子会进入用户提示区，必须中文且可操作。
+            // `reason` 仍然用 Debug：它是给开发者定位的枚举，翻译它反而会丢掉精度。
             Self::InvalidRecord { line, reason } => {
-                write!(f, "invalid record at line {line}: {reason:?}")
+                write!(f, "第 {line} 行的记录格式不对：{reason:?}")
             }
             Self::DuplicateId { id } => {
-                write!(f, "duplicate slip id: {}", id.to_canonical_string())
+                write!(f, "纸条编号重复：{}", id.to_canonical_string())
             }
-            Self::UnsupportedVersion => write!(f, "unsupported marker version"),
+            Self::UnsupportedVersion => write!(f, "标记版本不受支持（可能是更新版本的 Slip 写的）"),
             Self::NonUtf8Record { line } => {
-                write!(f, "record at line {line} is not valid UTF-8")
+                write!(f, "第 {line} 行的记录不是合法的 UTF-8")
             }
         }
     }

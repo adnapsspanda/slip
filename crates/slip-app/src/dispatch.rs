@@ -596,17 +596,16 @@ fn rejected(request_id: String, code: &str, message: &str) -> Ack {
 /// 而不是 `needsReload`——两者对用户意味着完全不同的下一步动作。
 fn map_store_error(error: &StoreError) -> (&'static str, String) {
     match error {
+        // 这三条的 `message` 会随 ACK 一起回到前端。前端目前按 `code` 覆盖了文案，
+        // 但只要有人把 message 直接显示出来，英文就会漏给用户——所以这里也必须是中文。
         StoreError::Conflict { .. } => (
             "conflict",
-            String::from("file changed on disk since it was loaded"),
+            String::from("inbox.md 在载入之后被别的程序改过"),
         ),
-        StoreError::NeedsReload => (
-            "needsReload",
-            String::from("reload is required before writing again"),
-        ),
+        StoreError::NeedsReload => ("needsReload", String::from("需要先重新载入才能继续写入")),
         StoreError::ReadOnly => (
             "readOnly",
-            String::from("the file cannot be parsed; vault is read-only"),
+            String::from("文件无法解析，当前处于只读保护状态"),
         ),
         StoreError::Domain(err) => ("domain", err.to_string()),
         // 用 Display 而不是 Debug：这条消息会直接出现在用户的提示区。
@@ -898,6 +897,63 @@ mod tests {
 
     // ------------------------------------------------ Fatal
 
+    /// 用户可见的错误消息必须是中文。
+    ///
+    /// 背景（R77 审计）：`BlockingError` / `DomainError` 的 Display 原本是英文
+    /// （"duplicate slip id: …"、"text is empty after trimming"），而前端对
+    /// `blocking` / `domain` / `io` 这几个码**直接把 message 显示给用户**——
+    /// 于是中文界面里会突然冒出一句英文。这条测试把"每一句都是中文"变成机器可查。
+    #[test]
+    fn user_facing_error_messages_are_chinese() {
+        fn has_cjk(text: &str) -> bool {
+            text.chars().any(|c| ('\u{4e00}'..='\u{9fff}').contains(&c))
+        }
+
+        let cases: Vec<StoreError> = vec![
+            StoreError::Conflict {
+                current_hash: slip_store::Hash([0; 32]),
+            },
+            StoreError::NeedsReload,
+            StoreError::ReadOnly,
+            StoreError::Domain(slip_domain::DomainError::EmptyText),
+            StoreError::Domain(slip_domain::DomainError::SlipLocked),
+            StoreError::Domain(slip_domain::DomainError::ArchiveRequiresDone),
+            StoreError::Blocking(slip_store::BlockingError::UnsupportedVersion),
+            StoreError::Blocking(slip_store::BlockingError::NonUtf8Record { line: 7 }),
+            StoreError::Io(slip_store::IoKind::PermissionDenied),
+            StoreError::Io(slip_store::IoKind::Busy),
+        ];
+
+        let mut codes = std::collections::BTreeSet::new();
+        for error in &cases {
+            let (code, message) = map_store_error(error);
+            codes.insert(code);
+            assert!(
+                has_cjk(&message),
+                "错误码 {code} 的消息不是中文，用户会看到英文：{message}"
+            );
+            assert!(
+                !message.contains('{') && !message.contains("SlipId"),
+                "错误码 {code} 的消息泄漏了 Debug 结构体：{message}"
+            );
+        }
+
+        // 码集合必须与前端 `formatAckError` 的 case 一致；这里少一个或前端少一个，
+        // 都会让某条错误退回"直接显示 message"或显示"未知错误"。
+        assert_eq!(
+            codes.into_iter().collect::<Vec<_>>(),
+            vec![
+                "blocking",
+                "conflict",
+                "domain",
+                "io",
+                "needsReload",
+                "readOnly"
+            ],
+            "错误码集合变了：请同步更新前端 formatAckError"
+        );
+    }
+
     /// 错误消息会**直接进入用户的提示区**，所以不能泄漏 Debug 结构体。
     ///
     /// 回归背景：`blocking` 曾经是 `format!("{err:?}")`，用户会在界面上看到
@@ -914,7 +970,7 @@ mod tests {
             !message.contains('{') && !message.contains("SlipId"),
             "消息泄漏了 Debug 结构体：{message}"
         );
-        assert!(message.contains("duplicate"), "缺少可读描述：{message}");
+        assert!(message.contains("编号重复"), "缺少可读描述：{message}");
     }
 
     #[tokio::test(flavor = "current_thread")]

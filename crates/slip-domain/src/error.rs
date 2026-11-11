@@ -30,22 +30,24 @@ pub enum DomainError {
 impl fmt::Display for DomainError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyText => write!(f, "text is empty after trimming"),
+            // 这些句子会**原样出现在用户的提示区**（经 ACK 的 message 字段），
+            // 所以必须是中文，而且要说清"该怎么办"，不是复述错误码。
+            Self::EmptyText => write!(f, "内容为空（去掉首尾空白后什么也不剩）"),
             Self::TextTooLong { actual, max } => {
-                write!(f, "text has {actual} code points, limit is {max}")
+                write!(f, "太长了：{actual} 个字，上限 {max} 个字")
             }
-            Self::TextContainsNewline => write!(f, "text must not contain CR or LF"),
-            Self::TextNotNormalized => write!(f, "text is not in normalized form"),
-            Self::InvalidId => write!(f, "invalid slip id"),
+            Self::TextContainsNewline => write!(f, "单条内容不能包含换行"),
+            Self::TextNotNormalized => write!(f, "内容不是规范化的 Unicode 形式"),
+            Self::InvalidId => write!(f, "纸条编号不合法"),
             Self::TimestampNotSerializable => {
-                write!(f, "timestamp cannot round-trip through RFC3339")
+                write!(f, "时间戳无法按 RFC3339 精确往返")
             }
-            Self::EmptyCapture => write!(f, "capture produced no slips"),
+            Self::EmptyCapture => write!(f, "要收录的内容是空的"),
             Self::TooManyLines { actual, max } => {
-                write!(f, "capture has {actual} slips, limit is {max}")
+                write!(f, "一次最多收录 {max} 条，现在是 {actual} 条")
             }
-            Self::ArchiveRequiresDone => write!(f, "cannot archive a slip that is not done"),
-            Self::SlipLocked => write!(f, "slip is locked; unlock it before editing text"),
+            Self::ArchiveRequiresDone => write!(f, "未完成的纸条不能归档"),
+            Self::SlipLocked => write!(f, "纸条已锁定，先解锁才能改正文"),
         }
     }
 }
