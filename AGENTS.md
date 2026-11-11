@@ -241,9 +241,14 @@ Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy" |
   `cargo clippy`（其 build script 也是可执行文件）因此不可用。
 - **主程序 `slip-shell.exe` 仍可运行**，所以 `tools/verify-hotkey.ps1` 还能跑。
 
-遇到这种情况不要试图关闭安全策略。能做的是：静态检查（`cargo fmt`）与端到端验收
-（用已构建的 exe）照跑，把"单元测试被环境阻塞"如实记进本轮记录，等环境恢复后
-补跑——**不要把没跑过的测试写成通过**。
+遇到这种情况不要试图关闭安全策略。已经准备好的应对：
+
+- `pwsh -File tools/cargo-test-retry.ps1`：**只对 `os error 4551`** 重试——命中时删掉
+  被点名的产物再跑一轮，最多 5 次；其它任何失败原样上抛，绝不掩盖。
+- 提交钩子遇到"只有 4551、没有 `test result: FAILED`"时**放行但大声警告**，
+  把"本次提交未经完整测试验证"打在输出里。判据严格，二者缺一不放行。
+- 端到端验收用已构建的 exe，通常仍可跑（osolated 的测试二进制才受影响）。
+- 实在跑不了的，如实记进本轮记录并在环境恢复后补跑——**不要把没跑过的写成通过**。
 
 ## 质量门禁
 
