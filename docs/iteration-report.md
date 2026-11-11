@@ -96,7 +96,9 @@ WebView2；且拦截发生在 Windows 执行时）。
 cargo fmt --check            ✅
 cargo clippy -D warnings     ✅
 cargo test --workspace       ✅ 221 项（4 项 perf 忽略）
-tools/verify-hotkey.ps1      ✅ 100 项（1 项跳过：负坐标副屏，单屏不可验）
+# 此后新增 1 条 crates/slip-store/tests/archive_guard.rs，本机被 SAC 拦、尚未首次执行，
+# 首次执行由 CI 完成；它一旦跑通，总数变为 222
+tools/verify-hotkey.ps1      ✅ 104 项 / 0 失败（2026-11-11 当天复跑两次，均为 104/104）
 tools/check-forbidden.ps1    ✅ 5 项
 ```
 
