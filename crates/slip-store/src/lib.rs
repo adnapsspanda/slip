@@ -538,6 +538,15 @@ impl Store for MarkdownStore {
 
         if let Err(kind) = fsops::write_atomic(&state.path, &bytes) {
             // 未提交：内存与 rev 都不变。
+            //
+            // 但**必须降级并留诊断**：只读文件、磁盘满这类错误不会自愈，若不留痕，
+            // 界面上就只剩一句瞬时提示，横幅是空的——用户会一直失败却不知道为什么
+            // （实测过：把 inbox.md 设成只读后，health 仍是 writable、横幅空白）。
+            let message = format!("写入 {} 失败：{kind}", state.path.display());
+            state.degrade_with(Diagnostic {
+                line: None,
+                message,
+            });
             return StoreOutcome::failed(state.snapshot(), StoreError::Io(kind));
         }
 
@@ -1618,6 +1627,48 @@ mod tests {
             "失败 reload 保留 needs_reload"
         );
         assert_eq!(outcome.snapshot.diagnostics[0].line, Some(1));
+    }
+
+    /// 只读文件：写入失败必须**降级并留下诊断**，否则界面上横幅是空的，
+    /// 用户只会看到一句瞬时提示，而每次重试都失败。
+    #[cfg(windows)]
+    #[test]
+    fn write_failure_degrades_with_a_human_diagnostic() {
+        let fixture = fixture(b"one\n");
+        let path = fixture.path.clone();
+
+        // 只读属性：读得到，写不了。
+        let mut permissions = std::fs::metadata(&path).expect("metadata").permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).expect("set readonly");
+
+        let outcome = fixture.store.apply(&[Mutation::Append(slip("写不进去"))]);
+
+        // 恢复可写，好让临时目录能被清理。
+        //
+        // 这里的 `set_readonly(false)` 在 Windows 上是**清 FILE_ATTRIBUTE_READONLY**
+        // 的正确做法；clippy 的 `permissions_set_readonly_false` 是为 unix 语义写的，
+        // 在 Windows 上会误判。测试专用，仅此一处。
+        #[allow(clippy::permissions_set_readonly_false)]
+        {
+            let mut permissions = std::fs::metadata(&path).expect("metadata").permissions();
+            permissions.set_readonly(false);
+            std::fs::set_permissions(&path, permissions).expect("clear readonly");
+        }
+
+        assert!(outcome.result.is_err(), "只读文件上不该报告成功");
+        assert!(!outcome.snapshot.health.is_writable(), "失败后必须降级");
+        let diagnostic = outcome
+            .snapshot
+            .diagnostics
+            .iter()
+            .map(|d| d.message.clone())
+            .collect::<Vec<_>>()
+            .join(" | ");
+        assert!(
+            diagnostic.contains("文件被其它程序占用") || diagnostic.contains("权限不足"),
+            "诊断要说人话，实际是：{diagnostic}"
+        );
     }
 
     #[test]

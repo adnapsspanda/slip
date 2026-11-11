@@ -599,7 +599,8 @@ fn map_store_error(error: &StoreError) -> (&'static str, String) {
         StoreError::Domain(err) => ("domain", err.to_string()),
         // 用 Display 而不是 Debug：这条消息会直接出现在用户的提示区。
         StoreError::Blocking(err) => ("blocking", err.to_string()),
-        StoreError::Io(kind) => ("io", format!("i/o error: {kind:?}")),
+        // 同样用 Display：这条会出现在提示区，`PermissionDenied` 对用户没有意义。
+        StoreError::Io(kind) => ("io", kind.to_string()),
         StoreError::NotDegraded => (
             "notDegraded",
             String::from("isolation is only allowed while degraded"),
