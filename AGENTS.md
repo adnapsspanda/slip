@@ -483,7 +483,15 @@ cargo build -p slip-shell
 | 单队列单消费者、`presenter` 不上锁 | `tools/check-forbidden.ps1` 查 `Mutex<Presenter>` / `RwLock<Presenter>` | 能（Grep 级） |
 | 禁止引入 watcher / SQLite / 物理归档 | `tools/check-forbidden.ps1`（查依赖与 `archive.md`） | 能（Grep 级） |
 | 前端不注入 HTML | `tools/check-forbidden.ps1` 查 `{@html`（跳过注释） | 能 |
+| 前端不得发起网络请求 | 同上，查 `fetch` / `XMLHttpRequest` / `WebSocket` / `sendBeacon` / `EventSource`（跳过注释） | 能 |
+| 不把字符串当代码/标记执行 | 同上，查 `eval` / `new Function` / `innerHTML=` / `insertAdjacentHTML` / `srcdoc=` | 能 |
+| CSP 不得被削弱 | 同上，查 `unsafe-inline` / `unsafe-eval` / `"csp": null` | 能 |
 | **禁止内容去重 / 回调扩展点 / 事件总线 / 跨字段与时钟校验** | **没有自动守护** | **不能**——它们不是文本模式，只能靠评审时对照本节 |
+
+**自检模式**：`pwsh -File tools/check-forbidden.ps1 -SelfTest` 会拿正负样本跑一遍三条新模式——
+防止正则写错导致守卫**永远是绿的**（那种坏法最难发现）。整脚本实测约 260 ms；
+它曾经是 4.2 秒（每个检查各自递归扫全仓库、且 `Mask-Comments` 逐字符 `Substring` 是 O(n²)），
+R75 一并修掉了。
 
 `tools/check-forbidden.ps1` 同时接在提交钩子与 CI 里；它被设计成**只报文本证据**，
 查不出的绝不假装覆盖（例如"禁止全文重序列化"要靠往返测试，不在里面）。

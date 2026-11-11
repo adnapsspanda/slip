@@ -52,7 +52,7 @@
 
 - **状态生命周期表**（`AGENTS.md`）：前端 6 项 + 后端 2 项的"有效期/何时清/漏了会怎样"。
 - **变异验证**：断言必须"去掉修复后会红"才算数。已验 7 条守卫（其中一条覆盖 5 个测试用例），抓到 1 条空断言。
-- **不可回退约束的机器化**（`tools/check-forbidden.ps1`）：5 项接进钩子与 CI。
+- **不可回退约束的机器化**（`tools/check-forbidden.ps1`）：**8 项**接进钩子与 CI（R75 加了前端网络出口、危险 DOM API、CSP 削弱三条）。
 - **时序守卫加严**（`verify-hotkey.ps1`）：源码比 exe 新就拒绝验收；排除 `tests/`。
 - **环境自检**（`tools/check-environment.ps1`）：一键判断产物能否运行并给出解法。
 
@@ -99,7 +99,7 @@ cargo test --workspace       ✅ 221 项（4 项 perf 忽略）
 # 此后新增 1 条 crates/slip-store/tests/archive_guard.rs，本机被 SAC 拦、尚未首次执行，
 # 首次执行由 CI 完成；它一旦跑通，总数变为 222
 tools/verify-hotkey.ps1      ✅ 104 项 / 0 失败（2026-11-11 当天复跑三次，均为 104/104）
-tools/check-forbidden.ps1    ✅ 5 项
+tools/check-forbidden.ps1    ✅ 8 项（262 ms）
 ```
 
 ## 六、要恢复迭代，需要什么

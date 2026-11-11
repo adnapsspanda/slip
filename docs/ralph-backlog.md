@@ -53,6 +53,23 @@
 
 ## 完成记录
 
+- **R75 约束脚本扩展 + 性能修到 1/16（本轮）**：
+  - **新增三条检查**：前端发起网络请求（`fetch`/`XMLHttpRequest`/`WebSocket`/`sendBeacon`/
+    `EventSource`）、把字符串当代码或标记执行（`eval`/`new Function`/`innerHTML=`/
+    `insertAdjacentHTML`/`srcdoc=`）、CSP 被削弱（`unsafe-inline`/`unsafe-eval`/`"csp": null`）。
+    都跳过注释，避免"解释为什么不用某物"的段落误报。
+  - **性能问题被顺手挖出来**：矩阵说"保持毫秒级执行"，实测是 **4199 ms**。两个根因：
+    ①每个检查各自 `Get-ChildItem -Recurse` 扫全仓库（`target/` 在枚举阶段就被走了一遍，
+      过滤写在之后）；
+    ②`Mask-Comments` 每读一个字符就 `$Text.Substring($i)`——**O(n²) 且疯狂分配**。
+    修法：只枚举一次并在枚举阶段剪枝、文件内容缓存、`Mask-Comments` 改逐字符比较、
+    无注释标记的行直接跳过函数调用、扩展名集合替代逐文件 `-like`。**4199 → 262 ms**。
+  - **加 `-SelfTest`**：拿正负样本跑三条新模式，防止正则写错导致守卫永远绿（6/6 通过）。
+  - **在真实仓库里验证过它拦得住**：临时注入 `fetch(...)` 与 `el.innerHTML = ...`，
+    脚本立刻报"前端发起网络请求""把字符串当代码/标记执行"并退出 1；删掉后恢复通过。
+  - 途中两个 PowerShell 坑：方法参数里的运算符要加括号（`Add(($x -replace ...))`）；
+    另外又一次发现 `check-ps1-syntax.ps1` 不覆盖无扩展名的 `.githooks/pre-commit`。
+
 - **R74 前端包体积审计 + 把预算做成门禁（本轮）**：
   - 实测产物：`index.html` 0.38 KB、**CSS 9.99 KB**、**JS 68.04 KB**。
     依赖侧：`package.json` **只有 devDependencies**（svelte / vite 插件 / prettier），
