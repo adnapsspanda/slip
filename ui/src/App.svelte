@@ -100,6 +100,45 @@
       .join(" · "),
   );
 
+  /**
+   * 外部修改的条数级差异。
+   *
+   * 只在 `needsReload` 为真时取一次——那是"磁盘比内存新"的唯一信号。
+   * 不轮询：外部修改不是每秒发生的事。
+   */
+  let externalDiff = $state(null);
+
+  $effect(() => {
+    if (!snapshot?.needsReload) {
+      externalDiff = null;
+      return;
+    }
+    let cancelled = false;
+    bridge
+      .externalDiff()
+      .then((summary) => {
+        if (!cancelled) externalDiff = summary;
+      })
+      .catch(() => {
+        // 读不到就不显示条数：横幅本身已经说了"文件被外部修改"。
+        if (!cancelled) externalDiff = null;
+      });
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  /** 把差异条数说成人话；三项都为 0 时返回空串（那就没什么好说的）。 */
+  function describeDiff(diff) {
+    return [
+      diff.added > 0 ? `新增 ${diff.added}` : "",
+      diff.removed > 0 ? `消失 ${diff.removed}` : "",
+      diff.changed > 0 ? `改动 ${diff.changed}` : "",
+    ]
+      .filter(Boolean)
+      .join("、");
+  }
+
   let banner = $derived.by(() => {
     if (!snapshot) {
       return "";
@@ -117,7 +156,9 @@
       return "当前不可写入。处理好下方诊断里的问题后可重新载入，或隔离并重建空 Inbox。";
     }
     if (snapshot.needsReload) {
-      return "磁盘上的文件已被外部修改，需要重新载入。";
+      return externalDiff
+        ? `磁盘上的文件已被外部修改（${describeDiff(externalDiff)}），需要重新载入。`
+        : "磁盘上的文件已被外部修改，需要重新载入。";
     }
     return "";
   });

@@ -261,6 +261,52 @@ pub fn corrupt_artifacts(vault: &std::path::Path) -> Vec<std::path::PathBuf> {
     found
 }
 
+/// 外部修改的差异统计。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub struct DiffSummary {
+    /// 磁盘上有、内存里没有的条数（外部新增）。
+    pub added: usize,
+    /// 内存里有、磁盘上没了的条数（外部删除）。
+    pub removed: usize,
+    /// 两边都有但正文或完成态变了的条数。
+    pub changed: usize,
+}
+
+/// 比较"界面现在显示的"与"磁盘现在的"，给出条数级差异。
+///
+/// 用 `(id, text, done)` 三元组做键：只关心**人会注意到的变化**，
+/// 时间戳或标记顺序的差异不算改动。
+pub fn diff_summary(
+    current: &[(String, String, bool)],
+    disk: &[(String, String, bool)],
+) -> DiffSummary {
+    use std::collections::BTreeMap;
+
+    let current_map: BTreeMap<&str, (&str, bool)> = current
+        .iter()
+        .map(|(id, text, done)| (id.as_str(), (text.as_str(), *done)))
+        .collect();
+    let disk_map: BTreeMap<&str, (&str, bool)> = disk
+        .iter()
+        .map(|(id, text, done)| (id.as_str(), (text.as_str(), *done)))
+        .collect();
+
+    let mut summary = DiffSummary::default();
+    for (id, value) in &disk_map {
+        match current_map.get(id) {
+            None => summary.added += 1,
+            Some(old) if old != value => summary.changed += 1,
+            Some(_) => {}
+        }
+    }
+    for id in current_map.keys() {
+        if !disk_map.contains_key(id) {
+            summary.removed += 1;
+        }
+    }
+    summary
+}
+
 /// 把当前清单渲染成人能读的 Markdown 清单（**不含** `<!-- slip:v1 -->` 标记）。
 ///
 /// 为什么单独渲染而不是复制 `inbox.md`：后者带着机器标记，粘到别处既脏又可能被别的
@@ -312,7 +358,44 @@ pub fn reveal_newest_corrupt(app: &AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_plain, validate_url};
+    use super::{diff_summary, render_plain, validate_url};
+
+    fn row(id: &str, text: &str, done: bool) -> (String, String, bool) {
+        (id.to_owned(), text.to_owned(), done)
+    }
+
+    #[test]
+    fn diff_counts_added_removed_and_changed() {
+        let current = vec![
+            row("a", "留下", false),
+            row("b", "被改过", false),
+            row("c", "被删了", false),
+        ];
+        let disk = vec![
+            row("a", "留下", false),
+            row("b", "改过了", false),
+            row("d", "外部新增", true),
+        ];
+        let summary = diff_summary(&current, &disk);
+        assert_eq!(summary.added, 1, "d 是外部新增");
+        assert_eq!(summary.removed, 1, "c 在磁盘上没了");
+        assert_eq!(summary.changed, 1, "b 的正文变了");
+    }
+
+    #[test]
+    fn diff_ignores_identical_state() {
+        // 内容没变就不该报差异——否则每次外部碰一下文件都会弹提示。
+        let rows = vec![row("a", "一样", false), row("b", "也一样", true)];
+        let summary = diff_summary(&rows, &rows);
+        assert_eq!(summary, super::DiffSummary::default());
+    }
+
+    #[test]
+    fn done_flag_change_counts_as_changed() {
+        let current = vec![row("a", "同一条", false)];
+        let disk = vec![row("a", "同一条", true)];
+        assert_eq!(diff_summary(&current, &disk).changed, 1);
+    }
 
     #[test]
     fn render_plain_marks_state_and_drops_markers() {

@@ -129,6 +129,13 @@ export const openUrl = (url) => call("open_url", { url });
 export const exportMarkdown = () => call("export_markdown");
 
 /**
+ * 外部修改的条数级差异（`{added, removed, changed}`）。
+ * 只读解析磁盘，不改任何状态——只在 `needsReload` 为真时有意义。
+ * @returns {Promise<{added: number, removed: number, changed: number}>}
+ */
+export const externalDiff = () => call("external_diff");
+
+/**
  * 订阅热键唤出事件。非 Tauri 环境返回一个空的退订函数。
  * @param {() => void} handler
  * @returns {Promise<() => void>}

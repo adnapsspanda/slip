@@ -1,3 +1,5 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 // 通过 WebView2 的 CDP 端点驱动真实界面。
 //
 // 配合 tools/verify-hotkey.ps1 使用：它负责发真实热键，这里负责回答
@@ -720,6 +722,49 @@ check("状态行给出未完成与已完成条数",
   `meta=${stats.meta}`);
 check("rev 收进悬浮提示而不是常驻",
   /rev \d+/.test(stats.title ?? ""), `title=${stats.title}`);
+
+// 18. 外部修改：写入被拦，且横幅说清改了多少条。
+//     探针自己就是脚本，可以直接动 .tmp-vault 里的文件来造这个场景。
+// 不猜工作目录：直接问应用自己的 vault 在哪。
+const vaultPath = await evaluate(`window.__TAURI__.core.invoke('vault_path')`, true);
+const vaultInbox = join(String(vaultPath), "inbox.md");
+let externalState = { error: "未能改写文件" };
+try {
+  const before = readFileSync(vaultInbox, "utf8");
+  const extraId = "01a1c7e0-0000-7000-8000-00000000e001";
+  writeFileSync(
+    vaultInbox,
+    before + `- [ ] 外部写入的一条 <!-- slip:v1;id=${extraId};created=2026-11-10T03:00:00Z -->\n`,
+    "utf8",
+  );
+
+  externalState = JSON.parse(
+    await evaluate(
+      `(async () => {
+         const wait = (ms) => new Promise(r => setTimeout(r, ms));
+         const ta = document.querySelector('.capture__input');
+         ta.focus();
+         ta.value = '外部改动之后试图写入';
+         ta.dispatchEvent(new Event('input', { bubbles: true }));
+         ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+         await wait(1600);
+         const snap = await window.__TAURI__.core.invoke('get_snapshot');
+         return JSON.stringify({
+           needsReload: snap.needsReload,
+           banner: document.querySelector('.banner')?.textContent?.replace(/\s+/g, ' ').trim() ?? '',
+         });
+       })()`,
+      true,
+    ),
+  );
+} catch (error) {
+  externalState = { error: String(error) };
+}
+check("外部改动后写入被拦并置 needsReload",
+  externalState.needsReload === true,
+  `needsReload=${externalState.needsReload} ${JSON.stringify(externalState)}`);
+check("横幅说清外部改了多少条",
+  /新增 1/.test(externalState.banner ?? ""), `banner=${externalState.banner}`);
 
 cdp.close();
 process.exit(failed ? 1 : 0);

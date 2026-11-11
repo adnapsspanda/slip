@@ -294,6 +294,31 @@ async fn export_markdown(state: tauri::State<'_, ShellState>) -> Result<String, 
     Ok(path.display().to_string())
 }
 
+/// 外部修改到底改了什么：只读解析磁盘，与当前视图比条数。
+///
+/// 只在 `needsReload` 为真时有意义——那是"磁盘比内存新"的唯一信号。
+#[tauri::command]
+async fn external_diff(state: tauri::State<'_, ShellState>) -> Result<system::DiffSummary, String> {
+    let snapshot = state
+        .dispatcher
+        .get_snapshot()
+        .await
+        .map_err(|error| format!("读取快照失败：{error:?}"))?;
+    let path = state.vault.join("inbox.md");
+    let disk: Vec<(String, String, bool)> = slip_store::peek_slips(&path)
+        .map_err(|kind| format!("读取 inbox 失败：{kind}"))?
+        .into_iter()
+        .map(|slip| (slip.id.to_canonical_string(), slip.text, slip.done))
+        .collect();
+
+    let current: Vec<(String, String, bool)> = snapshot
+        .slips
+        .iter()
+        .map(|slip| (slip.id.clone(), slip.text.clone(), slip.done))
+        .collect();
+    Ok(system::diff_summary(&current, &disk))
+}
+
 /// 回滚最近一次内容编辑、勾选或归档。
 #[tauri::command]
 async fn undo(state: tauri::State<'_, ShellState>, request_id: String) -> Result<Ack, String> {
@@ -373,6 +398,7 @@ pub fn run() {
             reveal_corrupt,
             open_url,
             export_markdown,
+            external_diff,
             hotkey::dismiss_window,
         ])
         .setup(|app| {

@@ -190,6 +190,22 @@ impl StoreOutcome {
 ///
 /// 调用方必须串行调用（v11 §6.1 单队列）。实现内部仍需自持锁，
 /// 因为 `snapshot()` 可能与写操作并发。
+/// 只读地解析一份 inbox，返回其中的纸条。
+///
+/// **不碰任何状态机**：不读 store 的内存文档、不改 `content_rev`、不写盘。
+/// 用途是"看看磁盘现在是什么样"——例如判断外部修改到底改了多少条。
+/// 语法有问题的行会被跳过（与正常载入同一口径），这里不负责报告它们。
+pub fn peek_slips(path: &std::path::Path) -> Result<Vec<Slip>, IoKind> {
+    let bytes = fsops::read_bytes(path)?;
+    let parsed = doc::parse(&bytes);
+    Ok(parsed
+        .document
+        .records
+        .iter()
+        .map(|record| record.slip.clone())
+        .collect())
+}
+
 pub trait Store: Send + Sync {
     fn apply(&self, mutations: &[Mutation]) -> StoreOutcome;
     fn reload(&self) -> StoreOutcome;
