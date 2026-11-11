@@ -7,7 +7,7 @@
 //
 // 用法：& "C:\Users\spand\.bun\bin\bun.exe" run tools/check-ui-logic.mjs
 import { bannerLevel } from "../ui/src/lib/status.js";
-import { submitIntent } from "../ui/src/lib/keys.js";
+import { submitIntent, listNavTarget } from "../ui/src/lib/keys.js";
 
 let failed = 0;
 const check = (label, actual, expected) => {
@@ -60,6 +60,19 @@ check(
 check("输入法组合期 Shift+Enter 不换行也不提交", submitIntent({ key: "Enter", isComposing: true, shiftKey: true }), "composing");
 check("无关按键返回 none", submitIntent({ key: "a" }), "none");
 check("ArrowDown 与本模块无关", submitIntent({ key: "ArrowDown" }), "none");
+
+// ---- R43 列表整页/首尾跳转 ----
+check("PageDown 从 0 跳 5 行", listNavTarget(0, 20, "PageDown"), 5);
+check("PageDown 接近末尾时夹到末项", listNavTarget(18, 20, "PageDown"), 19);
+check("PageDown 在末项不动", listNavTarget(19, 20, "PageDown"), 19);
+check("PageUp 从 6 退 5 行", listNavTarget(6, 20, "PageUp"), 1);
+check("PageUp 接近开头时夹到首项", listNavTarget(2, 20, "PageUp"), 0);
+check("Home 到首项", listNavTarget(15, 20, "Home"), 0);
+check("End 到末项", listNavTarget(3, 20, "End"), 19);
+check("空列表不给目标", listNavTarget(0, 0, "PageDown"), null);
+check("未知键不给目标", listNavTarget(3, 20, "Tab"), null);
+check("非法下标按首项处理", listNavTarget(-7, 20, "PageDown"), 5);
+check("单项列表 PageDown 停在 0", listNavTarget(0, 1, "PageDown"), 0);
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);

@@ -1,4 +1,5 @@
 <script>
+  import { listNavTarget } from "./keys.js";
   import { tick } from "svelte";
   import { tokenize } from "./inline.js";
   import { exactLocal, relativeTime } from "./time.js";
@@ -250,6 +251,20 @@
           itemEls[index - 1]?.focus();
         }
         return;
+      case "PageDown":
+      case "PageUp":
+      case "Home":
+      case "End": {
+        // 一页 5 行、Home/End 到首尾；目标索引由纯函数算，边界（空列表、末页不足 5 行）
+        // 在 keys.js 里已被断言覆盖。
+        const target = listNavTarget(index, itemEls.length, event.key);
+        if (target === null) {
+          return;
+        }
+        event.preventDefault();
+        itemEls[target]?.focus();
+        return;
+      }
       case " ":
         // 空格在 span 上默认是滚动，必须挡掉，否则勾选的同时页面会跳。
         event.preventDefault();

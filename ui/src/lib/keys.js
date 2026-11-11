@@ -32,3 +32,37 @@ export function submitIntent(event) {
   // Enter 与 Ctrl+Enter（macOS 上是 Cmd+Enter）完全等价。
   return "submit";
 }
+
+/**
+ * 列表里的整页/首尾跳转。
+ *
+ * 为什么抽出来：这类索引计算最容易出边界错（越界、空列表、恰好落在末页），
+ * 而靠肉眼点几遍是验不出来的。纯函数 + 断言就能把边界全覆盖。
+ *
+ * @param {number} index 当前焦点所在下标
+ * @param {number} total 列表长度
+ * @param {string} key 按键名
+ * @returns {number|null} 目标下标；`null` 表示这个键不归本函数管
+ */
+export function listNavTarget(index, total, key) {
+  if (!Number.isFinite(total) || total <= 0) {
+    return null;
+  }
+  if (!Number.isFinite(index) || index < 0) {
+    index = 0;
+  }
+  const last = total - 1;
+  switch (key) {
+    case "PageDown":
+      // 一页 = 5 行；不足 5 行就落到末尾。
+      return Math.min(index + 5, last);
+    case "PageUp":
+      return Math.max(index - 5, 0);
+    case "Home":
+      return 0;
+    case "End":
+      return last;
+    default:
+      return null;
+  }
+}
