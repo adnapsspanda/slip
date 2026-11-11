@@ -1,5 +1,5 @@
 <script>
-  import { stripListPrefix } from "./inline.js";
+  import { stripListPrefix, cleanPastedText } from "./inline.js";
   import { submitIntent } from "./keys.js";
   /**
    * 捕获框。
@@ -82,6 +82,43 @@
     draftVersion += 1;
   }
 
+  /**
+   * 粘贴时清洗列表前缀。
+   *
+   * 为什么在**粘贴**这一刻做、而不是提交时做：用户从别处复制三条待办粘进来，应当立刻看见
+   * "它已经变成三条干净的行"，而不是等到落盘后才发现前缀没了。
+   *
+   * 只在真的剥掉了前缀时才 `preventDefault`——普通粘贴必须走默认行为，
+   * 否则会破坏撤销栈、也会丢掉富文本粘贴里我们没处理的部分。
+   */
+  function paste(event) {
+    const raw = event.clipboardData?.getData("text");
+    const { text: cleaned, changed } = cleanPastedText(raw ?? "");
+    if (!changed) {
+      return;
+    }
+    event.preventDefault();
+    const field = event.currentTarget;
+    const start = field.selectionStart ?? text.length;
+    const end = field.selectionEnd ?? text.length;
+    const next = text.slice(0, start) + cleaned + text.slice(end);
+    text = next;
+    draftVersion += 1;
+    // 光标落到刚插入内容的末尾。
+    queueMicrotask(() => {
+      const caret = start + cleaned.length;
+      field.setSelectionRange(caret, caret);
+    });
+    hint = cleaned.includes("\n")
+      ? "已去掉列表前缀，并拆成多行"
+      : "已去掉列表前缀";
+    setTimeout(() => {
+      if (hint === "已去掉列表前缀" || hint === "已去掉列表前缀，并拆成多行") {
+        hint = "";
+      }
+    }, 2000);
+  }
+
   function keydown(event) {
     // Escape 交给上层收窗口，但在输入法组合态里它是"取消候选词"的意思：
     // 这时放行给 IME，否则用户想撤销一次拼音输入却把整张纸片收走了。
@@ -133,6 +170,7 @@
   spellcheck="false"
   {disabled}
   onkeydown={keydown}
+  onpaste={paste}
   oninput={input}
   oncompositionstart={() => (composing = true)}
   oncompositionend={() => (composing = false)}></textarea>

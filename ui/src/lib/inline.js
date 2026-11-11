@@ -88,3 +88,31 @@ export function stripListPrefix(line) {
   }
   return rest;
 }
+
+/**
+ * 粘贴进来的多行文本要不要清洗列表前缀。
+ *
+ * 与 Rust 的 `strip_list_prefix` 同源（同一套正则），但**这里只剥前缀、不丢空行**：
+ * 用户粘进输入框的是"待编辑的文本"，不是"已提交的草稿"，擅自删空行会让他以为丢了东西。
+ * 真正的空行清洗在落盘时由领域层负责。
+ *
+ * 返回 `changed: false` 时调用方应完全放行默认粘贴行为（不能用 preventDefault 打断）。
+ *
+ * @param {string} raw
+ * @returns {{text: string, changed: boolean}}
+ */
+export function cleanPastedText(raw) {
+  if (typeof raw !== "string" || raw === "") {
+    return { text: raw, changed: false };
+  }
+  const lines = raw.split(/\r\n|\r|\n/);
+  let changed = false;
+  const cleaned = lines.map((line) => {
+    const next = stripListPrefix(line);
+    if (next !== line) {
+      changed = true;
+    }
+    return next;
+  });
+  return { text: cleaned.join("\n"), changed };
+}

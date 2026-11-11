@@ -7,6 +7,7 @@
 //
 // 用法：& "C:\Users\spand\.bun\bin\bun.exe" run tools/check-ui-logic.mjs
 import { bannerLevel } from "../ui/src/lib/status.js";
+import { cleanPastedText } from "../ui/src/lib/inline.js";
 import { submitIntent, listNavTarget, tabTarget } from "../ui/src/lib/keys.js";
 
 let failed = 0;
@@ -82,6 +83,21 @@ check("首条 Shift+Tab 不跳（返回 null）", tabTarget(0, 5, true), null);
 check("单项列表 Tab 不跳", tabTarget(0, 1, false), null);
 check("空列表不跳", tabTarget(0, 0, false), null);
 check("非法下标不跳", tabTarget(-3, 5, false), null);
+
+// ---- R45 粘贴时清洗列表前缀 ----
+check("普通文本不变", cleanPastedText("买牛奶"), { text: "买牛奶", changed: false });
+check("剥掉无序列表前缀", cleanPastedText("- 买牛奶"), { text: "买牛奶", changed: true });
+check("剥掉星号前缀", cleanPastedText("* 买牛奶"), { text: "买牛奶", changed: true });
+check("剥掉有序列表前缀", cleanPastedText("1. 买牛奶"), { text: "买牛奶", changed: true });
+check("剥掉 - [ ] 复选框", cleanPastedText("- [ ] 买牛奶"), { text: "买牛奶", changed: true });
+check("剥掉 - [x] 已完成框", cleanPastedText("- [x] 买牛奶"), { text: "买牛奶", changed: true });
+check(
+  "多行逐行剥并保留行数",
+  cleanPastedText("- 买牛奶\n- 买面包"),
+  { text: "买牛奶\n买面包", changed: true },
+);
+check("只剥第一层前缀，不重复剥", cleanPastedText("- - 买牛奶"), { text: "- 买牛奶", changed: true });
+check("空字符串不动", cleanPastedText(""), { text: "", changed: false });
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);
