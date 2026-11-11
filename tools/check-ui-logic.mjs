@@ -7,7 +7,7 @@
 //
 // 用法：& "C:\Users\spand\.bun\bin\bun.exe" run tools/check-ui-logic.mjs
 import { bannerLevel } from "../ui/src/lib/status.js";
-import { submitIntent, listNavTarget } from "../ui/src/lib/keys.js";
+import { submitIntent, listNavTarget, tabTarget } from "../ui/src/lib/keys.js";
 
 let failed = 0;
 const check = (label, actual, expected) => {
@@ -73,6 +73,15 @@ check("空列表不给目标", listNavTarget(0, 0, "PageDown"), null);
 check("未知键不给目标", listNavTarget(3, 20, "Tab"), null);
 check("非法下标按首项处理", listNavTarget(-7, 20, "PageDown"), 5);
 check("单项列表 PageDown 停在 0", listNavTarget(0, 1, "PageDown"), 0);
+
+// ---- R44 编辑态 Tab / Shift+Tab ----
+check("Tab 跳到下一条", tabTarget(2, 5, false), 3);
+check("Shift+Tab 跳到上一条", tabTarget(2, 5, true), 1);
+check("末条 Tab 不跳（返回 null）", tabTarget(4, 5, false), null);
+check("首条 Shift+Tab 不跳（返回 null）", tabTarget(0, 5, true), null);
+check("单项列表 Tab 不跳", tabTarget(0, 1, false), null);
+check("空列表不跳", tabTarget(0, 0, false), null);
+check("非法下标不跳", tabTarget(-3, 5, false), null);
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);

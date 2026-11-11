@@ -1,5 +1,5 @@
 <script>
-  import { listNavTarget } from "./keys.js";
+  import { listNavTarget, tabTarget } from "./keys.js";
   import { tick } from "svelte";
   import { tokenize } from "./inline.js";
   import { exactLocal, relativeTime } from "./time.js";
@@ -192,6 +192,25 @@
       const id = editingId;
       cancelEdit();
       refocusRow(id);
+    } else if (event.key === "Tab") {
+      /*
+       * 编辑态里的 Tab 不该把焦点甩到浏览器别处：它的含义是「保存这条，接着改下一条」。
+       * 先提交再切——顺序反了会丢当前改动（Tab 移动焦点会触发失焦提交，而那时会话已是新行）。
+       */
+      event.preventDefault();
+      const id = editingId;
+      const index = slips.findIndex((item) => item.id === id);
+      const target = tabTarget(index, slips.length, event.shiftKey);
+      if (draft.trim().length === 0) {
+        onnotice?.("纸条内容不能为空");
+        return;
+      }
+      if (target === null) {
+        // 已在首/末条：提交后把焦点还给当前行，不跳到不存在的位置。
+        commitEdit().then(() => refocusRow(id));
+        return;
+      }
+      commitEdit().then(() => beginEdit(slips[target]));
     }
   }
 

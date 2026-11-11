@@ -66,3 +66,30 @@ export function listNavTarget(index, total, key) {
       return null;
   }
 }
+
+/**
+ * 行内编辑时按 Tab / Shift+Tab 要跳到哪一条。
+ *
+ * 返回 `null` 表示"没有相邻项可跳"——调用方此时应当把焦点还给当前行，
+ * 而不是跳到一个不存在的下标上（那会让焦点掉到 body，键盘用户直接失去位置）。
+ *
+ * @param {number} index 当前编辑项下标
+ * @param {number} total 列表长度
+ * @param {boolean} shift 是否按住 Shift（反向）
+ * @returns {number|null}
+ */
+export function tabTarget(index, total, shift) {
+  if (
+    !Number.isFinite(index) ||
+    !Number.isFinite(total) ||
+    total <= 0 ||
+    index < 0
+  ) {
+    return null;
+  }
+  const target = shift ? index - 1 : index + 1;
+  if (target < 0 || target >= total) {
+    return null;
+  }
+  return target;
+}
