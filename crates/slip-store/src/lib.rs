@@ -234,8 +234,7 @@ pub trait Store: Send + Sync {
 /// 只对 [`IoKind::Busy`] 重试：权限不足、文件不存在这些重试多少次都一样，
 /// 只会把报错往后拖。最坏情况多等 4×40ms，而这条路径本来就要写盘（约 15ms）。
 fn read_for_conflict(path: &std::path::Path) -> Result<Vec<u8>, IoKind> {
-    const ATTEMPTS: usize = 5;
-    const DELAY: std::time::Duration = std::time::Duration::from_millis(40);
+    const ATTEMPTS: usize = 6;
 
     let mut last = IoKind::Other;
     for attempt in 0..ATTEMPTS {
@@ -246,11 +245,28 @@ fn read_for_conflict(path: &std::path::Path) -> Result<Vec<u8>, IoKind> {
                 if kind != IoKind::Busy || attempt + 1 == ATTEMPTS {
                     break;
                 }
-                std::thread::sleep(DELAY);
+                std::thread::sleep(retry_delay(attempt));
             }
         }
     }
     Err(last)
+}
+
+/// 第 `attempt` 次重试（从 0 开始）之前等多久。
+///
+/// 从 20ms 起每次翻倍，封顶 320ms：**先快后慢**。
+///
+/// 原来是固定 40ms × 4 次，最多只等 160ms。问题是 OneDrive 一类的同步工具持锁
+/// 常常比这更久，固定的短退避会在锁还没放开时就把次数用完，于是把整个 vault
+/// 降级成只读——用户看不出原因。指数退避对短锁反应更快（第一次只等 20ms），
+/// 对长锁也能撑到 ~620ms。
+///
+/// 上限 320ms 是有意的：写盘本来就有一次完整读写，不能让一次失败把界面卡上几秒。
+pub fn retry_delay(attempt: usize) -> std::time::Duration {
+    const BASE_MS: u64 = 20;
+    const CAP_MS: u64 = 320;
+    let factor = 1u64 << attempt.min(6);
+    std::time::Duration::from_millis((BASE_MS * factor).min(CAP_MS))
 }
 
 /// 保留的备份代数（v11 §4.5）。
@@ -965,6 +981,27 @@ mod tests {
     /// 占用 60ms，重试预算是 4×40ms=160ms，所以应当在重试过程中读成功。
     /// 这条测试同时钉住了那个常量的量级：如果把 ATTEMPTS 改成 1，
     /// 或者把 DELAY 改成 1ms，它会立刻变红。
+    /// 退避序列必须"先快后慢、有上限"，且第 0 次就比原来更快。
+    #[test]
+    fn retry_delay_backs_off_exponentially_with_a_cap() {
+        let ms = |attempt: usize| retry_delay(attempt).as_millis() as u64;
+        assert_eq!(ms(0), 20, "第一次重试要快——短锁不该让用户等");
+        assert_eq!(ms(1), 40);
+        assert_eq!(ms(2), 80);
+        assert_eq!(ms(3), 160);
+        assert_eq!(ms(4), 320);
+        assert_eq!(ms(5), 320, "封顶后不再增长");
+        assert_eq!(ms(20), 320, "再多次也一样");
+        // 单调不减：不能出现"越等越短"这种反直觉行为
+        for attempt in 1..10 {
+            assert!(ms(attempt) >= ms(attempt - 1));
+        }
+        // 整轮最坏等待必须是有界的（写盘路径不能卡几秒）
+        let total: u64 = (0..5).map(ms).sum();
+        assert_eq!(total, 620, "5 次重试总等待 620ms");
+        assert!(total < 1000, "总等待必须在一秒以内");
+    }
+
     #[cfg(windows)]
     #[test]
     fn retry_rides_out_a_short_lock() {
