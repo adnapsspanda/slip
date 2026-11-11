@@ -57,7 +57,10 @@ $rustInputs = @()
 foreach ($dir in @('crates', 'src-tauri\src', 'src-tauri\capabilities')) {
     $path = Join-Path $root $dir
     if (Test-Path $path) {
-        $rustInputs += Get-ChildItem $path -Recurse -File -Include *.rs, *.toml, *.json -ErrorAction SilentlyContinue
+        # 排除 `tests/` 下的独立集成测试文件：它们不参与 slip-shell 的构建，
+        # 改了也不需要重编。把它们算进来会让守卫频繁误报，而误报的守卫会被忽略。
+        $rustInputs += Get-ChildItem $path -Recurse -File -Include *.rs, *.toml, *.json -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -notmatch '\\tests\\' }
     }
 }
 foreach ($name in @('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'src-tauri\tauri.conf.json')) {
