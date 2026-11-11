@@ -432,3 +432,61 @@ async fn reload_clears_the_undo_stack() {
 
     dispatcher.shutdown().await;
 }
+
+/// 隔离重建 = 整库换成空文档，撤销栈必须一并清空。
+///
+/// 触发链：健康态下产生一次可撤销操作 → 外部把文件写坏 → 重新载入失败（降级）
+/// → 隔离并重建 → 此时撤销栈若还留着旧记录，重放会撞上不存在的条目。
+#[tokio::test(flavor = "current_thread")]
+async fn isolate_and_reset_clears_the_undo_stack() {
+    let dir = tempfile::tempdir().expect("temp vault");
+    let inbox = dir.path().join("inbox.md");
+    let store = Arc::new(MarkdownStore::new(&inbox));
+    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    let dispatcher = Dispatcher::spawn(store, presenter, 8);
+
+    let created = slip("隔离之前的一条");
+    let ack = dispatcher
+        .apply(String::from("r1"), vec![Mutation::Append(created.clone())])
+        .await;
+    assert_eq!(ack.result, AckResult::Applied);
+
+    // 勾选完成：可撤销，进撤销栈。
+    let ack = dispatcher
+        .apply(
+            String::from("r2"),
+            vec![Mutation::Patch {
+                id: created.id,
+                patch: Patch::SetDone {
+                    done: true,
+                    at: OffsetDateTime::now_utc(),
+                },
+            }],
+        )
+        .await;
+    assert_eq!(ack.result, AckResult::Applied);
+
+    // 外部写坏：marker 里的 id 不是合法 UUID，解析出问题 → 整库不可写。
+    std::fs::write(
+        &inbox,
+        "- [ ] 坏的 <!-- slip:v1;id=not-a-uuid;created=not-a-time -->\n",
+    )
+    .expect("corrupt inbox");
+
+    // 重新载入失败 → 降级，此时才允许"隔离并重建"。
+    let ack = dispatcher.reload(String::from("r3")).await;
+    assert_ne!(ack.result, AckResult::Applied, "坏文件不该被接纳");
+
+    let snapshot = dispatcher.get_snapshot().await.unwrap();
+    assert!(!snapshot.health.writable, "坏文件后必须降级");
+
+    let ack = dispatcher.isolate_and_reset(String::from("r4")).await;
+    assert_eq!(ack.result, AckResult::Applied, "降级态下应当允许隔离重建");
+
+    // 撤销栈已清空：给出"没有可撤销的操作"，而不是一条看不懂的错误。
+    let ack = dispatcher.undo(String::from("r5")).await;
+    assert_eq!(ack.result, AckResult::Rejected);
+    assert_eq!(ack.error.expect("error").code, "undo");
+
+    dispatcher.shutdown().await;
+}

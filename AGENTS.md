@@ -211,7 +211,7 @@ pwsh -File tools/verify-hotkey.ps1
    | 条目消失后的编辑态 | 端到端「条目消失后编辑框也被清掉」 |
    | 撤销栈 + `Reload` | 集成测试 `reload_clears_the_undo_stack` |
    | 撤销栈 + `RestoreBackup` | 端到端「恢复需要二次确认」间接覆盖（恢复后撤销栈已空） |
-   | 撤销栈 + `IsolateAndReset` | **没有专门断言**（触发它需要先构造降级态） |
+   | 撤销栈 + `IsolateAndReset` | 集成测试 `isolate_and_reset_clears_the_undo_stack`（先构造降级态；已做变异验证：去掉 `undo.clear()` 该测试会红） |
    | `showArchived` / `showBackups` 跨唤出 | **没有断言**，靠本表人工核对 |
    | `notice` 跨唤出 | 端到端「再唤出后撤销提示已过期清除」 |
    | `notice` 与三个整体替换路径 | **没有断言**，靠本表人工核对 |

@@ -318,8 +318,11 @@ async fn run(
                         presenter.accept(&outcome);
                         let ui_rev = presenter.ui_rev();
                         emit(&presenter, &mut *sink);
-                        // 内容已换成磁盘那份，旧撤销记录不再成立。
-                        undo.clear();
+                        // 只有**真的采纳了新内容**才清栈：载入失败时文档没变，
+                        // 撤销历史不该丢（变异测试发现的：失败的重载也会走到这里）。
+                        if error.is_none() {
+                            undo.clear();
+                        }
                         match error {
                             None => Ack {
                                 request_id,
