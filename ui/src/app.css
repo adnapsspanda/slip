@@ -31,6 +31,13 @@
   --banner-text: #7a3a1d;
   --banner-diag: #8c4524;
   --banner-btn-bg: #fff6f1;
+  /* 三档语义色（浅色）：info 取中性纸色，warn 取现有橙调，error 取偏红的告警色 */
+  --banner-info-bg: #f4f1e8;
+  --banner-info-edge: #ddd4c1;
+  --banner-info-text: #5c5347;
+  --banner-error-bg: #fbe6e2;
+  --banner-error-edge: #d9a79b;
+  --banner-error-text: #8a2f1c;
   --banner-btn-edge: #c98f74;
   --radius: 14px;
 }
@@ -57,6 +64,12 @@
     --banner-text: #f0b497;
     --banner-diag: #d88e6a;
     --banner-btn-bg: #402418;
+    --banner-info-bg: #2a2620;
+    --banner-info-edge: #45403a;
+    --banner-info-text: #c9c0ae;
+    --banner-error-bg: #3a1b16;
+    --banner-error-edge: #6b3327;
+    --banner-error-text: #f2a894;
     --banner-btn-edge: #734029;
   }
 }
@@ -223,6 +236,19 @@ body {
   user-select: text;
 }
 
+.banner--info {
+  border-color: var(--banner-info-edge);
+  background: var(--banner-info-bg);
+  color: var(--banner-info-text);
+}
+
+.banner--error {
+  border-color: var(--banner-error-edge);
+  background: var(--banner-error-bg);
+  color: var(--banner-error-text);
+  font-weight: 500;
+}
+
 .banner__body {
   flex: 1;
   min-width: 0;
@@ -233,7 +259,9 @@ body {
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 11px;
   color: var(--banner-diag);
-  word-break: break-all;
+  /* 长路径要能换行，但不要 break-all——那会把英文单词和文件名切得没法读。 */
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .banner__actions {

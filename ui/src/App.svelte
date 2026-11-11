@@ -1,5 +1,6 @@
 <script>
   import { onMount, tick } from "svelte";
+  import { bannerLevel as statusBannerLevel } from "./lib/status.js";
   import * as bridge from "./lib/bridge.js";
   import Capture from "./lib/Capture.svelte";
   import SlipList from "./lib/SlipList.svelte";
@@ -168,6 +169,9 @@
     }
     return "";
   });
+
+  // 判据抽在 lib/status.js：纯函数，能脱离应用验证（tools/check-ui-logic.mjs）。
+  let bannerLevel = $derived(statusBannerLevel(snapshot));
 
   let diagnostics = $derived(snapshot?.diagnostics ?? []);
 
@@ -794,7 +798,13 @@
 
   <section class="capture">
     {#if banner}
-      <div class="banner">
+      <div
+        class="banner"
+        class:banner--error={bannerLevel === "error"}
+        class:banner--warn={bannerLevel === "warn"}
+        class:banner--info={bannerLevel === "info"}
+        role={bannerLevel === "error" ? "alert" : "status"}
+      >
         <div class="banner__body">
           <span>{banner}</span>
           {#if diagnostics.length > 0}

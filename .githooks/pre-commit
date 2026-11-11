@@ -89,6 +89,10 @@ if [ ! -d ui/node_modules ]; then
 fi
 ( cd ui && "$BUN" run format:check )
 
+# 前端纯逻辑（bannerLevel 之类）不依赖浏览器即可验证：毫秒级，先跑。
+step "前端纯逻辑检查（tools/check-ui-logic.mjs）"
+"$BUN" run tools/check-ui-logic.mjs
+
 step "cargo fmt --all --check"
 cargo fmt --all --check
 

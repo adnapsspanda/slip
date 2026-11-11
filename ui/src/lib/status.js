@@ -1,0 +1,28 @@
+/**
+ * 横幅严重级别：把「快照状态」映射成「视觉强度」。
+ *
+ * 抽成纯函数而不是写在组件里，是为了能**脱离应用**验证——界面要跑起来才能做 CDP 取证，
+ * 而这段判定是纯逻辑，一套 `bun` 断言就够（见 `tools/check-ui-logic.mjs`）。
+ *
+ * 三档的判据与设计文档 §5 的展示优先级一致，只是换了问法：
+ * 优先级问"哪条先显示"，这里问"该多重"。
+ */
+
+/**
+ * @param {object|null|undefined} snapshot
+ * @returns {"error"|"warn"|"info"}
+ */
+export function bannerLevel(snapshot) {
+  if (!snapshot) return "info";
+  // Fatal：运行时已停止。内容还在，但功能没了——必须一眼看见。
+  if (snapshot.runtime?.state === "fatal") return "error";
+  // 数据可能有风险、需要用户处理的三类。
+  if (
+    snapshot.recovery?.state === "isolated" ||
+    (snapshot.health && snapshot.health.writable === false) ||
+    snapshot.needsReload === true
+  ) {
+    return "warn";
+  }
+  return "info";
+}
