@@ -31,6 +31,8 @@
     filtering = false,
     /** 正在看归档抽屉：每行给出"恢复"而不是"归档"。 */
     archivedView = false,
+    /** 归档里有多少条。列表空但归档非空时，空态文案必须说清"东西还在"。 */
+    archivedCount = 0,
     /** 把一条已归档的纸条恢复回列表。 */
     onunarchive,
     /** 双向暴露"是否正在编辑"，让 App 的 Ctrl+Z 知道该不该让路。 */
@@ -251,6 +253,17 @@
       <p class="slips__empty-title">还没有归档</p>
       <p class="slips__empty-foot">
         归档只是从列表收起，内容仍然在 inbox.md 里
+      </p>
+    </li>
+  {:else if slips.length === 0 && archivedCount > 0}
+    <!--
+      列表空了但归档里还有东西：这时候说"还没有内容"是**错误信息**——用户刚把一条
+      归档掉，内容还在 inbox.md 里。引导文案（按热键/回车收录）对他也毫无用处。
+    -->
+    <li class="slips__empty">
+      <p class="slips__empty-title">都归档了</p>
+      <p class="slips__empty-foot">
+        {archivedCount} 条已完成的内容在归档里，点右上角「已归档 {archivedCount}」可以翻回来
       </p>
     </li>
   {:else if slips.length === 0 && filtering}

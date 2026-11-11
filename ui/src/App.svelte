@@ -868,6 +868,7 @@
       slips={visible}
       filtering={filter.trim().length > 0}
       archivedView={showArchived}
+      archivedCount={archivedSlips.length}
       onunarchive={handleUnarchive}
       ontoggle={handleToggle}
       onedit={handleEdit}
