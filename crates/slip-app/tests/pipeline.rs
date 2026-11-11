@@ -381,3 +381,54 @@ async fn archive_and_undo_preserve_done_state_through_disk() {
 
     dispatcher.shutdown().await;
 }
+
+/// 重新载入 = 采纳磁盘上那一份，撤销栈必须一并清空。
+///
+/// 不清的话，栈里的逆操作描述的是**另一份文档**：实测外部替换文件并重载后按 Ctrl+Z，
+/// 会得到 "reload is required before writing again" 这种自相矛盾的提示，而失败又会
+/// 把这一步放回栈里，于是之后每次撤销都撞同一堵墙。
+#[tokio::test(flavor = "current_thread")]
+async fn reload_clears_the_undo_stack() {
+    let dir = tempfile::tempdir().expect("temp vault");
+    let inbox = dir.path().join("inbox.md");
+    let store = Arc::new(MarkdownStore::new(&inbox));
+    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    let dispatcher = Dispatcher::spawn(store, presenter, 8);
+
+    let created = slip("会被外部删掉的一条");
+    let ack = dispatcher
+        .apply(String::from("r1"), vec![Mutation::Append(created.clone())])
+        .await;
+    assert_eq!(ack.result, AckResult::Applied);
+
+    // 勾选完成：这是可撤销的操作，会进撤销栈。
+    let ack = dispatcher
+        .apply(
+            String::from("r2"),
+            vec![Mutation::Patch {
+                id: created.id,
+                patch: Patch::SetDone {
+                    done: true,
+                    at: OffsetDateTime::now_utc(),
+                },
+            }],
+        )
+        .await;
+    assert_eq!(ack.result, AckResult::Applied);
+
+    // 外部替换成另一份内容，再重新载入。
+    std::fs::write(
+        &inbox,
+        "- [ ] 外部替换后的一条 <!-- slip:v1;id=01a1c7e0-0000-7000-8000-0000000000f9;created=2026-11-10T00:00:00Z -->\n",
+    )
+    .expect("replace inbox");
+    let ack = dispatcher.reload(String::from("r3")).await;
+    assert_eq!(ack.result, AckResult::Applied);
+
+    // 撤销栈已清空：明确说"没有可撤销的操作"，而不是撞一个看不懂的错误。
+    let ack = dispatcher.undo(String::from("r4")).await;
+    assert_eq!(ack.result, AckResult::Rejected);
+    assert_eq!(ack.error.expect("error").code, "undo");
+
+    dispatcher.shutdown().await;
+}

@@ -308,12 +308,18 @@ async fn run(
                 }
                 let store_handle = Arc::clone(&store);
                 let result = tokio::task::spawn_blocking(move || store_handle.reload()).await;
+                // 载入即"采纳磁盘上那一份"：此前的撤销记录描述的是另一份文档，
+                // 重放它们只会撞上不存在的条目。实测过：外部替换 + 重载之后按 Ctrl+Z，
+                // 会得到"reload is required before writing again"这种自相矛盾的提示，
+                // 而失败又会把这一步放回栈里，于是之后每次都失败。
                 let ack = match result {
                     Ok(outcome) => {
                         let error = outcome.result.as_ref().err().map(map_store_error);
                         presenter.accept(&outcome);
                         let ui_rev = presenter.ui_rev();
                         emit(&presenter, &mut *sink);
+                        // 内容已换成磁盘那份，旧撤销记录不再成立。
+                        undo.clear();
                         match error {
                             None => Ack {
                                 request_id,
@@ -345,12 +351,15 @@ async fn run(
                 let store_handle = Arc::clone(&store);
                 let result =
                     tokio::task::spawn_blocking(move || store_handle.isolate_and_reset()).await;
+                // 隔离重建 = 整库换成空文档，旧撤销记录指向的条目全都不存在了。
                 let ack = match result {
                     Ok(outcome) => {
                         let error = outcome.result.as_ref().err().map(map_store_error);
                         presenter.accept(&outcome);
                         let ui_rev = presenter.ui_rev();
                         emit(&presenter, &mut *sink);
+                        // 整库已换，撤销栈一并清空。
+                        undo.clear();
                         match error {
                             None => Ack {
                                 request_id,
