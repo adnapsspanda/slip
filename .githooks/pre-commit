@@ -93,6 +93,11 @@ fi
 step "前端纯逻辑检查（tools/check-ui-logic.mjs）"
 "$BUN" run tools/check-ui-logic.mjs
 
+# 产物体积门禁（R74）：CSS < 10 KB、JS < 70 KB。超了不会有任何报错，
+# 只会让安装包悄悄变大——所以必须在这里硬拦。
+step "前端产物体积（tools/check-bundle-size.ps1）"
+pwsh -NoProfile -File tools/check-bundle-size.ps1
+
 step "cargo fmt --all --check"
 cargo fmt --all --check
 

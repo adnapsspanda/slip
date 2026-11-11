@@ -53,6 +53,20 @@
 
 ## 完成记录
 
+- **R74 前端包体积审计 + 把预算做成门禁（本轮）**：
+  - 实测产物：`index.html` 0.38 KB、**CSS 9.99 KB**、**JS 68.04 KB**。
+    依赖侧：`package.json` **只有 devDependencies**（svelte / vite 插件 / prettier），
+    **没有任何运行期依赖**——所以"无冗余库"不是靠 tree-shaking 抖出来的，是本来就没有。
+    脚本另外扫了产物里常见库的特征串（lodash / moment / rxjs / marked / dompurify…），零命中。
+  - **新增 `tools/check-bundle-size.ps1`**，接进钩子与 CI：CSS ≥ 10 KB 或 JS ≥ 70 KB 直接失败。
+    超预算不会有任何报错，只会让安装包悄悄变大——这种"无声劣化"必须硬拦。
+  - 脚本带一档**警告**：余量不足 0.5 KB 时打 `[WARN]`。当前 CSS 就是这种情况：
+    **9.99 KB / 10 KB，只剩约 10 字节**。这不是健康状态——下一处样式改动几乎必然撞线。
+  - 这一点我不自行改预算，而是摆出取舍：要么承认 10 KB 已不适配当前功能面（提出调高到
+    12 KB 并说明理由），要么专门做一次 CSS 合并整理。在没得到决定前，门禁按矩阵的 10 KB 执行。
+  - 途中差点误判：我用 PowerShell 的 `Parser` 去验 `.githooks/pre-commit`，报了两条语法错——
+    但那个钩子是 **`/bin/sh` 脚本**，用错解析器了。改用 WSL 的 `sh -n` 才是对的（通过）。
+
 - **R73 500 条渲染的 DOM 与内存（本轮，含运行时验证）**：
   - 新增 `tools/cdp-memory.mjs`：读 DOM 节点数 + 用 `HeapProfiler.collectGarbage` 前后对比
     堆占用，反复重建视图 20 次看是否泄漏。单独成脚本而不是塞进功能探针——这两项要读堆、

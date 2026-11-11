@@ -78,6 +78,9 @@ jobs:
       - name: 前端纯逻辑检查
         run: bun run tools/check-ui-logic.mjs
 
+      - name: 前端产物体积门禁
+        run: pwsh -NoProfile -File tools/check-bundle-size.ps1
+
       - name: 前端格式检查
         working-directory: ui
         run: bun run format:check
