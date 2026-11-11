@@ -377,9 +377,18 @@ wsl.exe -d Arch -- bash -lc 'sh /mnt/d/Dev/simple-todo/tools/wsl-test.sh'
 
 | 门 | 命令 | 覆盖 |
 |---|---|---|
+| 门禁对等性 | `pwsh -File tools/check-ci-parity.ps1` | 钩子与 CI 是否覆盖同一组关口（零漂移） |
 | 提交前钩子 | `git commit` 自动触发 | 编码（`*.ps1` 的 BOM）/ PowerShell 语法 / prettier / fmt / clippy / test |
 | CI | `.github/workflows/ci.yml` | 同上 + 前端构建 + release 构建 |
 | 本机验收 | `pwsh -File tools/verify-hotkey.ps1` | 真实热键 / 托盘 / 窗口定位 |
+
+**门禁对等性（R76）**：`tools/check-ci-parity.ps1` 把钩子与 CI 的步骤按关键词归一到同一组
+关口再比对。做成"归一 + 白名单"而不是逐字比对——两边措辞本来不需要一致，逐字比只会制造噪音，
+而噪音会让守卫被关掉。CI 独有（Release 构建、安装 bun、缓存）走白名单。
+
+钩子还有一个曾经的坑：它**只在 `ui/dist` 缺失时**才构建前端，而 CI 每次都构建。于是
+"改了 `ui/src` 但 dist 还在"时，钩子会拿**旧产物**跑 prettier / 纯逻辑 / 体积三项检查。
+现在改为"缺失或源码比产物新"都重建。
 
 **每个克隆要装一次本地钩子**（`core.hooksPath` 是本地配置，不随仓库走）：
 

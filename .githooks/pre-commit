@@ -27,8 +27,18 @@ step() {
 
 # ui/dist 不入库，但外壳**编译期**要读它。缺了就补，否则 clippy 只会给出
 # 一句没有指向性的 "proc macro panicked"。
+needs_ui_build=0
 if [ ! -f ui/dist/index.html ]; then
-  step "ui/dist 缺失，先构建前端"
+  needs_ui_build=1
+elif [ -n "$(find ui/src ui/index.html ui/package.json ui/vite.config.js ui/vite.config.ts \
+    -newer ui/dist/index.html -print -quit 2>/dev/null)" ]; then
+  # 源码比产物新：必须重建。
+  # 旧实现只在 dist 缺失时构建，于是"改了 src 但 dist 还在"就会拿着**旧产物**跑
+  # prettier / 纯逻辑 / 体积三项检查，而 CI 每次都重建——这就是实实在在的门禁漂移。
+  needs_ui_build=1
+fi
+if [ "$needs_ui_build" = "1" ]; then
+  step "前端产物缺失或陈旧，先构建"
   ( cd ui && "$BUN" install && "$BUN" run build )
 fi
 
@@ -76,7 +86,10 @@ fi
 # 「不可回退的约束」里能被文本证据判定的部分。纯 grep，毫秒级。
 # 这些条目一旦被破坏代价是架构级返工，而它们原本只靠人记。
 if command -v pwsh >/dev/null 2>&1; then
-  step "不可回退的约束（禁止引入清单）"
+  step "钩子与 CI 的门禁对等性（tools/check-ci-parity.ps1）"
+pwsh -NoProfile -File tools/check-ci-parity.ps1
+
+step "不可回退的约束（禁止引入清单）"
   pwsh -NoProfile -File tools/check-forbidden.ps1
 fi
 
