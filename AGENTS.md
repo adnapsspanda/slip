@@ -293,6 +293,11 @@ a process (…\rustup\…\bin\cargo.exe) attempted to load
 一次查询可能返回"暂时拒绝"，过一会儿再查又变成"放行"。实测：`slip-shell.exe`
 在 17:45 被拒，17:57 同一份文件却能启动。
 
+**注意：build script 也是可执行文件，同样会被拒。** 现象是
+`error: failed to run custom build command for slip-shell` 并伴随 `os error 4551`——
+连 `cargo check` 都不"纯静态"。实测 4/4 次复现；而 `cargo clippy` 因为复用了缓存里的
+build script 输出，仍然能通过。判据：`fmt` / `clippy` 通过**不代表** `check` 能通过。
+
 **标准应对：重试同一个二进制，不要删了重编。**
 
 ```powershell

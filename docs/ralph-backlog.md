@@ -52,6 +52,24 @@
 
 ## 完成记录
 
+- **静态核验扫一遍（本轮）**：三个窗口全关，于是把不需要执行产物的门跑全，拿到当前
+  能拿到的最强证据：
+
+    | 检查 | 结果 |
+    |---|---|
+    | `cargo fmt --all --check` | ✅ |
+    | `cargo clippy --workspace --all-targets -D warnings` | ✅ |
+    | `tools/check-forbidden.ps1`（5 项约束） | ✅ |
+    | `tools/check-ps1-syntax.ps1` + `*.ps1` BOM | ✅ |
+    | 前端 `prettier --check` | ✅ |
+    | `cargo check --workspace --all-targets` | ❌ **build script 被 4551 拒**（4/4 复现） |
+    | `cargo test` / 端到端 | 前者多数被拒；后者 104/104（当天第三次） |
+
+  - 新发现：**build script 本身就是可执行文件**，同样受 SAC 管辖。所以
+    `cargo check` 并不"纯静态"；而 `clippy` 能过是因为复用了缓存的构建脚本输出。
+    判据更新为：**`fmt`/`clippy` 通过不代表 `check` 能通过**。
+  - 已写进 `AGENTS.md`，避免下次把"clippy 绿了"误当成"能编译"。
+
 - **R03/R08/R28/R29 的真实阻塞：拿不到依赖（本轮查清）**
   - 现象：`cargo search tauri-plugin-notification` 报
     `SSL connect error (schannel: failed to receive handshake, SSL/TLS connection failed)`。
