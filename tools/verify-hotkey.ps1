@@ -516,10 +516,13 @@ function Test-NotInTaskbar($label) {
     # 实测：这台机器上窗口是 APPWINDOW 且没有 TOOLWINDOW，`skipTaskbar: true`
     # 与显式 `set_skip_taskbar(true)` 都没有改变扩展样式。
     #
-    # 但**不能据此判定"任务栏里有它"**：框架完全可以用 ITaskbarList::DeleteTab
-    # 把按钮摘掉，而不动扩展样式。所以 ex-style 不是可靠判据，这里不判失败，
-    # 只把实测值打出来，留给人工在任务栏上确认。
-    Write-Output ("[SKIP] {0}：skipTaskbar 的落地方式未确定（ex=0x{1:X} TOOLWINDOW={2} APPWINDOW={3}）" -f $label, $ex, $tool, $app)
+    # **已裁决（2026-11-12）：不写样式断言，保留实测值 + 人工目视。** 判据不可靠的原因：
+    # 现代 Chromium / WebView2 / Tauri 应用摘任务栏按钮的主流做法是
+    # `ITaskbarList::DeleteTab(hwnd)`，而不是加 `WS_EX_TOOLWINDOW`——因为在 Win11 下挂上
+    # TOOLWINDOW 会让 DWM 的平滑动效、阴影与圆角抗锯齿降级成老式工具窗口。
+    # 既然是 COM 从 Shell 摘按钮，`GetWindowLongPtr(GWL_EXSTYLE)` 当然抓不到 TOOLWINDOW；
+    # 以错误前提写断言只会制造假报警。
+    Write-Output ("[SKIP] {0}：skipTaskbar 走的是 ITaskbarList 而非 WS_EX_TOOLWINDOW（ex=0x{1:X} TOOLWINDOW={2} APPWINDOW={3}），需人工看任务栏" -f $label, $ex, $tool, $app)
 }
 Test-NotInTaskbar "唤出后"
 

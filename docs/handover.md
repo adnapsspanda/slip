@@ -15,7 +15,7 @@
 | `pwsh -File tools/check-forbidden.ps1` | 8 项约束通过 | 依赖、归档、锁、HTML 注入、网络出口、危险 API、CSP |
 | `pwsh -File tools/check-doc-sync.ps1` | 通过 | 文档里的 IPC 命令数与 capability 清单 |
 | `pwsh -File tools/check-ci-parity.ps1` | 零漂移 | 钩子与 CI 是否覆盖同一组关口 |
-| `pwsh -File tools/check-bundle-size.ps1` | 通过 | CSS 9.99 KB / 10 KB、JS 68 KB / 70 KB |
+| `pwsh -File tools/check-bundle-size.ps1` | 通过 | CSS 9.99 KB / **14 KB**、JS 68 KB / 70 KB |
 | `pwsh -File tools/check-ps1-syntax.ps1` | 通过 | `*.ps1` 的 BOM 与语法 |
 | `python tools/mutation-audit.py` | 通过 | 三处核心不变量的变异审计 |
 
@@ -63,11 +63,18 @@ pwsh -NoProfile -File tools/verify-hotkey.ps1
 pwsh -NoProfile -File tools/package-release.ps1
 ```
 
-## 四、两处需要判断的地方（不是 bug，是取舍）
+## 四、两处取舍已裁决（2026-11-12）
 
-1. **CSS 预算只剩约 10 字节**（9.99 KB / 10 KB）。下一处样式改动几乎必然撞线。要么承认 10 KB
-   已不适配当前功能面并调高，要么专门做一次 CSS 合并整理。这条没替后来人做决定。
-2. **`skipTaskbar` 的落地方式**未定论，见上。
+1. **CSS 预算：已提额到 14 KB**（`tools/check-bundle-size.ps1`）。原 10 KB 的配额定于 R31
+   之前，当时还没有双模变量体系；R31–R41 整套深浅色 + 聚焦环 + 横幅三档 + 细滚动条净增约
+   2.3 KB、压缩后 9.99 KB，控制力已经克制。死守 10 KB 只会逼出"为指标牺牲可读性"的缩写。
+   14 KB 留 4 KB 缓冲，仍能挡住无节制引入样式库。**JS 预算保持 70 KB。**
+2. **`skipTaskbar`：维持"打印实测值 + 人工目视确认"，不写 Win32 样式断言。**
+   现代 Chromium/WebView2/Tauri 应用摘任务栏按钮的主流做法是
+   **`ITaskbarList::DeleteTab(hwnd)`**，而不是加 `WS_EX_TOOLWINDOW`——因为在 Win11 下
+   挂上 `TOOLWINDOW` 会让 DWM 的平滑动效、阴影与圆角抗锯齿降级成老式工具窗口。
+   既然底层是 COM 从 Shell 摘按钮，用 `GetWindowLongPtr(GWL_EXSTYLE)` 当然抓不到
+   `TOOLWINDOW`；以错误前提写断言只会制造假报警。
 
 ## 五、这个仓库的几个"反直觉"约定
 

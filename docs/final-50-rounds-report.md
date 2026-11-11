@@ -28,7 +28,7 @@
 
 | 轮次 | 情况 |
 |---|---|
-| **R67 任务栏驻留** | 配置写了 `skipTaskbar: true`，但窗口扩展样式实测是 `WS_EX_APPWINDOW`、不带 `WS_EX_TOOLWINDOW`；显式 `set_skip_taskbar(true)` 后无变化。**不能据此断定"任务栏里有它"**——框架可能用 `ITaskbarList::DeleteTab` 摘按钮而不动扩展样式。断言已改为如实 SKIP 并打印实测值，等人工确认。 |
+| **R67 任务栏驻留** | 已裁决为「保持实测值输出 + 人工目视」，不写样式断言（理由见下）。原始情况：配置写了 `skipTaskbar: true`，但窗口扩展样式实测是 `WS_EX_APPWINDOW`、不带 `WS_EX_TOOLWINDOW`；显式 `set_skip_taskbar(true)` 后无变化。**不能据此断定"任务栏里有它"**——框架可能用 `ITaskbarList::DeleteTab` 摘按钮而不动扩展样式。断言已改为如实 SKIP 并打印实测值，等人工确认。 |
 
 ### 未完成（R80 的构建半边）
 
@@ -145,7 +145,7 @@ cargo fmt --check   通过
 不可回退约束（8 项）  通过
 设计文档同步         通过（IPC 21 个、capability 2 项）
 钩子与 CI 零漂移     通过
-前端产物体积         CSS 9.99 KB / 10 KB（余 10 字节）、JS 68.04 KB / 70 KB
+前端产物体积         CSS 9.99 KB / **14 KB**（提额后余 4.01 KB）、JS 68.04 KB / 70 KB
 提交总数            129
 ```
 

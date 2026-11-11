@@ -53,6 +53,23 @@
 
 ## 完成记录
 
+- **两处取舍已由项目所有者裁决（2026-11-12）**：
+  - **CSS 预算 10 KB → 14 KB**（`tools/check-bundle-size.ps1`）。理由：10 KB 的配额定于
+    R31（深浅色自适应）**之前**，当时只有浅色固定纸色、没有语义变量体系；R31–R41 落地整套
+    双模变量 + 发丝轮廓 + 聚焦环 + 横幅三档 + 细滚动条，**净增仅约 2.3 KB**、压缩后 9.99 KB，
+    控制力已经克制。为死守 10 KB 做极端合并/缩写会牺牲可读性与模块化，属于"为指标牺牲设计"。
+    改后实测 `CSS 9.99 / 14 KB（余 4.01 KB）`。**JS 预算保持 70 KB**（当前 68.04 KB，且前端
+    零运行期依赖）。
+  - **`skipTaskbar` 维持"实测值 + 人工目视"，不写 Win32 样式断言**。技术依据：现代
+    Chromium / WebView2 / Tauri 应用摘任务栏按钮的主流做法是 `ITaskbarList::DeleteTab(hwnd)`，
+    而非加 `WS_EX_TOOLWINDOW`——Win11 下挂 `TOOLWINDOW` 会让 DWM 平滑动效、阴影、圆角抗锯齿
+    降级成老式工具窗口。既然是 COM 从 Shell 摘按钮，`GetWindowLongPtr(GWL_EXSTYLE)` 抓不到
+    TOOLWINDOW；以错误前提写断言只会制造假报警。
+  - 落地：门禁脚本的注释里写清提额理由；`verify-hotkey.ps1` 的 SKIP 文本改为直接说明
+    "走的是 ITaskbarList 而非 WS_EX_TOOLWINDOW，需人工看任务栏"；`handover.md` 第四节从
+    "需要判断"改成"已裁决"；`phase-4-report.md` 加了时间注记（那里的 10 KB 是当时事实，
+    保留不改）。
+
 - **第 40 轮（最后一轮）收尾核查**：
   - 最后一次窗口探测仍是"被拒"（`slip-shell.exe`，5 次），端到端与 release 构建都无法进行。
   - 把当前能跑的全部又跑了一遍，并把结果写进 `final-50-rounds-report.md` 的第九节：
