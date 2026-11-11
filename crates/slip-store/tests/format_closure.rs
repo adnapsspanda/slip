@@ -7,7 +7,7 @@
 //! 另外钉住一条更强的性质：对刚写出的文档，`parse(render(doc)) == doc`，
 //! 即 render 与 parse 在"我们写过的字节"上互为逆。
 
-use slip_domain::{Mutation, Slip, SlipId};
+use slip_domain::{Mutation, Patch, Slip, SlipId};
 use slip_store::doc::{apply, parse, render};
 use time::OffsetDateTime;
 
@@ -122,4 +122,51 @@ fn long_text_round_trips() {
     // 接近码点上限的正文：保证行长度处理没有隐含截断。
     let text = "字".repeat(slip_domain::MAX_TEXT_CODEPOINTS);
     assert_round_trip(&text);
+}
+
+// ---------------------------------------------------------------- BOM（§4.1）
+
+/// BOM 必须**识别得出来、并按原样写回**：一份带 BOM 的文件在没有任何改动时，
+/// `parse` → `render` 必须逐字节相同，否则"外部编辑器打开再保存"会莫名少三个字节。
+///
+/// 写这条之前 BOM 处理**没有任何测试**：把 `render` 里的 BOM 分支删掉也不会红。
+#[test]
+fn bom_is_detected_and_written_back_byte_identically() {
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(b"- [ ] one <!-- slip:v1;id=01a1c7e0-0000-7000-8000-000000000001;created=2026-11-10T00:00:00Z -->\n");
+
+    let parsed = parse(&bytes);
+    assert!(parsed.document.bom, "带 BOM 的字节必须被识别为 bom=true");
+
+    let rendered = render(&parsed.document);
+    assert_eq!(
+        rendered, bytes,
+        "无改动时 parse→render 必须逐字节相同（含 BOM）"
+    );
+}
+
+/// 真正提交时统一输出**无 BOM**（§4.1）：这是刻意的归一化，
+/// 不是遗漏——所以要有测试把它钉住，免得有人"顺手"改成保留 BOM。
+#[test]
+fn a_real_change_drops_the_bom() {
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(b"- [ ] one <!-- slip:v1;id=01a1c7e0-0000-7000-8000-000000000001;created=2026-11-10T00:00:00Z -->\n");
+
+    let parsed = parse(&bytes);
+    let slip = parsed.document.records[0].slip.clone();
+
+    let (next, changed) = apply(
+        &parsed.document,
+        &[Mutation::Patch {
+            id: slip.id,
+            patch: Patch::SetText(String::from("two")),
+        }],
+    )
+    .expect("apply");
+
+    assert!(changed, "改正文应当算真的改变");
+    assert!(!next.bom, "真正提交后应输出无 BOM");
+
+    let rendered = render(&next);
+    assert_ne!(rendered.first(), Some(&0xEF), "输出不应再带 BOM 首字节");
 }
