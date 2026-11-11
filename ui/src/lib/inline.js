@@ -57,3 +57,34 @@ export function tokenize(text) {
 export function hasLink(text) {
   return typeof text === "string" && LINK.test(text);
 }
+
+/**
+ * 剥掉行首的列表标记，**与 `slip-domain/split.rs::strip_list_prefix` 逐条对应**。
+ *
+ * 为什么要在前端也有一份：捕获框的上限预检会**拦住提交**，而领域层是先剥前缀再量
+ * 长度。两边口径不一致时，`- ` + 2000 字的合法输入会被前端误判成 2002 字而拒收
+ * （实测过）。改任何一边，另一边必须跟着改——`tools/verify-hotkey.ps1` 里有一条
+ * 端到端用例守着这个等式。
+ *
+ * 规则（与 Rust 一致）：
+ * - 无序 `- ` `* ` `+ `；有序 1~3 位数字 + `. ` 或 `) `；分隔符后必须跟空格；
+ * - checkbox `[ ] ` / `[x] ` / `[X] ` 只在列表标记**之后**才剥；
+ * - 只剥一层。
+ */
+export function stripListPrefix(line) {
+  const s = line.replace(/^\s+/, "");
+  let rest = null;
+
+  if (/^[-*+] /.test(s)) {
+    rest = s.slice(2);
+  } else {
+    const ordered = s.match(/^\d{1,3}[.)] /);
+    if (ordered) rest = s.slice(ordered[0].length);
+  }
+
+  if (rest === null) return s;
+  for (const box of ["[ ] ", "[x] ", "[X] "]) {
+    if (rest.startsWith(box)) return rest.slice(box.length);
+  }
+  return rest;
+}

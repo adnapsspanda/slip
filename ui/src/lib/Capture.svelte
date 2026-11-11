@@ -1,4 +1,5 @@
 <script>
+  import { stripListPrefix } from "./inline.js";
   /**
    * 捕获框。
    *
@@ -35,15 +36,20 @@
   const codepointLen = (s) => [...s].length;
 
   /**
-   * 本地提示，**不是裁决**。真正的拒绝仍由领域层给出。
+   * 上限预检。**它确实会拦住提交**（见 `keydown` 里的 `if (problem) return`），
+   * 所以它的口径必须与领域层完全一致，否则就是"合法输入被界面拒收"。
    *
-   * 在这里提前拦的理由：后端的 `TextTooLong` 只说"太长"，说不清是第几行、
-   * 超出多少；多行粘贴时用户根本不知道该改哪一行。
+   * 提前拦的理由：后端的 `TextTooLong` 只说"太长"，说不清是第几行、超出多少；
+   * 多行粘贴时用户根本不知道该改哪一行。
+   *
+   * 因此这里先做与 `split_drafts` 相同的归一化（剥列表前缀 + trim）再计数。
    */
   let problem = $derived.by(() => {
+    // 必须**先剥列表前缀再量**：领域层就是这么做的。否则 `- ` + 2000 字的合法输入
+    // 会被这里误判成 2002 字并拦住提交（实测过这个 bug）。
     const lines = text
       .split(/\r\n|\r|\n/)
-      .map((line) => line.trim())
+      .map((line) => stripListPrefix(line).trim())
       .filter((line) => line.length > 0);
     if (lines.length > MAX_LINES) {
       return `一次最多收 ${MAX_LINES} 行，现在是 ${lines.length} 行`;

@@ -871,5 +871,37 @@ const drag = JSON.parse(
 check("标题栏保留拖动区标记", drag.hasAttr === true, `hasAttr=${drag.hasAttr}`);
 check("收窄后的权限仍允许拖动窗口", drag.result === "allowed", `result=${drag.result}`);
 
+// 21. 上限预检必须与领域层同一口径。
+//     领域层先剥列表前缀再量长度；前端若量原始行，`- ` + 2000 字的**合法**输入会被
+//     误判成 2002 字并拦住提交（这是我改 R17 时引入的真实回归）。
+const prefixLimit = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const wait = (ms) => new Promise(r => setTimeout(r, ms));
+       const ta = document.querySelector('.capture__input');
+       const before = (await window.__TAURI__.core.invoke('get_snapshot')).slips.length;
+
+       ta.focus();
+       ta.value = '- ' + 'a'.repeat(2000);
+       ta.dispatchEvent(new Event('input', { bubbles: true }));
+       await wait(250);
+       const hint = document.querySelector('.capture__hint')?.textContent ?? '';
+       ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+       await wait(1800);
+
+       const after = (await window.__TAURI__.core.invoke('get_snapshot')).slips.length;
+       const captured = after - before;
+       const stored = (await window.__TAURI__.core.invoke('get_snapshot')).slips
+         .filter((s) => s.text.startsWith('aaa') && s.text.length === 2000).length;
+       return JSON.stringify({ captured, hint, stored });
+     })()`,
+    true,
+  ),
+);
+check("带清单前缀的 2000 字输入不被前端误拦",
+  prefixLimit.captured === 1, `captured=${prefixLimit.captured} hint=${prefixLimit.hint}`);
+check("落盘时前缀已剥、长度正好 2000",
+  prefixLimit.stored === 1, `stored=${prefixLimit.stored}`);
+
 cdp.close();
 process.exit(failed ? 1 : 0);
