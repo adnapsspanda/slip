@@ -705,5 +705,21 @@ check("导出后提示区给出文件名",
   !exported.error && /^已导出：export-\d+\.md$/.test(exported.hint ?? ""),
   `hint=${exported.hint}`);
 
+// 17. 统计概览：状态行放人会关心的数，rev 与路径退到悬浮提示。
+const stats = JSON.parse(
+  await evaluate(
+    `JSON.stringify({
+       meta: document.querySelector('.paper__meta')?.textContent ?? '',
+       title: document.querySelector('.paper__meta')?.getAttribute('title') ?? '',
+     })`,
+    true,
+  ),
+);
+check("状态行给出未完成与已完成条数",
+  /\d+ 未完成/.test(stats.meta ?? "") && /\d+ 已完成/.test(stats.meta ?? ""),
+  `meta=${stats.meta}`);
+check("rev 收进悬浮提示而不是常驻",
+  /rev \d+/.test(stats.title ?? ""), `title=${stats.title}`);
+
 cdp.close();
 process.exit(failed ? 1 : 0);

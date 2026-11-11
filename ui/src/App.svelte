@@ -62,13 +62,40 @@
   let doneSlips = $derived(activeSlips.filter((slip) => slip.done));
   let doneCount = $derived(doneSlips.length);
 
+  /**
+   * 今日新增条数（本地日界）。
+   *
+   * 跟相对时间一样不轮询：跨过零点时数字会短暂偏大，下次快照更新就对了——
+   * 为这个挂定时器不值得。
+   */
+  let todayCount = $derived.by(() => {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const since = start.getTime();
+    return activeSlips.filter((slip) => {
+      const at = Date.parse(slip.createdAt);
+      return !Number.isNaN(at) && at >= since;
+    }).length;
+  });
+
+  /**
+   * 状态行只放**人会关心的数**。
+   *
+   * `rev` 与 vault 路径移到悬浮提示：前者是排查用的，后者太长，都不该占常驻位置。
+   */
   let meta = $derived(
     [
-      vaultLabel,
-      `${pendingCount} 条未完成`,
+      `${pendingCount} 未完成`,
+      `${doneCount} 已完成`,
+      archivedSlips.length > 0 ? `${archivedSlips.length} 已归档` : "",
+      todayCount > 0 ? `今日 +${todayCount}` : "",
       corrupt.length > 0 ? `${corrupt.length} 个损坏文件` : "",
-      snapshot ? `rev ${snapshot.contentRev}` : "",
     ]
+      .filter(Boolean)
+      .join(" · "),
+  );
+  let metaTitle = $derived(
+    [vaultLabel, snapshot ? `rev ${snapshot.contentRev}` : ""]
       .filter(Boolean)
       .join(" · "),
   );
@@ -585,7 +612,7 @@
           归档已完成 ({doneCount})
         </button>
       {/if}
-      <span class="paper__meta">{meta}</span>
+      <span class="paper__meta" title={metaTitle}>{meta}</span>
       {#if corrupt.length > 0}
         <!-- 只在真的留下过损坏文件时出现。title 里列文件名，方便核对是哪些。 -->
         <button
