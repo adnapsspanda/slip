@@ -1,6 +1,7 @@
 <script>
   import { tick } from "svelte";
   import { tokenize } from "./inline.js";
+  import { exactLocal, relativeTime } from "./time.js";
 
   /**
    * 纸片列表。
@@ -392,6 +393,18 @@
               />
             </svg>
           </button>
+          {#if !editingId}
+            <!--
+              相对时间不用定时器轮询：它在渲染时按当前时刻算一次就够了。
+              悬浮给精确时间，需要准确值时看那里。
+            -->
+            <time
+              class="slip__time"
+              datetime={slip.createdAt}
+              title={exactLocal(slip.createdAt)}
+              >{relativeTime(slip.createdAt)}</time
+            >
+          {/if}
         {/if}
       </li>
     {/each}

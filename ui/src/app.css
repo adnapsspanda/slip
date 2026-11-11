@@ -512,3 +512,14 @@ body {
   color: #a8422a;
   font-weight: 600;
 }
+
+/* 相对时间：低对比度、不抢正文，悬浮给精确值。 */
+.slip__time {
+  flex: none;
+  align-self: center;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+  cursor: default;
+  white-space: nowrap;
+}
