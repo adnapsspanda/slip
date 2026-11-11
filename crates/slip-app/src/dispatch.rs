@@ -14,7 +14,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 use slip_domain::{Mutation, Patch};
-use slip_store::{Store, StoreError, StoreSnapshot};
+use slip_store::{Store, StoreError, StoreOutcome, StoreSnapshot};
 use time::OffsetDateTime;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot};
@@ -56,6 +56,11 @@ pub enum Command {
     /// 回滚最近一次可撤销的内容变更。
     Undo {
         request_id: String,
+        reply: oneshot::Sender<Ack>,
+    },
+    RestoreBackup {
+        request_id: String,
+        name: String,
         reply: oneshot::Sender<Ack>,
     },
     Reload {
@@ -149,6 +154,16 @@ impl Dispatcher {
     pub async fn undo(&self, request_id: String) -> Ack {
         self.submit(request_id, |id, reply| Command::Undo {
             request_id: id,
+            reply,
+        })
+        .await
+    }
+
+    /// 用指定备份恢复。`name` 只在存储层校验——外壳不判断文件名是否合法。
+    pub async fn restore_backup(&self, request_id: String, name: String) -> Ack {
+        self.submit(request_id, move |id, reply| Command::RestoreBackup {
+            request_id: id,
+            name,
             reply,
         })
         .await
@@ -262,6 +277,30 @@ async fn run(
                 let _ = reply.send(ack);
             }
 
+            Command::RestoreBackup {
+                request_id,
+                name,
+                reply,
+            } => {
+                if presenter.is_fatal() {
+                    let _ = reply.send(not_executed(request_id));
+                    continue;
+                }
+                let store_handle = Arc::clone(&store);
+                let result =
+                    tokio::task::spawn_blocking(move || store_handle.restore_backup(&name)).await;
+                let ack = match result {
+                    Ok(outcome) => {
+                        // 恢复是"覆盖当前内容"，同样不能被撤销栈重放，所以不进 undo。
+                        let ack = settle(&mut presenter, &mut *sink, request_id, &outcome);
+                        undo.clear();
+                        ack
+                    }
+                    Err(join) => fatal(&mut presenter, &mut *sink, request_id, join.to_string()),
+                };
+                let _ = reply.send(ack);
+            }
+
             Command::Reload { request_id, reply } => {
                 if presenter.is_fatal() {
                     let _ = reply.send(not_executed(request_id));
@@ -357,6 +396,39 @@ async fn run(
     }
 }
 
+/// 把一次 store 结果转成 ACK 并发布新快照。
+///
+/// `Apply` / `Undo` / `RestoreBackup` 共用：三者的"结果 → 应答"规则必须完全一致，
+/// 否则会出现"某条路径的失败没进横幅"这类只在特定操作下才暴露的问题。
+fn settle(
+    presenter: &mut Presenter,
+    sink: &mut (dyn SnapshotSink + 'static),
+    request_id: String,
+    outcome: &StoreOutcome,
+) -> Ack {
+    let error = outcome.result.as_ref().err().map(map_store_error);
+    presenter.accept(outcome);
+    let ui_rev = presenter.ui_rev();
+    emit(presenter, sink);
+    match error {
+        None => Ack {
+            request_id,
+            result: AckResult::Applied,
+            ui_rev: Some(ui_rev),
+            error: None,
+        },
+        Some((code, message)) => Ack {
+            request_id,
+            result: result_for_code(code),
+            ui_rev: Some(ui_rev),
+            error: Some(AckError {
+                code: code.to_owned(),
+                message,
+            }),
+        },
+    }
+}
+
 /// 执行一批变更并产出 ACK。
 ///
 /// `Apply` 与 `Undo` 共用同一段：撤销必须走**完全相同**的写入路径，
@@ -371,29 +443,7 @@ async fn run_batch(
     let store_handle = Arc::clone(store);
     let result = tokio::task::spawn_blocking(move || store_handle.apply(&mutations)).await;
     match result {
-        Ok(outcome) => {
-            let error = outcome.result.as_ref().err().map(map_store_error);
-            presenter.accept(&outcome);
-            let ui_rev = presenter.ui_rev();
-            emit(presenter, sink);
-            match error {
-                None => Ack {
-                    request_id,
-                    result: AckResult::Applied,
-                    ui_rev: Some(ui_rev),
-                    error: None,
-                },
-                Some((code, message)) => Ack {
-                    request_id,
-                    result: result_for_code(code),
-                    ui_rev: Some(ui_rev),
-                    error: Some(AckError {
-                        code: code.to_owned(),
-                        message,
-                    }),
-                },
-            }
-        }
+        Ok(outcome) => settle(presenter, sink, request_id, &outcome),
         // 得到 JoinError 意味着我们无法知道磁盘上到底发生了什么：可能 rename
         // 已经成功。只能报 unknown 并进入 Fatal。
         Err(join) => fatal(presenter, sink, request_id, join.to_string()),
@@ -494,6 +544,9 @@ fn reject(command: Command) {
         }
         | Command::Reload { request_id, reply }
         | Command::Undo { request_id, reply }
+        | Command::RestoreBackup {
+            request_id, reply, ..
+        }
         | Command::IsolateAndReset { request_id, reply } => {
             let _ = reply.send(not_executed(request_id));
         }

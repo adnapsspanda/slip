@@ -766,5 +766,40 @@ check("外部改动后写入被拦并置 needsReload",
 check("横幅说清外部改了多少条",
   /新增 1/.test(externalState.banner ?? ""), `banner=${externalState.banner}`);
 
+// 19. 备份面板：列出备份，两步确认后恢复（恢复前的内容也会再留一代）。
+const backup = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const wait = (ms) => new Promise(r => setTimeout(r, ms));
+       const btn = [...document.querySelectorAll('.paper__archive-all')]
+         .find((b) => b.textContent.trim() === '备份');
+       if (!btn) return JSON.stringify({ error: '没有备份按钮' });
+       btn.click();
+       await wait(1000);
+       const rows = [...document.querySelectorAll('.slips .slip')];
+       if (rows.length === 0) return JSON.stringify({ error: '备份列表为空' });
+       const count = rows.length;
+
+       const restore = rows[0].querySelector('.slip__archive');
+       restore.click();
+       await wait(200);
+       const armed = restore.textContent.trim();
+       restore.click();
+       await wait(1900);
+       return JSON.stringify({
+         error: null,
+         count,
+         armed,
+         hint: document.querySelector('.capture__hint')?.textContent ?? '',
+       });
+     })()`,
+    true,
+  ),
+);
+check("备份面板列出一代以上的备份", (backup.count ?? 0) >= 1, `count=${backup.count}`);
+check("恢复需要二次确认", backup.armed === "确认？", `armed=${backup.armed}`);
+check("恢复成功并给出提示",
+  (backup.hint ?? "").includes("已从备份恢复"), `hint=${backup.hint}`);
+
 cdp.close();
 process.exit(failed ? 1 : 0);

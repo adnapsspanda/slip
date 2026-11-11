@@ -40,6 +40,12 @@
   );
   /** 是否在看归档抽屉。归档是墓碑不是删除，所以这一层只是换个筛选方向。 */
   let showArchived = $state(false);
+  /** 备份面板是否展开。 */
+  let showBackups = $state(false);
+  /** 备份列表；只在打开面板时取一次。 */
+  let backups = $state([]);
+  /** 等待二次确认的备份名——恢复会覆盖当前内容，不该一次点击就执行。 */
+  let pendingRestore = $state(null);
 
   /**
    * 过滤关键字。**纯视图**：只影响显示，不影响快照、撤销栈与磁盘。
@@ -400,6 +406,54 @@
     }
   }
 
+  /** 打开/收起备份面板；打开时现取一遍列表。 */
+  async function toggleBackups() {
+    showBackups = !showBackups;
+    pendingRestore = null;
+    if (showBackups) {
+      try {
+        backups = await bridge.backupList();
+      } catch (error) {
+        backups = [];
+        hint = `读取备份失败：${error}`;
+      }
+    }
+  }
+
+  /** 两步确认的第二下：真正恢复。 */
+  async function handleRestore(backup) {
+    if (pendingRestore !== backup.name) {
+      pendingRestore = backup.name;
+      return;
+    }
+    pendingRestore = null;
+    try {
+      const ack = await bridge.restoreBackup(
+        bridge.newRequestId(),
+        backup.name,
+      );
+      await refresh();
+      if (ack.result === "applied") {
+        showBackups = false;
+        hint = "已从备份恢复（恢复前的版本也已留档）";
+        notice = null;
+      } else {
+        hint = `恢复失败：${formatAckError(ack)}`;
+      }
+    } catch (error) {
+      hint = `恢复失败：${error}`;
+    }
+  }
+
+  /** 备份时间与大小的展示格式。 */
+  function formatStamp(ms) {
+    return new Date(ms).toLocaleString("zh-CN", { hour12: false });
+  }
+
+  function formatSize(bytes) {
+    return bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${bytes} B`;
+  }
+
   /** 导出为可读 Markdown。不做确认弹窗：它只写一个新文件，不动 inbox.md。 */
   async function handleExport() {
     try {
@@ -622,6 +676,14 @@
   <header class="paper__bar" data-tauri-drag-region>
     <span class="paper__title">Slip</span>
     <div class="paper__bar-right">
+      <button
+        type="button"
+        class="paper__archive-all"
+        onclick={toggleBackups}
+        title="查看与恢复历史备份"
+      >
+        {showBackups ? "关闭备份" : "备份"}
+      </button>
       {#if activeSlips.length > 0}
         <button
           type="button"
@@ -726,19 +788,54 @@
     {/if}
   </section>
 
-  <SlipList
-    bind:this={listRef}
-    slips={visible}
-    filtering={filter.trim().length > 0}
-    archivedView={showArchived}
-    onunarchive={handleUnarchive}
-    ontoggle={handleToggle}
-    onedit={handleEdit}
-    onlock={handleLock}
-    onarchive={handleArchive}
-    onseekcapture={() => captureRef?.focus()}
-    ondelink={handleOpenLink}
-    onnotice={(message) => (hint = message)}
-    bind:editing={listEditing}
-  />
+  {#if showBackups}
+    <ul class="slips">
+      {#if backups.length === 0}
+        <li class="slips__empty">
+          <p class="slips__empty-title">还没有备份</p>
+          <p class="slips__empty-foot">每次保存都会留一代，最多保留 5 代</p>
+        </li>
+      {:else}
+        {#each backups as backup (backup.name)}
+          <li class="slip">
+            <time
+              class="slip__time"
+              datetime={new Date(backup.stampMs).toISOString()}
+              >{formatStamp(backup.stampMs)}</time
+            >
+            <span class="slip__text">{formatSize(backup.size)}</span>
+            <button
+              type="button"
+              class="slip__archive"
+              aria-label={pendingRestore === backup.name
+                ? "确认恢复"
+                : "恢复这个备份"}
+              title={pendingRestore === backup.name
+                ? "再点一次确认覆盖当前内容"
+                : "用这个备份覆盖当前内容"}
+              onclick={() => handleRestore(backup)}
+            >
+              {pendingRestore === backup.name ? "确认？" : "恢复"}
+            </button>
+          </li>
+        {/each}
+      {/if}
+    </ul>
+  {:else}
+    <SlipList
+      bind:this={listRef}
+      slips={visible}
+      filtering={filter.trim().length > 0}
+      archivedView={showArchived}
+      onunarchive={handleUnarchive}
+      ontoggle={handleToggle}
+      onedit={handleEdit}
+      onlock={handleLock}
+      onarchive={handleArchive}
+      onseekcapture={() => captureRef?.focus()}
+      ondelink={handleOpenLink}
+      onnotice={(message) => (hint = message)}
+      bind:editing={listEditing}
+    />
+  {/if}
 </div>

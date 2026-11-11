@@ -319,6 +319,40 @@ async fn external_diff(state: tauri::State<'_, ShellState>) -> Result<system::Di
     Ok(system::diff_summary(&current, &disk))
 }
 
+/// 列出 vault 里的备份（新的在前）。只给名字、大小与时间，不给完整路径。
+#[tauri::command]
+fn backup_list(state: tauri::State<'_, ShellState>) -> Vec<BackupRow> {
+    slip_store::fsops::list_backups(&state.vault)
+        .into_iter()
+        .map(|info| BackupRow {
+            name: info.name,
+            size: info.size,
+            stamp_ms: info.stamp_ms,
+        })
+        .collect()
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackupRow {
+    name: String,
+    size: u64,
+    stamp_ms: u64,
+}
+
+/// 用指定备份恢复。
+///
+/// 名字的合法性由**存储层**判定（裸文件名 + 必须是本目录下的备份），
+/// 外壳不重复实现那套规则——两处各写一份只会漏。
+#[tauri::command]
+async fn restore_backup(
+    state: tauri::State<'_, ShellState>,
+    request_id: String,
+    name: String,
+) -> Result<Ack, String> {
+    Ok(state.dispatcher.restore_backup(request_id, name).await)
+}
+
 /// 回滚最近一次内容编辑、勾选或归档。
 #[tauri::command]
 async fn undo(state: tauri::State<'_, ShellState>, request_id: String) -> Result<Ack, String> {
@@ -399,6 +433,8 @@ pub fn run() {
             open_url,
             export_markdown,
             external_diff,
+            backup_list,
+            restore_backup,
             hotkey::dismiss_window,
         ])
         .setup(|app| {

@@ -229,6 +229,59 @@ pub fn create_empty_new(path: &Path) -> Result<(), IoKind> {
 
 /// 保留最近 `keep` 代备份，删除更旧的。失败不影响主流程。
 ///
+/// 一个备份文件的可展示信息。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackupInfo {
+    /// 裸文件名，例如 `inbox.md.bak-1700000000000`。
+    pub name: String,
+    pub size: u64,
+    /// 文件名里的毫秒时间戳。
+    pub stamp_ms: u64,
+    /// 同一毫秒内的序号（`-2` / `-3`），没有则为 1。
+    pub seq: u32,
+}
+
+/// 列出目录里的备份，**新的在前**。
+pub fn list_backups(dir: &Path) -> Vec<BackupInfo> {
+    let mut found = Vec::new();
+    let Ok(entries) = fs::read_dir(dir) else {
+        return found;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some((stamp_ms, seq)) = parse_backup_name(&name) else {
+            continue;
+        };
+        let size = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+        found.push(BackupInfo {
+            name,
+            size,
+            stamp_ms,
+            seq,
+        });
+    }
+    // 新的大在前；同毫秒则序号大的在前。
+    found.sort_by_key(|info| std::cmp::Reverse((info.stamp_ms, info.seq)));
+    found
+}
+
+/// 用指定备份覆盖 `inbox`。
+///
+/// **只接受本目录下真实存在的备份名**：名字里的 `/`、`\`、`..` 一律拒绝，
+/// 且必须能被 [`parse_backup_name`] 认出来——否则这就是一个"用任意路径覆盖 inbox"
+/// 的接口。
+pub fn restore_backup(inbox: &Path, name: &str) -> Result<(), IoKind> {
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        return Err(IoKind::PermissionDenied);
+    }
+    if parse_backup_name(name).is_none() {
+        return Err(IoKind::NotFound);
+    }
+    let source = parent_dir(inbox).join(name);
+    let bytes = read_bytes(&source)?;
+    write_atomic(inbox, &bytes)
+}
+
 /// 只识别 `*.bak-<unix_ms>[-n]` 形式的文件；按 (时间戳, 序号) 排序，
 /// 不按文件名做字典序比较（`-10` 与 `-2` 的字典序是错的）。
 pub fn prune_backups(dir: &Path, keep: usize) -> Result<(), IoKind> {
@@ -544,5 +597,64 @@ mod tests {
     fn parent_dir_falls_back_to_current_directory() {
         assert_eq!(parent_dir(Path::new("inbox.md")), Path::new("."));
         assert_eq!(parent_dir(Path::new("a/inbox.md")), Path::new("a"));
+    }
+
+    #[test]
+    fn list_backups_is_newest_first_and_ignores_other_files() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        for name in [
+            "inbox.md.bak-10",
+            "inbox.md.bak-30",
+            "inbox.md.bak-20",
+            "inbox.md.bak-30-2",
+            "inbox.md",
+            "other.txt",
+        ] {
+            write_file(&dir.path().join(name), b"x");
+        }
+        let names: Vec<String> = list_backups(dir.path())
+            .into_iter()
+            .map(|b| b.name)
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "inbox.md.bak-30-2",
+                "inbox.md.bak-30",
+                "inbox.md.bak-20",
+                "inbox.md.bak-10"
+            ]
+        );
+    }
+
+    #[test]
+    fn restore_backup_refuses_names_outside_the_directory() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = dir.path().join("inbox.md");
+        write_file(&inbox, b"current");
+        // 这几个都不是"本目录下的备份名"，任何情况下都不该覆盖 inbox。
+        for name in [
+            "..\\evil.md",
+            "/etc/passwd",
+            "sub/inbox.md.bak-1",
+            "not-a-backup.md",
+        ] {
+            assert!(
+                restore_backup(&inbox, name).is_err(),
+                "should refuse {name}"
+            );
+        }
+        assert_eq!(read_bytes(&inbox).unwrap(), b"current");
+    }
+
+    #[test]
+    fn restore_backup_overwrites_with_the_chosen_generation() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = dir.path().join("inbox.md");
+        write_file(&inbox, b"current");
+        write_file(&dir.path().join("inbox.md.bak-5"), b"older");
+
+        restore_backup(&inbox, "inbox.md.bak-5").expect("restore");
+        assert_eq!(read_bytes(&inbox).unwrap(), b"older");
     }
 }

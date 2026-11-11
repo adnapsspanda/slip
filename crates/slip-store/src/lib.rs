@@ -211,6 +211,14 @@ pub trait Store: Send + Sync {
     fn reload(&self) -> StoreOutcome;
     fn isolate_and_reset(&self) -> StoreOutcome;
     fn snapshot(&self) -> StoreSnapshot;
+
+    /// 用指定备份覆盖 inbox 并重新载入。
+    ///
+    /// 默认实现**明确失败**：不是每个实现都有"备份生成"这回事，静默成功只会
+    /// 让调用方以为恢复生效了。
+    fn restore_backup(&self, _name: &str) -> StoreOutcome {
+        StoreOutcome::failed(self.snapshot(), StoreError::Io(IoKind::NotFound))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -631,6 +639,21 @@ impl Store for MarkdownStore {
                 }
             }
         }
+    }
+
+    fn restore_backup(&self, name: &str) -> StoreOutcome {
+        let path = self.lock().path.clone();
+        // 先给**当前**内容留一份：恢复本身也必须可逆，否则"恢复错了"就没有第二次机会。
+        if let Err(kind) = fsops::backup(&path) {
+            let state = self.lock();
+            return StoreOutcome::failed(state.snapshot(), StoreError::Io(kind));
+        }
+        if let Err(kind) = fsops::restore_backup(&path, name) {
+            let state = self.lock();
+            return StoreOutcome::failed(state.snapshot(), StoreError::Io(kind));
+        }
+        // 走正常载入路径：解析、校验、重置 needs_reload 全都不用重写一遍。
+        self.reload()
     }
 
     fn snapshot(&self) -> StoreSnapshot {

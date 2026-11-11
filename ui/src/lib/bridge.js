@@ -136,6 +136,19 @@ export const exportMarkdown = () => call("export_markdown");
 export const externalDiff = () => call("external_diff");
 
 /**
+ * 列出 vault 里的备份（新的在前），只给名字/大小/毫秒时间戳。
+ * @returns {Promise<Array<{name: string, size: number, stampMs: number}>>}
+ */
+export const backupList = () => call("backup_list");
+
+/**
+ * 用指定备份恢复。名字的合法性由 Rust 侧判定，前端只负责传选中的那个。
+ * @returns {Promise<Ack>}
+ */
+export const restoreBackup = (requestId, name) =>
+  call("restore_backup", { requestId, name });
+
+/**
  * 订阅热键唤出事件。非 Tauri 环境返回一个空的退订函数。
  * @param {() => void} handler
  * @returns {Promise<() => void>}
