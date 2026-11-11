@@ -15,8 +15,37 @@ const LINK = /https?:\/\/[^\s<>"'`]+/;
 /** 三个分支：粗体、行内代码、裸链接。顺序即优先级。 */
 const INLINE = /\*\*([^*\n]+)\*\*|`([^`\n]+)`|(https?:\/\/[^\s<>"'`]+)/g;
 
-/** 链接末尾常见的中西文标点不该算进 href。 */
-const TRAILING = /[.,;:!?)\]}'"”，。；：！？、）》」』】]+$/;
+/**
+ * 链接末尾不该算进 href 的标点。
+ *
+ * 写成**字符表**而不是一个长正则，是为了能逐字符断言（见 `tools/check-ui-logic.mjs`）：
+ * 漏一个全角符号，用户体验就是「点进去 404」或「链接带个句号」。
+ *
+ * 覆盖三类：
+ * - ASCII 标点：`. , ; : ! ? ) ] } ' "`
+ * - 中文常用全角：`。 ， ； ： ！ ？ 、 ） 》 」 』 】`
+ * - 中文引号与开括号（成对出现时只可能落在末尾的那一半，以及被整体贴进来的开括号）
+ *   `“ ” ‘ ’`、`（ 《 【`
+ */
+export const TRAILING_PUNCTUATION =
+  ".,;:!?)]}'\"”’。，；：！？、）》」』】“”‘’（《【";
+
+/** 在字符类里安全的转义（`] ^ [ & - \` 这几个必须转义）。 */
+const escapeForCharClass = (chars) => chars.replace(/[\\\]^[&-]/g, "\\$&");
+
+const TRAILING = new RegExp(`[${escapeForCharClass(TRAILING_PUNCTUATION)}]+$`);
+
+/**
+ * 去掉链接尾部的标点。
+ *
+ * 抽成函数是为了能测：`tokenize` 的输出是 token 数组，直接断言太绕。
+ *
+ * @param {string} href
+ * @returns {string}
+ */
+export function stripTrailingPunctuation(href) {
+  return href.replace(TRAILING, "");
+}
 
 /**
  * @param {string} text
@@ -38,7 +67,7 @@ export function tokenize(text) {
       tokens.push({ type: "code", value: match[2] });
     } else {
       const raw = match[3] ?? "";
-      const href = raw.replace(TRAILING, "");
+      const href = stripTrailingPunctuation(raw);
       tokens.push({ type: "link", value: href, href });
       // 被剥掉的标点要还给文本，否则「见 https://a.com。」里的句号会消失。
       const tail = raw.slice(href.length);

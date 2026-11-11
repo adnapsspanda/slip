@@ -7,7 +7,12 @@
 //
 // 用法：& "C:\Users\spand\.bun\bin\bun.exe" run tools/check-ui-logic.mjs
 import { bannerLevel } from "../ui/src/lib/status.js";
-import { cleanPastedText } from "../ui/src/lib/inline.js";
+import {
+  cleanPastedText,
+  stripTrailingPunctuation,
+  TRAILING_PUNCTUATION,
+  tokenize,
+} from "../ui/src/lib/inline.js";
 import { submitIntent, listNavTarget, tabTarget, noticeAction } from "../ui/src/lib/keys.js";
 
 let failed = 0;
@@ -104,6 +109,34 @@ check("无提示条 → 不动作", noticeAction(null), "none");
 check("可撤销的提示条 → 撤销", noticeAction({ undo: true }), "undo");
 check("纯信息提示 → 收起", noticeAction({ undo: false }), "dismiss");
 check("缺字段按纯信息处理", noticeAction({}), "dismiss");
+
+// ---- R48 链接尾部标点：矩阵点名的全角符号逐个验 ----
+const CN_PUNCT = "。，！？；：“”‘’（）《》";
+for (const ch of CN_PUNCT) {
+  check(
+    `尾部全角「${ch}」不算进链接`,
+    stripTrailingPunctuation(`https://a.com${ch}`),
+    "https://a.com",
+  );
+}
+// 表里每一个字符都必须真的被剥掉（防止表里混进无效字符）
+const notStripped = [...TRAILING_PUNCTUATION].filter(
+  (ch) => stripTrailingPunctuation(`https://a.com${ch}`) !== "https://a.com",
+);
+check("字符表里没有失效的标点", notStripped, []);
+check("多个尾部标点一起剥", stripTrailingPunctuation("https://a.com。）。"), "https://a.com");
+check("干净链接不变", stripTrailingPunctuation("https://a.com/path?q=1"), "https://a.com/path?q=1");
+check("中间标点保留", stripTrailingPunctuation("https://a.com/a,b"), "https://a.com/a,b");
+
+// 端到端：tokenize 里被剥掉的标点要还给文本，不能吞字
+const toks = tokenize("见 https://a.com。");
+const linkTok = toks.find((t) => t.type === "link");
+check("tokenize 的 href 不含句号", linkTok?.href, "https://a.com");
+check(
+  "tokenize 把句号还给文本",
+  toks.map((t) => (t.type === "link" ? t.value : t.value)).join(""),
+  "见 https://a.com。",
+);
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);
