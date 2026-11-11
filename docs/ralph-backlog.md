@@ -52,6 +52,17 @@
 
 ## 完成记录
 
+- **变异验证：字数按码点（本轮）**：把 `text.chars().count()` 改成 `text.len()`（按字节）
+  → `counts_code_points_not_bytes` 等测试立刻红。这条规则对中文用户尤其要紧：
+  按字节算的话，2000 个汉字会在 667 字时被误判超长。
+- **另一条没能验证，如实记录**：`Patch::Archive` 的"必须先完成才能归档"前置条件，
+  变异注入成功但随即测试被 `os error 4551` 拦住，六次重试都没放过，于是**放弃验证并
+  立即还原**。这条标记为**待验证**，等环境稳定后补。
+  - 由此写进 `AGENTS.md` 一节「变异验证的操作纪律」：先确认能跑再改；改完立刻还原；
+    还原后必须核验（`git status` 干净 + 肉眼复看那几行，因为脚本替换可能没匹配上却
+    仍然打印 restored）；一次只改一处。
+  - 本轮结束时工作区已确认干净，无任何残留变异。
+
 - **安全/配置章节与代码对齐（本轮）**：两处文档与实现不符。
   - ① 设计文档写着 capability 含 `core:window:allow-hide/show/set-focus`、
     `core:event:default` 等——实际只有 `core:default` + `core:window:allow-start-dragging`。

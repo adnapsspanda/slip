@@ -330,6 +330,18 @@ cargo build -p slip-shell
 
 ### 断言写完要**变异验证**一次
 
+**操作纪律（血泪）**：
+
+1. **先确认「现在能跑」，再动手改**。环境可能在几分钟内从"能跑测试"变成"任何新产物都被拒"
+   （本机是 Smart App Control，见下面的环境陷阱）。先跑一次基线，跑不动就别开始。
+2. **改完立刻还原**，不要跨步骤、更不要跨轮次保留变异。本轮就发生过：注入变异后
+   测试被环境拦住，六次重试都没放过，只能放弃验证并立刻还原——如果忘了还原，
+   仓库里就留下了 `if false`。
+3. **还原后必须核验**：`git status` 应为空，且被改的那几行要肉眼复看一遍
+   （脚本替换可能没匹配上，却仍然打印"restored"）。
+4. 一次只改一处，否则红了也不知道是哪一处生效。
+
+
 "测试通过"不是证据——它只说明在**当前实现**下测试没红。"去掉修复后测试会红"才是。
 本项目已经因此抓到过一条永远绿、却什么都没守住的断言（见 backlog 的 R24 记录）。
 
@@ -345,6 +357,10 @@ cargo build -p slip-shell
 | `strips_common_list_prefixes` 等 5 条 | `strip_list_prefix` 直接返回原行 | 5 条 FAILED ✅ |
 | `sharing_violation_maps_to_busy` | `if false && (code == 32 \|\| code == 33)` | FAILED（left: Other）✅ |
 | 端到端「再唤出后过滤条被收起」 | 删掉 `summon()` 里的 `filtering = false` | FAILED（filterOpen=true）✅ |
+| `counts_code_points_not_bytes`（字数按码点） | `text.chars().count()` → `text.len()` | FAILED ✅ |
+| `bom_is_detected_and_written_back_byte_identically` | 删掉 `render` 里的 BOM 分支 | FAILED ✅ |
+| `a_real_change_drops_the_bom` | 提交时保留 BOM | FAILED ✅ |
+| `validate_candidate` 的守卫 | 改成无条件 `Ok(())` | FAILED ✅ |
 
 **尚未**做变异验证的：`isolate_and_reset_clears_the_undo_stack` 已做过（见 R24）；
 其余前端断言、以及所有只靠"跑绿了"确认的测试，都还没验证过。
