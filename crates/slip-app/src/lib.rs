@@ -6,6 +6,7 @@
 pub mod dispatch;
 pub mod focus;
 pub mod geometry;
+pub mod launch;
 pub mod presenter;
 pub mod tray;
 

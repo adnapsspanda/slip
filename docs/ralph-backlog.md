@@ -53,6 +53,22 @@
 
 ## 完成记录
 
+- **R65 启动参数判定可测化（本轮，含运行时验证）**：
+  - 判定抽成 `slip_app::launch::launched_by_autostart(args)`：**精确匹配整个参数**，
+    不做前缀/子串/大小写模糊。理由写进文档：判定变宽会让"手动启动"被误当自启 →
+    双击后什么都不出现；变窄则每次开机都弹窗口。两个方向都只在真机开机/双击时才暴露，
+    所以必须能在单测里覆盖。4 条断言（含 `--autostart-extra`、`--autostart=1`、
+    路径里含该串等陷阱）在 WSL 通过。
+  - **运行时验证（真实枚举该 PID 的顶层窗口）**：
+    - 手动启动 → `class=Tauri Window title=Slip` **visible=True**
+    - `--autostart` → 同一个窗口 **visible=False**（进程存活、托盘在）
+  - **一个方法论发现**：我一开始用 .NET 的 `Process.MainWindowHandle` 判断可见性，
+    结果两种启动方式都返回非 0，看起来像"自启也弹窗了"。改用 `EnumWindows` +
+    `IsWindowVisible` 逐个枚举才看清真相——**`MainWindowHandle` 不能用来判断可见性**，
+    隐藏窗口也可能有句柄。这条值得写进验收脚本的注意事项。
+  - **变异验证**：精确匹配改成子串匹配 → 2 条断言红（`--autostart-extra` 与路径包含）；
+    还原后 slip-app **42 项全绿**。
+
 - **R64 失焦防护规则可测化（本轮）+ 端到端清掉一大笔欠账**：
   - 规则抽成 `slip_app::focus::should_dismiss(armed, focused_since, elapsed, grace)`——
     参数显式、不碰时钟也不碰窗口，6 条断言在 WSL 通过。壳层只负责把静态变量与 `Instant`

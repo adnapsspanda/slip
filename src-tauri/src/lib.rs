@@ -41,7 +41,7 @@ pub struct ShellState {
 ///
 /// 窗口配置是 `visible: false`（召唤式），但那样用户双击 exe 会「什么也没发生」。
 /// 用这个参数区分：开机拉起 → 静默驻留托盘；手动双击 → 直接把窗口显示出来。
-const AUTOSTART_FLAG: &str = "--autostart";
+const AUTOSTART_FLAG: &str = slip_app::launch::AUTOSTART_FLAG;
 
 /// 解析 vault 目录。
 ///
@@ -645,7 +645,9 @@ pub fn run() {
             // 用 `show_on_launch` 而不是 `summon`：启动展示不挂"失焦自动收走"。
             // 本机实测 Clash Verge 每约 2.7 秒抢一次前台，挂上该规则会让窗口在
             // 用户看清之前就被收走，表现成"启动后一个窗口都没有"。
-            let launched_by_autostart = std::env::args().any(|arg| arg == AUTOSTART_FLAG);
+            // 判定规则在 slip_app::launch（可单测）：启动参数判错的两个方向代价不对称，
+            // 而这只能在真机开机/双击时复现，所以必须能在单测里覆盖。
+            let launched_by_autostart = slip_app::launch::launched_by_autostart(std::env::args());
             if !launched_by_autostart {
                 hotkey::show_on_launch(app.handle());
             }
