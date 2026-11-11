@@ -1028,5 +1028,50 @@ if (!vanished.error && vanished.editing) {
     `stillThere=${settled.stillThere}`);
 }
 
+// 24. 收起再唤出后，视图状态必须回到默认。
+//     过滤词/归档抽屉是"当次浏览"的临时状态；留着它们会让下一次唤出直接落在一张
+//     被筛过的列表上，看上去像"东西没了"（实测：开着过滤收起，再唤出只看到 1 条）。
+const viewReset = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const wait = (ms) => new Promise(r => setTimeout(r, ms));
+       const ta = document.querySelector('.capture__input');
+       for (const text of ['视图重置-甲', '视图重置-乙']) {
+         ta.focus();
+         ta.value = text;
+         ta.dispatchEvent(new Event('input', { bubbles: true }));
+         ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+         await wait(1400);
+       }
+
+       // 开着过滤只留一条，然后收起窗口
+       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
+       await wait(250);
+       const filter = document.querySelector('.filter__input');
+       filter.value = '视图重置-甲';
+       filter.dispatchEvent(new Event('input', { bubbles: true }));
+       await wait(300);
+       const filtered = document.querySelectorAll('.slip').length;
+       await window.__TAURI__.core.invoke('dismiss_window');
+       await wait(800);
+
+       // 再唤出：走真实的事件通路（与热键唤出同一个监听）
+       await window.__TAURI__.event.emit('slip://summon');
+       await wait(600);
+       return JSON.stringify({
+         filtered,
+         filterOpenAfterSummon: document.querySelector('.filter__input') !== null,
+         rowsAfterSummon: document.querySelectorAll('.slip').length,
+       });
+     })()`,
+    true,
+  ),
+);
+check("收起前确实是过滤后的列表", viewReset.filtered === 1, `filtered=${viewReset.filtered}`);
+check("再唤出后过滤条被收起", viewReset.filterOpenAfterSummon === false,
+  `filterOpen=${viewReset.filterOpenAfterSummon}`);
+check("再唤出后列表恢复全量", viewReset.rowsAfterSummon > viewReset.filtered,
+  `rows=${viewReset.rowsAfterSummon} filtered=${viewReset.filtered}`);
+
 cdp.close();
 process.exit(failed ? 1 : 0);

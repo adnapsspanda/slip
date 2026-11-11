@@ -256,6 +256,14 @@
     hint = DEFAULT_HINT;
     // 撤销提示跨过"收起再唤出"就过期了：那次的修改上下文已经不在了。
     notice = null;
+    // 视图状态也不该跨过这一次唤出：过滤词、归档抽屉、备份面板都是**当次浏览**的临时
+    // 状态。留着它们，下一次唤出会直接落在一张被筛过的列表上——看上去像"东西没了"。
+    // 实测过：开着过滤收起窗口，再唤出只看到 1 条，而实际有 2 条。
+    filter = "";
+    filtering = false;
+    showArchived = false;
+    showBackups = false;
+    pendingRestore = null;
     captureRef?.focus();
   }
 
