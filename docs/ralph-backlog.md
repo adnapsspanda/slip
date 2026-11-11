@@ -41,7 +41,7 @@
 
 | ID | 事项 | 证据 | 验收标准 | 状态 |
 |---|---|---|---|---|
-| R-02 | 死视图路径（**需要产品决策，勿擅自删**） | 整个 `ui/` 零引用 `toggleCollapse` / `DragEnd` / `DockSideChanged` / `CollapseToggled`；后端仍保留 `ViewEvent` 四变体、`Command::ToggleCollapse`、`PaperViewSet.collapsed/dock_side`，以及**只为它们服务**的 `PREFS_DEBOUNCE`（仅 `dispatch.rs:400`、`:418` 触发） | 二选一并在 `docs/design` 落定：① 接线（需要先定义 UI 入口）；② 整体删除并把 `prefs` 收窄，同时保证旧 `ui-state.json` 仍可读（serde default）。删除可连带简化 `dispatch` 的去抖机制 | 待决策 |
+| R-02 | 死视图路径 | 整个 `ui/` 零引用 `toggleCollapse` / `DragEnd` / `DockSideChanged` / `CollapseToggled`；后端仍保留 `ViewEvent` 四变体、`Command::ToggleCollapse`、`PaperViewSet.collapsed/dock_side`，以及**只为它们服务**的 `PREFS_DEBOUNCE`（仅 `dispatch.rs:400`、`:418` 触发） | 二选一并在 `docs/design` 落定：① 接线（需要先定义 UI 入口）；② 整体删除并把 `prefs` 收窄，同时保证旧 `ui-state.json` 仍可读（serde default）。删除可连带简化 `dispatch` 的去抖机制 | ✅ 已按方案②执行：R16+R18 整块删除（净减 522 行），`Prefs` 收窄为只剩 `hotkey`，旧 `ui-state.json` 的余字段被 serde 忽略、仍可读；`docs/design` 修订 15 已记录 |
 | R-06 | `csp: null` | `tauri.conf.json` 未设 CSP。当前无远程内容、无 `{@html}`，风险低但无纵深 | 补最小 CSP（`default-src 'self'`），确认 Svelte 内联样式与 WebView2 下仍正常：验收全过 | ✅ 见完成记录 |
 | R-07 | 前端无 lint/format | 只有 `vite build`；格式靠人。仓库其余部分都有门禁 | 引入 `prettier --check` 并接进钩子与 CI；**不**引入 eslint 规则集 | ✅ 见完成记录 |
 | R-08 | `.ps1` 必须带 BOM | `edit`/`write` 工具会剥掉 BOM，导致 `verify-hotkey.ps1` 被按 GBK 解码而报语法错，本次会话撞了 4 次 | 钩子 + CI 双向拦截：缺失则拒绝提交/构建失败，并给出修法 | ✅ 见完成记录 |
@@ -51,6 +51,20 @@
 | R-01 | ~~归档撤销承诺与实现不符~~ | **撤回**：`Patch::Unarchive`（`model.rs:52`）、`apply_patch` 分支（`state.rs:135`）、`inverse_batch` 双向映射（`dispatch.rs:565-568`）、领域测试（`state.rs:304`）、端到端测试（`pipeline.rs:301` `archive_and_undo_preserve_done_state_through_disk`）全部就位 | 无需改动。文档承诺与实现**一致** | ✅ 撤回 |
 
 ## 完成记录
+
+- **更正一处不实记录（本轮）**：`7e2326d` 的完成记录里写着"`R-02` 标着待决策，
+  实际已在 R16+R18 按方案②删除"——**但那次替换没匹配上，表格行根本没改**。
+  记录说改了，实际没改。
+  - 原因：我用 `str.replace(旧文本, 新文本)` 却**没有校验是否真的匹配**；
+    该行的实际文本带 `**去抖机制**` 等格式，与我以为的字符串不同，于是静默返回原串。
+    脚本照常打印"synced"，我就据此提交了记录。
+  - 本轮用 `assert "待决策" in row` 先把行定位、再改、再复核打印，才真正改对。
+  - 教训：**任何"改文件"的脚本都必须在替换前断言匹配存在、替换后回读校验**，
+    否则失败是静默的，而静默失败会被我当成成功写进记录——那比不改更糟。
+  - 本轮同时记录一个新环境证据：**重新编译会让原本能跑的测试二进制也变成被拒**
+    （`slip-app` 17 项刚跑绿，改一行后连跑 4 次全被 4551 拦）。
+    这意味着"改代码 → 跑测试"这条路在当前环境下整体不可用，
+    变异验证只能依赖已经编好的二进制。
 
 - **变异验证：字数按码点（本轮）**：把 `text.chars().count()` 改成 `text.len()`（按字节）
   → `counts_code_points_not_bytes` 等测试立刻红。这条规则对中文用户尤其要紧：
