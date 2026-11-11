@@ -178,7 +178,8 @@ body {
   cursor: pointer;
 }
 
-.paper__archive-all:hover {
+.paper__archive-all:hover,
+.paper__link:hover {
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -208,11 +209,6 @@ body {
   font: inherit;
   font-size: 11px;
   cursor: pointer;
-}
-
-.paper__link:hover {
-  border-color: var(--accent);
-  color: var(--accent);
 }
 
 .capture {
@@ -339,7 +335,8 @@ body {
   user-select: text;
 }
 
-.capture__input:focus {
+.capture__input:focus,
+.slip__edit:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-focus-ring);
 }
@@ -501,7 +498,8 @@ body {
   position: relative;
 }
 
-.slip__box:hover {
+.slip__box:hover,
+.notice button:hover {
   border-color: var(--accent);
 }
 
@@ -627,11 +625,6 @@ body {
   user-select: text;
 }
 
-.slip__edit:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-focus-ring);
-}
-
 .slip__lock,
 .slip__archive {
   flex: none;
@@ -705,10 +698,6 @@ body {
   font: inherit;
   font-size: 11px;
   cursor: pointer;
-}
-
-.notice button:hover {
-  border-color: var(--accent);
 }
 
 .notice button:disabled {
