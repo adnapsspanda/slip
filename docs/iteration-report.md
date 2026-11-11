@@ -182,6 +182,25 @@ cargo test --workspace                  → 87 项后 4551
 | R03/R08/R28/R29 | 依赖下载被代理阻断 |
 | R31–R50 其余 | 矩阵不在上下文中 |
 
+## 八点五、最终变异审计（R79）
+
+变异测试的判据只有一条：**把修复改坏，守卫必须变红**。绿了不算证据。
+
+`tools/mutation-audit.py` 每次跑都把三处核心不变量逐个改坏、跑真实测试、断言变红、
+再恢复并**逐字节核对恢复结果**。
+
+| 变异点 | 改成 | 抓住它的守卫 | 结果 |
+|---|---|---|---|
+| `codepoint_len` | `chars().count()` → `len()` | `text::tests::counts_code_points_not_bytes` | 红 |
+| 归档前置条件 | 删掉 `if !slip.done { Err(ArchiveRequiresDone) }` | `state::tests::archive_requires_done` | 红 |
+| `strip_list_prefix` | 改为恒等（直接返回原行） | `split` 的三条测试（去前缀、复选框只在分隔符后、剥离后仍受单条上限约束） | 红 |
+
+三处还原后全量测试恢复全绿（`tools/mutation-audit.py` 会做这一步并断言）。
+
+这一轮之外，各阶段的内联变异验证共 20 余次，其中三次"变异没被发现"都指向真问题：
+R49 的替换范围写错导致脚本语法报错（只看有没有 `[FAIL]` 会误判）、R62 的拓扑测试只取区域内
+的点（删掉 `clamp` 也全绿）、R59 的属性错位（WSL 编过、Windows clippy 报错）。
+
 ## 九、升级 Windows 11 专业版后的复核（2026-11-11 晚）
 
 | 检查 | 结果 |
