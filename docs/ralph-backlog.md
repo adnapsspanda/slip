@@ -53,6 +53,15 @@
 
 ## 完成记录
 
+- **R56 损坏文件定位：原样已是既有能力（本轮只补证据，不重复劳动）**：
+  - 界面：`ui/src/App.svelte` 在有损坏文件时渲染「定位」按钮（`title` 里列出全部文件名）。
+  - 链路：按钮 → `bridge.revealCorrupt()` → IPC `reveal_corrupt`（`src-tauri/src/lib.rs`）
+    → `system::reveal_newest_corrupt()` → `explorer.exe /select,<path>`。
+  - **安全属性已具备**：`reveal_newest_corrupt` **不接收前端传的路径**，
+    由 Rust 自己从 vault 里 `corrupt_artifacts()` 查最新一个——否则等于让 webview 决定
+    explorer 打开什么。且只 `/select`（定位），不执行文件。
+  - 结论：矩阵要求的"点击角标 → 安全 IPC → 只定位不执行"**逐条满足**，无需改动。
+
 - **R55 导出换行按平台归一化（本轮）**：
   - `render_plain` 原来全用 `\n`——**Windows 记事本不认纯 LF**，导出文件打开会连成一片。
   - 归一化放**领域层**（`slip_domain::text`）而不是 `src-tauri`：后者依赖 tauri，
