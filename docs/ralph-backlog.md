@@ -52,6 +52,17 @@
 
 ## 完成记录
 
+- **消失条目的编辑态卡死（本轮）**：正在编辑的条目被外部替换/删除后，`editingId`
+  永远非空 → 双向绑定的 `editing` 恒为 true → App 里 `if (listEditing) return`
+  把 `Ctrl+Z` **永久拦掉**，而界面上根本没有编辑框。用户只看到撤销毫无反应。
+  - 实测：双击进入编辑 → 外部删掉该条 → 走真实 UI 重新载入 → `Ctrl+Z` 什么都没发生。
+    （第一版探针还踩了个测试错误：直接调 IPC `reload` 会绕过前端的 `refresh()`，
+    界面显示的是旧数据——那是探针的锅，不是产品。）
+  - 修法：`SlipList` 加一个 effect——`editingId` 对应的条目不在 `slips` 里时，
+    清空 `editingId` / `draft` / `session`。
+  - 复验：重载后 `editors=0`，`Ctrl+Z` 到达后端并返回「没有可撤销的操作」。
+  - 端到端补 2 条断言，端到端 93 → **95**。测试 218 不变。
+
 - **重载不清撤销栈（本轮）**：内容整体换掉后，栈里还留着指向旧文档的逆操作。
   - 实测：外部替换 `inbox.md` → 触发写入（needsReload）→ 重新载入 → 按 `Ctrl+Z`，
     得到 `needsReload` + 「reload is required before writing again」——**用户刚重载过**，

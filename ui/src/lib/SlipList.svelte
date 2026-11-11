@@ -77,6 +77,24 @@
   });
 
   /**
+   * 正在编辑的条目**消失了**（外部修改后重新载入、隔离重建）时必须退出编辑态。
+   *
+   * 否则 `editingId` 永远非空 → 双向绑定的 `editing` 恒为 true → App 里
+   * `if (listEditing) return` 会把 `Ctrl+Z` **永久拦掉**，而界面上根本没有编辑框，
+   * 用户只看到撤销毫无反应。实测过这个卡死：外部替换文件 + 重新载入之后再按 Ctrl+Z，
+   * 什么都不会发生。
+   */
+  $effect(() => {
+    if (editingId !== null && !slips.some((slip) => slip.id === editingId)) {
+      editingId = null;
+      draft = "";
+      session = null;
+      composing = false;
+      cancelled = false;
+    }
+  });
+
+  /**
    * 自动聚焦并全选。
    *
    * 用 action 而不是 `$effect` + `tick`：编辑框是条件渲染出来的，

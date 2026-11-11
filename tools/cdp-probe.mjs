@@ -954,5 +954,79 @@ check("视野外撤销会说明对象不在过滤结果里",
 check("提示里点名了被撤销的那一条",
   (hiddenUndo.notice ?? "").includes("撤销可见性-乙"), `notice=${hiddenUndo.notice}`);
 
+// 23. 正在编辑的条目被外部删掉后，编辑态必须退出。
+//     否则 editingId 永远非空 → editing 恒为 true → App 里 `if (listEditing) return`
+//     会把 Ctrl+Z 永久拦掉，而界面上根本没有编辑框（实测过这个卡死）。
+const vanished = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const wait = (ms) => new Promise(r => setTimeout(r, ms));
+       const ta = document.querySelector('.capture__input');
+       ta.focus();
+       ta.value = '将被外部删除的编辑目标';
+       ta.dispatchEvent(new Event('input', { bubbles: true }));
+       ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+       await wait(1500);
+
+       // 进入编辑
+       const rows = () => [...document.querySelectorAll('.slip')];
+       const target = rows().find((r) =>
+         r.querySelector('.slip__text')?.textContent === '将被外部删除的编辑目标');
+       if (!target) return JSON.stringify({ error: '没找到目标条目' });
+       target.querySelector('.slip__text').dispatchEvent(
+         new MouseEvent('dblclick', { bubbles: true }),
+       );
+       await wait(300);
+       const editing = document.querySelector('.slip__edit') !== null;
+
+       return JSON.stringify({ error: null, editing });
+     })()`,
+    true,
+  ),
+);
+
+if (!vanished.error && vanished.editing) {
+  // 只删掉这一条记录行，保留其余内容（脚本末尾还要检查磁盘上的其它记录）。
+  const inboxPath = join(
+    String(await evaluate(`window.__TAURI__.core.invoke('vault_path')`, true)),
+    "inbox.md",
+  );
+  const original = readFileSync(inboxPath, "utf8");
+  const kept = original
+    .split("\n")
+    .filter((line) => !line.includes("将被外部删除的编辑目标"))
+    .join("\n");
+  writeFileSync(inboxPath, kept, "utf8");
+
+  const settled = JSON.parse(
+    await evaluate(
+      `(async () => {
+         const wait = (ms) => new Promise(r => setTimeout(r, ms));
+         const ta = document.querySelector('.capture__input');
+         ta.focus();
+         ta.value = '触发重载';
+         ta.dispatchEvent(new Event('input', { bubbles: true }));
+         ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+         await wait(1500);
+         const btn = [...document.querySelectorAll('.banner__actions button')]
+           .find((b) => b.textContent.trim() === '重新载入');
+         if (!btn) return JSON.stringify({ error: '没有重新载入按钮' });
+         btn.click();
+         await wait(1800);
+         return JSON.stringify({
+           error: null,
+           editors: document.querySelectorAll('.slip__edit').length,
+           stillThere: [...document.querySelectorAll('.slip__text')]
+             .some((e) => e.textContent === '将被外部删除的编辑目标'),
+         });
+       })()`,
+      true,
+    ),
+  );
+  check("条目消失后编辑框也被清掉", settled.editors === 0, `editors=${settled.editors}`);
+  check("消失的条目不再出现在列表里", settled.stillThere === false,
+    `stillThere=${settled.stillThere}`);
+}
+
 cdp.close();
 process.exit(failed ? 1 : 0);
