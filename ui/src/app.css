@@ -297,6 +297,15 @@ body {
   word-break: normal;
 }
 
+/* 指引沿用横幅自身的字号/行高，只补必要的排版。 */
+.banner__guide summary {
+  cursor: pointer;
+}
+
+.banner__guide ol {
+  margin: 4px 0 0;
+}
+
 .banner__actions {
   display: flex;
   flex-wrap: wrap;

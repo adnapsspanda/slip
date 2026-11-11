@@ -1,6 +1,9 @@
 <script>
   import { onMount, tick } from "svelte";
-  import { bannerLevel as statusBannerLevel } from "./lib/status.js";
+  import {
+    bannerLevel as statusBannerLevel,
+    shouldShowReadonlyGuide,
+  } from "./lib/status.js";
   import { noticeAction, filterKeyIntent } from "./lib/keys.js";
   import { createSerialQueue, nextToggleTarget } from "./lib/queue.js";
   import { confirmStep, CONFIRM_WINDOW_MS } from "./lib/confirm.js";
@@ -914,6 +917,27 @@
           <span>{banner}</span>
           {#if diagnostics.length > 0}
             <div class="banner__diag">{diagnostics.join("；")}</div>
+          {/if}
+          {#if shouldShowReadonlyGuide(snapshot)}
+            <!--
+              排查指引用 <details> 折叠：默认收起，不抢横幅的注意力；要展开才占空间。
+              纯前端，不需要任何新 capability。
+            -->
+            <details class="banner__guide">
+              <summary>排查指引</summary>
+              <ol>
+                <li>
+                  关掉可能占用这个文件的程序（编辑器、OneDrive
+                  同步、杀毒软件的实时扫描）。
+                </li>
+                <li>
+                  在资源管理器里右键 <code>inbox.md</code> → 属性 → 取消勾选「只读」→
+                  确定。
+                </li>
+                <li>若文件在同步盘（OneDrive）里，先暂停同步再试。</li>
+                <li>回到这里点「重新载入」。</li>
+              </ol>
+            </details>
           {/if}
         </div>
         {#if snapshot?.runtime?.state !== "fatal"}

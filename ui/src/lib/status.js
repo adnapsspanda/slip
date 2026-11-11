@@ -26,3 +26,16 @@ export function bannerLevel(snapshot) {
   }
   return "info";
 }
+
+/**
+ * 要不要显示「只读排查指引」。
+ *
+ * 只在**确实不可写**时出现：能写的时候弹一堆步骤只是噪音，用户会学会无视它。
+ * 抽成纯函数是为了能断言这个边界（`writable` 缺失/为真/为假三种）。
+ *
+ * @param {{health?: {writable?: boolean}}|null|undefined} snapshot
+ * @returns {boolean}
+ */
+export function shouldShowReadonlyGuide(snapshot) {
+  return snapshot?.health?.writable === false;
+}

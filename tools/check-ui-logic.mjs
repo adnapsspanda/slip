@@ -6,7 +6,7 @@
 // 之后，一条 `bun` 命令就能验，不受环境影响。
 //
 // 用法：& "C:\Users\spand\.bun\bin\bun.exe" run tools/check-ui-logic.mjs
-import { bannerLevel } from "../ui/src/lib/status.js";
+import { bannerLevel, shouldShowReadonlyGuide } from "../ui/src/lib/status.js";
 import { createSerialQueue, nextToggleTarget } from "../ui/src/lib/queue.js";
 import { confirmStep, CONFIRM_WINDOW_MS } from "../ui/src/lib/confirm.js";
 import {
@@ -205,6 +205,12 @@ check("恰好等于窗口仍执行", confirmStep({ armedAt: 1000, now: 1000 + CO
 check("超窗后重新武装（不会误执行）", confirmStep({ armedAt: 1000, now: 1000 + CONFIRM_WINDOW_MS + 1 }), "arm");
 check("时钟回拨按过期处理", confirmStep({ armedAt: 5000, now: 1000 }), "arm");
 check("自定义更短窗口", confirmStep({ armedAt: 0, now: 900, windowMs: 500 }), "arm");
+
+// ---- R54 只读排查指引的显示条件 ----
+check("可写时不显示指引", shouldShowReadonlyGuide({ health: { writable: true } }), false);
+check("不可写时显示指引", shouldShowReadonlyGuide({ health: { writable: false } }), true);
+check("缺字段时不显示", shouldShowReadonlyGuide({}), false);
+check("没有快照时不显示", shouldShowReadonlyGuide(null), false);
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);
