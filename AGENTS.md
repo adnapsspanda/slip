@@ -351,6 +351,26 @@ pwsh -File tools/cargo-test-retry.ps1   # 只对 4551 重试，且默认不删�
 Windows 窗口、全局热键与 WebView2；而且拦截发生在 **Windows 执行 exe 时**，
 在 WSL 里交叉编译出来的 Windows exe 拷回去照样会被拦。
 
+## 在 WSL 里跑纯逻辑 crate（推荐做法）
+
+`slip-domain` / `slip-store` / `slip-app` 三个 crate 明确不含 tauri，可以在 Linux 上编译
+运行——**完全绕开 Windows 的 Smart App Control**（本机反复踩到的坑：新编出的产物会被按
+文件拒绝执行）。
+
+```powershell
+# Windows 侧调用即可
+wsl.exe -d Arch -- bash -lc 'sh /mnt/d/Dev/simple-todo/tools/wsl-test.sh'
+```
+
+- 脚本把 `CARGO_TARGET_DIR` 指到 WSL 的 ext4（源码在 `/mnt/d` 的 9p 上，产物放 Linux 侧快得多）；
+- 依赖：本机已把 Windows 的 `~/.cargo/registry` 复制进 WSL，因此默认 `--offline`；
+  WSL 网络不便时也无需联网。要联网加 `--online`；
+- **平台相关的测试必须加 `#[cfg(windows)]`**：原生错误码（如 32/33 = 共享冲突、
+  5 = 拒绝访问）在 Linux 上含义完全不同。`sharing_violation_maps_to_busy` 曾因此在 WSL 里红过。
+
+**仍然只能在 Windows 上做的**：`slip-shell`（tauri + WebView2）的构建与
+`tools/verify-hotkey.ps1`（真实热键、窗口、托盘）。
+
 ## 质量门禁
 
 三条门，从便宜到贵：
@@ -472,6 +492,7 @@ cargo build -p slip-shell
 
 - 不把密钥、机器相关路径写进仓库；示例配置用占位值。
 - Tauri capability 只授予确实用到的权限（当前 `core:default` + `core:window:allow-start-dragging`）。加权限前先确认前端真的有对应调用。
+- **写剪贴板也走 Rust 侧**（`copy_diagnostics` 命令经 `ClipboardExt`），webview 只拿 `core.invoke`——所以 capability 里**没有** `clipboard-manager:*`。能少给一项能力就少给一项。
 - **`inbox.md` 的读写只允许经由 `slip-store`。** 外壳可以碰两类东西：它自己产出的
   附件（`export-<ms>.md`）与只读的目录枚举（损坏证据 `inbox.md.corrupt-*` 的名字与时间）。
   外壳**不得**直接读写 `inbox.md` 的内容——读它要走 `slip_store::peek_slips`，

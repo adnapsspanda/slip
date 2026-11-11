@@ -478,6 +478,18 @@ $afterSummon = (& $bun run $probe $Port --input 2>&1 | Select-Object -Last 1) | 
 Check "唤出后草稿仍在" ($afterSummon.value -eq $draft) "value=$($afterSummon.value)"
 Check "唤出后焦点回到捕获框" ($afterSummon.focused -eq $true) "focused=$($afterSummon.focused)"
 
+# --- 复制诊断：webview 没有剪贴板权限，所以从 PowerShell 侧读出来核对 ---
+Write-Output "--- 复制诊断（剪贴板）---"
+try {
+    $clip = Get-Clipboard -Raw
+    Check "剪贴板里有诊断标题" ($clip -match "Slip 诊断") ""
+    Check "剪贴板里有 vault 路径" ($clip -match "vault:") ""
+    Check "剪贴板里有 content_rev" ($clip -match "content_rev:") ""
+    Check "剪贴板里有 writable 状态" ($clip -match "writable:") ""
+} catch {
+    Check "读取剪贴板" $false "$($_.Exception.Message)"
+}
+
 Write-Output "--- 启动日志（stderr）---"
 # 应用此刻仍在运行、日志文件还被它持有，直接 ReadAllBytes 会撞共享冲突。
 try {

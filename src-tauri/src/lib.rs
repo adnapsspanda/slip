@@ -359,6 +359,71 @@ async fn restore_backup(
     Ok(state.dispatcher.restore_backup(request_id, name).await)
 }
 
+/// 把诊断信息写进系统剪贴板，方便用户贴给他人排查（R08）。
+///
+/// 三条边界：
+/// - **在 Rust 侧写剪贴板**，不给 webview 授剪贴板权限；
+/// - 内容全部来自**已发布的快照**与外壳已知状态：不读磁盘、不读日志、不扫目录；
+/// - **只写不读**：我们不从剪贴板取任何东西。
+#[tauri::command]
+async fn copy_diagnostics(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ShellState>,
+) -> Result<usize, String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+
+    let snapshot = state
+        .dispatcher
+        .get_snapshot()
+        .await
+        .map_err(|error| format!("读取快照失败：{error:?}"))?;
+
+    let mut text = String::from("Slip 诊断\n");
+    text.push_str(&format!("vault: {}\n", state.vault.display()));
+    let hotkey = if state.hotkey.is_empty() {
+        "<未注册>"
+    } else {
+        state.hotkey.as_str()
+    };
+    text.push_str(&format!("hotkey: {hotkey}\n"));
+    text.push_str(&format!(
+        "content_rev: {}  ui_rev: {}\n",
+        snapshot.content_rev, snapshot.ui_rev
+    ));
+    text.push_str(&format!("writable: {}\n", snapshot.health.writable));
+    text.push_str(&format!("needs_reload: {}\n", snapshot.needs_reload));
+    text.push_str(&format!("recovery: {:?}\n", snapshot.recovery));
+    text.push_str(&format!("runtime: {:?}\n", snapshot.runtime));
+
+    if snapshot.health.warnings.is_empty() {
+        text.push_str("warnings: (无)\n");
+    } else {
+        // BTreeSet 没有 join，先收集再拼。
+        let warnings: Vec<&str> = snapshot
+            .health
+            .warnings
+            .iter()
+            .map(String::as_str)
+            .collect();
+        text.push_str(&format!("warnings: {}\n", warnings.join(", ")));
+    }
+
+    if snapshot.diagnostics.is_empty() {
+        text.push_str("diagnostics: (无)\n");
+    } else {
+        text.push_str("diagnostics:\n");
+        for line in &snapshot.diagnostics {
+            text.push_str(&format!("  - {line}\n"));
+        }
+    }
+
+    let chars = text.chars().count();
+    app.clipboard()
+        .write_text(text)
+        .map_err(|error| format!("写入剪贴板失败：{error}"))?;
+    Ok(chars)
+}
+
 /// 回滚最近一次内容编辑、勾选或归档。
 #[tauri::command]
 async fn undo(state: tauri::State<'_, ShellState>, request_id: String) -> Result<Ack, String> {
@@ -422,6 +487,9 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // 只用于「复制诊断」：在 Rust 侧把诊断写进剪贴板。
+        // webview **不授**剪贴板权限——能少给一项能力就少给一项。
+        .plugin(tauri_plugin_clipboard_manager::init())
         .invoke_handler(tauri::generate_handler![
             get_snapshot,
             capture,
@@ -437,6 +505,7 @@ pub fn run() {
             corrupt_files,
             reveal_corrupt,
             open_url,
+            copy_diagnostics,
             export_markdown,
             external_diff,
             backup_list,

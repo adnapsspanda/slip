@@ -905,6 +905,10 @@ mod tests {
 
     // ---------- I/O 分类与可读文本 ----------------
 
+    // 原生错误码是**平台相关**的：Windows 的 32/33 是共享/锁冲突、5 是拒绝访问，
+    // 而在 Linux 上 32 是 EPIPE、5 是 EIO。所以这条只能在 Windows 上断言。
+    // （在 WSL 里跑测试时它曾经红过，正是缺了这个门。）
+    #[cfg(windows)]
     #[test]
     fn sharing_violation_maps_to_busy() {
         // Windows 的 ERROR_SHARING_VIOLATION(32) / ERROR_LOCK_VIOLATION(33)

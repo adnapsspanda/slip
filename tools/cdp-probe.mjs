@@ -1085,5 +1085,26 @@ check("收起前确实挂着撤销提示", (viewReset.noticeBefore ?? "").includ
 check("再唤出后撤销提示已过期清除", viewReset.noticeAfterSummon === false,
   `noticeAfter=${viewReset.noticeAfterSummon}`);
 
+// 25. 复制诊断：按钮可点，提示给出字数；剪贴板内容由 PowerShell 侧核对
+//     （webview 没有剪贴板权限，所以只能从外部读）。
+const diagnostics = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const btn = [...document.querySelectorAll('.paper__archive-all')]
+         .find((b) => b.textContent.trim() === '复制诊断');
+       if (!btn) return JSON.stringify({ error: '没有复制诊断按钮' });
+       btn.click();
+       await new Promise((r) => setTimeout(r, 1200));
+       return JSON.stringify({
+         error: null,
+         hint: document.querySelector('.capture__hint')?.textContent ?? '',
+       });
+     })()`,
+    true,
+  ),
+);
+check("复制诊断按钮存在且给出字数提示",
+  /^诊断已复制（\d+ 字）$/.test(diagnostics.hint ?? ""), `hint=${diagnostics.hint}`);
+
 cdp.close();
 process.exit(failed ? 1 : 0);

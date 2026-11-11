@@ -52,6 +52,24 @@
 
 ## 完成记录
 
+- **R08 完成：一键复制诊断（本轮）**：代理修好、依赖下载成功之后落地。
+  - 依赖：`tauri-plugin-clipboard-manager = "2"`。
+  - **剪贴板由 Rust 侧写**（`copy_diagnostics` 命令用 `ClipboardExt::write_text`），
+    webview **不授**剪贴板权限——capability 仍是 2 项
+    （`core:default` + `core:window:allow-start-dragging`）。能少给一项就少给一项。
+  - 文本只取**已发布快照**与外壳已知状态：vault 路径、热键、`content_rev`/`ui_rev`、
+    `writable`、`needs_reload`、`recovery`、`runtime`、warnings、diagnostics。
+    不读磁盘、不读日志、不扫目录，且**只写不读**剪贴板。
+  - 实测：点按钮后 `Get-Clipboard` 读到 209 字的完整诊断，提示区显示「诊断已复制（N 字）」。
+  - 端到端补 5 条断言（1 条在探针里点按钮看提示，4 条在验收脚本里从 PowerShell 读剪贴板核对
+    标题/vault/content_rev/writable），端到端 104 → **105**。
+  - 过程中的两个坑都记一下：
+    ① 新依赖的 build script 被 SAC 反复拒，靠"清理该 crate 重建"换产物才通过；
+       期间还因反复 clean 造成过 `can't find crate for tauri_macros`，需再 `cargo clean -p tauri-macros` 修复。
+    ② 我用脚本按行号替换 `lib.rs` 时范围算错，删掉了 `undo`/`isolate_and_reset`/`init_tracing`
+       等一大段——用 `git checkout` 恢复后改用**精确锚点编辑**重做。教训同前：脚本改文件必须
+       先断言锚点、改完回读校验。
+
 - **R08 尝试未果：加依赖撞上同一堵墙（本轮）**：用户修好代理后，`cargo search` 恢复
   （EXIT=0），依赖也**下载成功**（`arboard`、`clipboard-win`、`block-buffer` 等）。
   - 代码改动已完成并暂存：`tauri-plugin-clipboard-manager = "2"`、

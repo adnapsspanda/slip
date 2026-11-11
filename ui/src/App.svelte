@@ -462,6 +462,16 @@
     return bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${bytes} B`;
   }
 
+  /** 复制诊断到剪贴板。纯读取快照，不改任何状态。 */
+  async function handleCopyDiagnostics() {
+    try {
+      const chars = await bridge.copyDiagnostics();
+      hint = `诊断已复制（${chars} 字）`;
+    } catch (error) {
+      hint = `复制失败：${error}`;
+    }
+  }
+
   /** 导出为可读 Markdown。不做确认弹窗：它只写一个新文件，不动 inbox.md。 */
   async function handleExport() {
     try {
@@ -720,6 +730,14 @@
   <header class="paper__bar" data-tauri-drag-region>
     <span class="paper__title">Slip</span>
     <div class="paper__bar-right">
+      <button
+        type="button"
+        class="paper__archive-all"
+        onclick={handleCopyDiagnostics}
+        title="把 vault 路径、版本号、健康与诊断信息复制到剪贴板"
+      >
+        复制诊断
+      </button>
       <button
         type="button"
         class="paper__archive-all"
