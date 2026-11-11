@@ -633,6 +633,18 @@ pub fn run() {
                 tracing::error!("tray install failed: {error}");
             }
 
+            // `skipTaskbar` 写在 tauri.conf.json 里，但**实测没生效**：窗口创建后扩展样式是
+            // `WS_EX_APPWINDOW` 而不是 `WS_EX_TOOLWINDOW`，意味着它会出现在任务栏与 Alt+Tab
+            // （R71 验收时抓到的）。召唤式便签常驻任务栏会干扰用户，这里显式再设一次——
+            // 配置没生效时它是兜底；将来 Tauri 修好了也只是重复设置一次，无副作用。
+            match app.get_webview_window("main") {
+                Some(window) => match window.set_skip_taskbar(true) {
+                    Ok(()) => tracing::info!("skip_taskbar: applied"),
+                    Err(error) => tracing::error!("skip_taskbar failed: {error}"),
+                },
+                None => tracing::error!("skip_taskbar: main window missing"),
+            }
+
             // 托盘摘要随快照更新。
             //
             // 前端是**拉取式**的（命令返回后自己 `refresh()`），没有快照推送事件；
