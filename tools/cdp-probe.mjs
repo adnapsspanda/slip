@@ -42,7 +42,9 @@ function connect(url) {
       if (data.id && pending.has(data.id)) {
         const { res, rej } = pending.get(data.id);
         pending.delete(data.id);
-        data.error ? rej(new Error(JSON.stringify(data.error))) : res(data.result);
+        data.error
+          ? rej(new Error(JSON.stringify(data.error)))
+          : res(data.result);
       }
     };
   });
@@ -108,7 +110,9 @@ if (dismissOnly) {
 let failed = false;
 const check = (label, ok, detail) => {
   if (!ok) failed = true;
-  console.log(`${ok ? "[PASS]" : "[FAIL]"} ${label}${detail ? ` — ${detail}` : ""}`);
+  console.log(
+    `${ok ? "[PASS]" : "[FAIL]"} ${label}${detail ? ` — ${detail}` : ""}`,
+  );
 };
 
 // 1. 热键唤出后，捕获框必须真的拿到焦点。
@@ -120,7 +124,11 @@ const awake = JSON.parse(
     tauri: Boolean(window.__TAURI__),
   })`),
 );
-check("唤出后捕获框获得焦点", awake.cls === "capture__input", `activeElement=${awake.tag}.${awake.cls}`);
+check(
+  "唤出后捕获框获得焦点",
+  awake.cls === "capture__input",
+  `activeElement=${awake.tag}.${awake.cls}`,
+);
 check("Tauri 桥可用", awake.tauri === true);
 
 // 1.5 空 vault 的首屏必须有指引。第一次启动那张空纸最容易被误解成"什么也没发生"，
@@ -133,27 +141,42 @@ const emptyState = JSON.parse(
     keys: [...document.querySelectorAll('.slips__empty kbd')].map(e => e.textContent),
   })`),
 );
-check("空 vault 时展示空态指引", emptyState.present === true && emptyState.title.length > 0,
-  `title=${emptyState.title}`);
-check("空态指引给出了两步操作与按键", emptyState.steps === 2 && emptyState.keys.length >= 3,
-  `steps=${emptyState.steps} keys=${JSON.stringify(emptyState.keys)}`);
+check(
+  "空 vault 时展示空态指引",
+  emptyState.present === true && emptyState.title.length > 0,
+  `title=${emptyState.title}`,
+);
+check(
+  "空态指引给出了两步操作与按键",
+  emptyState.steps === 2 && emptyState.keys.length >= 3,
+  `steps=${emptyState.steps} keys=${JSON.stringify(emptyState.keys)}`,
+);
 
 // 1.6 干净 vault 不该出现损坏文件角标。这条同时验证 `corrupt_files` 的契约：
 //     返回数组（不是 null/对象），否则 `corrupt.length` 会在界面上炸成 TypeError。
 const corruptContract = JSON.parse(
-  await evaluate(`(async () => {
+  await evaluate(
+    `(async () => {
     const list = await window.__TAURI__.core.invoke('corrupt_files');
     return JSON.stringify({
       isArray: Array.isArray(list),
       length: Array.isArray(list) ? list.length : -1,
       badgeShown: document.querySelector('.paper__link') !== null,
     });
-  })()`, true),
+  })()`,
+    true,
+  ),
 );
-check("corrupt_files 返回数组", corruptContract.isArray === true, `isArray=${corruptContract.isArray}`);
-check("干净 vault 不显示损坏角标",
+check(
+  "corrupt_files 返回数组",
+  corruptContract.isArray === true,
+  `isArray=${corruptContract.isArray}`,
+);
+check(
+  "干净 vault 不显示损坏角标",
   corruptContract.length === 0 && corruptContract.badgeShown === false,
-  `length=${corruptContract.length} badge=${corruptContract.badgeShown}`);
+  `length=${corruptContract.length} badge=${corruptContract.badgeShown}`,
+);
 
 // 2. 真打一条并按回车，走完整 IPC -> 领域 -> 磁盘 -> 快照。
 const typed = JSON.parse(
@@ -177,9 +200,21 @@ const typed = JSON.parse(
   ),
 );
 check("回车后提示为已收录", typed.hint === "已收录", `hint=${typed.hint}`);
-check("列表出现该条", (typed.slips ?? []).includes("热键唤出后写入的一条"), `slips=${JSON.stringify(typed.slips)}`);
-check("输入框已清空", typed.inputLeft === "", `left=${JSON.stringify(typed.inputLeft)}`);
-check("录入后空态引导无缝让位给列表", typed.emptyGone === true, `emptyGone=${typed.emptyGone}`);
+check(
+  "列表出现该条",
+  (typed.slips ?? []).includes("热键唤出后写入的一条"),
+  `slips=${JSON.stringify(typed.slips)}`,
+);
+check(
+  "输入框已清空",
+  typed.inputLeft === "",
+  `left=${JSON.stringify(typed.inputLeft)}`,
+);
+check(
+  "录入后空态引导无缝让位给列表",
+  typed.emptyGone === true,
+  `emptyGone=${typed.emptyGone}`,
+);
 
 // 3. 输入法组合态按回车必须不提交（回归红线）。
 const ime = JSON.parse(
@@ -297,7 +332,11 @@ check(
   `texts=${JSON.stringify(edited.texts)}`,
 );
 check("提交后编辑框退出", edited.cleared === true, `cleared=${edited.cleared}`);
-check("提示区出现已修改", (edited.notice ?? "").includes("已修改"), `notice=${edited.notice}`);
+check(
+  "提示区出现已修改",
+  (edited.notice ?? "").includes("已修改"),
+  `notice=${edited.notice}`,
+);
 
 // 6. Ctrl+Z 走窗口级快捷键，回滚到上一次正文。
 const undone = JSON.parse(
@@ -319,7 +358,11 @@ check(
     !(undone.texts ?? []).includes("编辑后的内容"),
   `texts=${JSON.stringify(undone.texts)}`,
 );
-check("提示区出现已撤销", (undone.notice ?? "").includes("已撤销"), `notice=${undone.notice}`);
+check(
+  "提示区出现已撤销",
+  (undone.notice ?? "").includes("已撤销"),
+  `notice=${undone.notice}`,
+);
 
 // 7. 点锁定按钮：标记落到 marker 上，正文转次级色。
 const lockedState = JSON.parse(
@@ -338,7 +381,11 @@ const lockedState = JSON.parse(
     true,
   ),
 );
-check("点锁定后按钮转为按下态", lockedState.pressed === "true", `pressed=${lockedState.pressed}`);
+check(
+  "点锁定后按钮转为按下态",
+  lockedState.pressed === "true",
+  `pressed=${lockedState.pressed}`,
+);
 check(
   "锁定后正文使用次级样式",
   (lockedState.lockedClass ?? "").includes("slip__text--locked"),
@@ -360,7 +407,11 @@ const lockedEdit = JSON.parse(
     true,
   ),
 );
-check("锁定后双击不进入编辑", lockedEdit.hasEdit === false, `hasEdit=${lockedEdit.hasEdit}`);
+check(
+  "锁定后双击不进入编辑",
+  lockedEdit.hasEdit === false,
+  `hasEdit=${lockedEdit.hasEdit}`,
+);
 check(
   "锁定后双击给出原因",
   (lockedEdit.hint ?? "").includes("已锁定"),
@@ -485,17 +536,31 @@ const keyboardFlow = JSON.parse(
     true,
   ),
 );
-check("↓ 从空输入框进入列表第一行", keyboardFlow.downFromCapture === true,
-  `downFromCapture=${keyboardFlow.downFromCapture}`);
-check("Space 勾选纸条", keyboardFlow.spaceChecked === "true",
-  `aria-checked=${keyboardFlow.spaceChecked}`);
-check("Enter 进入编辑", keyboardFlow.enteredEdit === true,
-  `enteredEdit=${keyboardFlow.enteredEdit}`);
-check("Esc 退出编辑且焦点回到那一行",
+check(
+  "↓ 从空输入框进入列表第一行",
+  keyboardFlow.downFromCapture === true,
+  `downFromCapture=${keyboardFlow.downFromCapture}`,
+);
+check(
+  "Space 勾选纸条",
+  keyboardFlow.spaceChecked === "true",
+  `aria-checked=${keyboardFlow.spaceChecked}`,
+);
+check(
+  "Enter 进入编辑",
+  keyboardFlow.enteredEdit === true,
+  `enteredEdit=${keyboardFlow.enteredEdit}`,
+);
+check(
+  "Esc 退出编辑且焦点回到那一行",
   keyboardFlow.leftEdit === true && keyboardFlow.focusBackOnRow === true,
-  `leftEdit=${keyboardFlow.leftEdit} focusBack=${keyboardFlow.focusBackOnRow}`);
-check("首行 ↑ 回到捕获框", keyboardFlow.backToCapture === true,
-  `backToCapture=${keyboardFlow.backToCapture}`);
+  `leftEdit=${keyboardFlow.leftEdit} focusBack=${keyboardFlow.focusBackOnRow}`,
+);
+check(
+  "首行 ↑ 回到捕获框",
+  keyboardFlow.backToCapture === true,
+  `backToCapture=${keyboardFlow.backToCapture}`,
+);
 
 // 12. 切换编辑目标不丢改动；Ctrl+Enter 也能提交。
 //     这条对应实测过的数据丢失 bug：改着 A 又去双击 B，A 的改动被静默丢弃、
@@ -551,16 +616,22 @@ const switchEdit = JSON.parse(
     true,
   ),
 );
-check("切换编辑目标时前一条正常保存",
+check(
+  "切换编辑目标时前一条正常保存",
   (switchEdit.texts ?? []).includes("切换测试 A 改过"),
-  `texts=${JSON.stringify(switchEdit.texts)}`);
-check("切换后新一条进入编辑且内容正确",
+  `texts=${JSON.stringify(switchEdit.texts)}`,
+);
+check(
+  "切换后新一条进入编辑且内容正确",
   switchEdit.openValue === "切换测试 B",
-  `openValue=${switchEdit.openValue}`);
-check("Ctrl+Enter 提交",
+  `openValue=${switchEdit.openValue}`,
+);
+check(
+  "Ctrl+Enter 提交",
   switchEdit.editorGone === true &&
     (switchEdit.afterCtrlEnter ?? []).includes("切换测试 B 改过"),
-  `editorGone=${switchEdit.editorGone} texts=${JSON.stringify(switchEdit.afterCtrlEnter)}`);
+  `editorGone=${switchEdit.editorGone} texts=${JSON.stringify(switchEdit.afterCtrlEnter)}`,
+);
 
 // 13. 过滤：Ctrl+F 展开、输入筛选、Esc 退出；且"没匹配到"不能显示成"还没有内容"。
 const filtered = JSON.parse(
@@ -609,13 +680,26 @@ const filtered = JSON.parse(
     true,
   ),
 );
-check("Ctrl+F 展开过滤框并获得焦点",
-  !filtered.error && filtered.focused === true, `focused=${filtered.focused}`);
-check("输入关键字后只剩匹配项",
-  filtered.rows === 1 && filtered.count === "1", `rows=${filtered.rows} count=${filtered.count}`);
-check("过滤状态下仍能勾选", filtered.checked === "true", `aria-checked=${filtered.checked}`);
-check("无匹配时提示的是『没有匹配』而不是空态引导",
-  filtered.emptyTitle === "没有匹配的纸条", `title=${filtered.emptyTitle}`);
+check(
+  "Ctrl+F 展开过滤框并获得焦点",
+  !filtered.error && filtered.focused === true,
+  `focused=${filtered.focused}`,
+);
+check(
+  "输入关键字后只剩匹配项",
+  filtered.rows === 1 && filtered.count === "1",
+  `rows=${filtered.rows} count=${filtered.count}`,
+);
+check(
+  "过滤状态下仍能勾选",
+  filtered.checked === "true",
+  `aria-checked=${filtered.checked}`,
+);
+check(
+  "无匹配时提示的是『没有匹配』而不是空态引导",
+  filtered.emptyTitle === "没有匹配的纸条",
+  `title=${filtered.emptyTitle}`,
+);
 check("Esc 退出过滤", filtered.closed === true, `closed=${filtered.closed}`);
 
 // 14. 行内渲染（粗体/代码/链接）与相对时间。
@@ -658,15 +742,36 @@ const inline = JSON.parse(
   ),
 );
 check("粗体渲染成 strong", inline.strong === "重点", `strong=${inline.strong}`);
-check("行内代码渲染成 code", inline.code === "npm run build", `code=${inline.code}`);
-check("链接 href 剥掉了尾部标点", inline.href === "https://example.com/a?x=1&y=2",
-  `href=${inline.href}`);
-check("被剥掉的标点仍在正文里", (inline.fullText ?? "").includes("。"),
-  `text=${inline.fullText}`);
-check("open_url 拒绝 file: 协议", inline.rejected === true, `rejected=${inline.rejected}`);
-check("新收录的纸条显示『刚刚』", inline.timeLabel === "刚刚", `label=${inline.timeLabel}`);
-check("<time> 带 RFC3339 的 datetime", /^\d{4}-\d{2}-\d{2}T/.test(inline.timeAttr ?? ""),
-  `datetime=${inline.timeAttr}`);
+check(
+  "行内代码渲染成 code",
+  inline.code === "npm run build",
+  `code=${inline.code}`,
+);
+check(
+  "链接 href 剥掉了尾部标点",
+  inline.href === "https://example.com/a?x=1&y=2",
+  `href=${inline.href}`,
+);
+check(
+  "被剥掉的标点仍在正文里",
+  (inline.fullText ?? "").includes("。"),
+  `text=${inline.fullText}`,
+);
+check(
+  "open_url 拒绝 file: 协议",
+  inline.rejected === true,
+  `rejected=${inline.rejected}`,
+);
+check(
+  "新收录的纸条显示『刚刚』",
+  inline.timeLabel === "刚刚",
+  `label=${inline.timeLabel}`,
+);
+check(
+  "<time> 带 RFC3339 的 datetime",
+  /^\d{4}-\d{2}-\d{2}T/.test(inline.timeAttr ?? ""),
+  `datetime=${inline.timeAttr}`,
+);
 
 // 15. 归档抽屉：能翻回来看，也能恢复。
 const drawer = JSON.parse(
@@ -709,15 +814,26 @@ const drawer = JSON.parse(
     true,
   ),
 );
-check("归档后出现『已归档 N』入口",
-  /^已归档 \d+$/.test(drawer.toggleText ?? ""), `toggleText=${drawer.toggleText}`);
-check("抽屉里能看到归档的纸条", drawer.inDrawer >= 1 && drawer.drawerText === drawer.label,
-  `count=${drawer.inDrawer} text=${drawer.drawerText}`);
-check("抽屉里的按钮是『恢复纸条』", drawer.restoreLabel === "恢复纸条",
-  `aria-label=${drawer.restoreLabel}`);
-check("恢复后纸条回到列表且入口消失",
+check(
+  "归档后出现『已归档 N』入口",
+  /^已归档 \d+$/.test(drawer.toggleText ?? ""),
+  `toggleText=${drawer.toggleText}`,
+);
+check(
+  "抽屉里能看到归档的纸条",
+  drawer.inDrawer >= 1 && drawer.drawerText === drawer.label,
+  `count=${drawer.inDrawer} text=${drawer.drawerText}`,
+);
+check(
+  "抽屉里的按钮是『恢复纸条』",
+  drawer.restoreLabel === "恢复纸条",
+  `aria-label=${drawer.restoreLabel}`,
+);
+check(
+  "恢复后纸条回到列表且入口消失",
   drawer.backToggle === 0 && drawer.backInList === true,
-  `toggle=${drawer.backToggle} backInList=${drawer.backInList}`);
+  `toggle=${drawer.backToggle} backInList=${drawer.backInList}`,
+);
 
 // 16. 导出：只写一个新文件，不动 inbox.md。
 const exported = JSON.parse(
@@ -737,9 +853,11 @@ const exported = JSON.parse(
     true,
   ),
 );
-check("导出后提示区给出文件名",
+check(
+  "导出后提示区给出文件名",
   !exported.error && /^已导出：export-\d+\.md$/.test(exported.hint ?? ""),
-  `hint=${exported.hint}`);
+  `hint=${exported.hint}`,
+);
 
 // 17. 统计概览：状态行放人会关心的数，rev 与路径退到悬浮提示。
 const stats = JSON.parse(
@@ -751,16 +869,24 @@ const stats = JSON.parse(
     true,
   ),
 );
-check("状态行给出未完成与已完成条数",
+check(
+  "状态行给出未完成与已完成条数",
   /\d+ 未完成/.test(stats.meta ?? "") && /\d+ 已完成/.test(stats.meta ?? ""),
-  `meta=${stats.meta}`);
-check("rev 收进悬浮提示而不是常驻",
-  /rev \d+/.test(stats.title ?? ""), `title=${stats.title}`);
+  `meta=${stats.meta}`,
+);
+check(
+  "rev 收进悬浮提示而不是常驻",
+  /rev \d+/.test(stats.title ?? ""),
+  `title=${stats.title}`,
+);
 
 // 18. 外部修改：写入被拦，且横幅说清改了多少条。
 //     探针自己就是脚本，可以直接动 .tmp-vault 里的文件来造这个场景。
 // 不猜工作目录：直接问应用自己的 vault 在哪。
-const vaultPath = await evaluate(`window.__TAURI__.core.invoke('vault_path')`, true);
+const vaultPath = await evaluate(
+  `window.__TAURI__.core.invoke('vault_path')`,
+  true,
+);
 const vaultInbox = join(String(vaultPath), "inbox.md");
 let externalState = { error: "未能改写文件" };
 try {
@@ -799,14 +925,22 @@ try {
 } catch (error) {
   externalState = { error: String(error) };
 }
-check("外部改动后写入被拦并置 needsReload",
+check(
+  "外部改动后写入被拦并置 needsReload",
   externalState.needsReload === true,
-  `needsReload=${externalState.needsReload} ${JSON.stringify(externalState)}`);
-check("横幅说清外部改了多少条",
-  /新增 1/.test(externalState.banner ?? ""), `banner=${externalState.banner}`);
+  `needsReload=${externalState.needsReload} ${JSON.stringify(externalState)}`,
+);
+check(
+  "横幅说清外部改了多少条",
+  /新增 1/.test(externalState.banner ?? ""),
+  `banner=${externalState.banner}`,
+);
 // 纯追加不该报"消失"：报了就说明有一条被粘连或误判。
-check("纯追加不会误报『消失』",
-  !/消失/.test(externalState.banner ?? ""), `banner=${externalState.banner}`);
+check(
+  "纯追加不会误报『消失』",
+  !/消失/.test(externalState.banner ?? ""),
+  `banner=${externalState.banner}`,
+);
 
 // 19. 备份面板：列出备份，两步确认后恢复（恢复前的内容也会再留一代）。
 const backup = JSON.parse(
@@ -840,12 +974,22 @@ const backup = JSON.parse(
     true,
   ),
 );
-check("备份面板列出一代以上的备份", (backup.count ?? 0) >= 1, `count=${backup.count}`);
-check("备份行给出条目数，能区分两代",
-  /^\d+ 条 · /.test(backup.firstRow ?? ""), `row=${backup.firstRow}`);
+check(
+  "备份面板列出一代以上的备份",
+  (backup.count ?? 0) >= 1,
+  `count=${backup.count}`,
+);
+check(
+  "备份行给出条目数，能区分两代",
+  /^\d+ 条 · /.test(backup.firstRow ?? ""),
+  `row=${backup.firstRow}`,
+);
 check("恢复需要二次确认", backup.armed === "确认？", `armed=${backup.armed}`);
-check("恢复成功并给出提示",
-  (backup.hint ?? "").includes("已从备份恢复"), `hint=${backup.hint}`);
+check(
+  "恢复成功并给出提示",
+  (backup.hint ?? "").includes("已从备份恢复"),
+  `hint=${backup.hint}`,
+);
 
 // 20. 窗口拖动：标题栏带 data-tauri-drag-region，权限一旦收回就拖不动了。
 //     这正是收窄权限时真实踩过的坑——外观完全正常，只有拖窗口时才发现。
@@ -869,7 +1013,11 @@ const drag = JSON.parse(
   ),
 );
 check("标题栏保留拖动区标记", drag.hasAttr === true, `hasAttr=${drag.hasAttr}`);
-check("收窄后的权限仍允许拖动窗口", drag.result === "allowed", `result=${drag.result}`);
+check(
+  "收窄后的权限仍允许拖动窗口",
+  drag.result === "allowed",
+  `result=${drag.result}`,
+);
 
 // 21. 上限预检必须与领域层同一口径。
 //     领域层先剥列表前缀再量长度；前端若量原始行，`- ` + 2000 字的**合法**输入会被
@@ -898,10 +1046,16 @@ const prefixLimit = JSON.parse(
     true,
   ),
 );
-check("带清单前缀的 2000 字输入不被前端误拦",
-  prefixLimit.captured === 1, `captured=${prefixLimit.captured} hint=${prefixLimit.hint}`);
-check("落盘时前缀已剥、长度正好 2000",
-  prefixLimit.stored === 1, `stored=${prefixLimit.stored}`);
+check(
+  "带清单前缀的 2000 字输入不被前端误拦",
+  prefixLimit.captured === 1,
+  `captured=${prefixLimit.captured} hint=${prefixLimit.hint}`,
+);
+check(
+  "落盘时前缀已剥、长度正好 2000",
+  prefixLimit.stored === 1,
+  `stored=${prefixLimit.stored}`,
+);
 
 // 22. 过滤视图下撤销一条看不见的条目：必须说清撤的是哪条、且它不在视野里。
 //     只说"已撤销"会让用户以为失灵——列表毫无变化（实测过这个困惑）。
@@ -949,10 +1103,16 @@ const hiddenUndo = JSON.parse(
     true,
   ),
 );
-check("视野外撤销会说明对象不在过滤结果里",
-  (hiddenUndo.notice ?? "").includes("不在当前过滤结果里"), `notice=${hiddenUndo.notice}`);
-check("提示里点名了被撤销的那一条",
-  (hiddenUndo.notice ?? "").includes("撤销可见性-乙"), `notice=${hiddenUndo.notice}`);
+check(
+  "视野外撤销会说明对象不在过滤结果里",
+  (hiddenUndo.notice ?? "").includes("不在当前过滤结果里"),
+  `notice=${hiddenUndo.notice}`,
+);
+check(
+  "提示里点名了被撤销的那一条",
+  (hiddenUndo.notice ?? "").includes("撤销可见性-乙"),
+  `notice=${hiddenUndo.notice}`,
+);
 
 // 23. 正在编辑的条目被外部删掉后，编辑态必须退出。
 //     否则 editingId 永远非空 → editing 恒为 true → App 里 `if (listEditing) return`
@@ -1023,9 +1183,16 @@ if (!vanished.error && vanished.editing) {
       true,
     ),
   );
-  check("条目消失后编辑框也被清掉", settled.editors === 0, `editors=${settled.editors}`);
-  check("消失的条目不再出现在列表里", settled.stillThere === false,
-    `stillThere=${settled.stillThere}`);
+  check(
+    "条目消失后编辑框也被清掉",
+    settled.editors === 0,
+    `editors=${settled.editors}`,
+  );
+  check(
+    "消失的条目不再出现在列表里",
+    settled.stillThere === false,
+    `stillThere=${settled.stillThere}`,
+  );
 }
 
 // 24. 收起再唤出后，视图状态必须回到默认。
@@ -1075,15 +1242,31 @@ const viewReset = JSON.parse(
     true,
   ),
 );
-check("收起前确实是过滤后的列表", viewReset.filtered === 1, `filtered=${viewReset.filtered}`);
-check("再唤出后过滤条被收起", viewReset.filterOpenAfterSummon === false,
-  `filterOpen=${viewReset.filterOpenAfterSummon}`);
-check("再唤出后列表恢复全量", viewReset.rowsAfterSummon > viewReset.filtered,
-  `rows=${viewReset.rowsAfterSummon} filtered=${viewReset.filtered}`);
-check("收起前确实挂着撤销提示", (viewReset.noticeBefore ?? "").includes("撤销"),
-  `notice=${viewReset.noticeBefore}`);
-check("再唤出后撤销提示已过期清除", viewReset.noticeAfterSummon === false,
-  `noticeAfter=${viewReset.noticeAfterSummon}`);
+check(
+  "收起前确实是过滤后的列表",
+  viewReset.filtered === 1,
+  `filtered=${viewReset.filtered}`,
+);
+check(
+  "再唤出后过滤条被收起",
+  viewReset.filterOpenAfterSummon === false,
+  `filterOpen=${viewReset.filterOpenAfterSummon}`,
+);
+check(
+  "再唤出后列表恢复全量",
+  viewReset.rowsAfterSummon > viewReset.filtered,
+  `rows=${viewReset.rowsAfterSummon} filtered=${viewReset.filtered}`,
+);
+check(
+  "收起前确实挂着撤销提示",
+  (viewReset.noticeBefore ?? "").includes("撤销"),
+  `notice=${viewReset.noticeBefore}`,
+);
+check(
+  "再唤出后撤销提示已过期清除",
+  viewReset.noticeAfterSummon === false,
+  `noticeAfter=${viewReset.noticeAfterSummon}`,
+);
 
 // 25. 复制诊断：按钮可点，提示给出字数；剪贴板内容由 PowerShell 侧核对
 //     （webview 没有剪贴板权限，所以只能从外部读）。
@@ -1103,8 +1286,74 @@ const diagnostics = JSON.parse(
     true,
   ),
 );
-check("复制诊断按钮存在且给出字数提示",
-  /^诊断已复制（\d+ 字）$/.test(diagnostics.hint ?? ""), `hint=${diagnostics.hint}`);
+check(
+  "复制诊断按钮存在且给出字数提示",
+  /^诊断已复制（\d+ 字）$/.test(diagnostics.hint ?? ""),
+  `hint=${diagnostics.hint}`,
+);
+
+// 26. 深浅色模式自适应：模拟 prefers-color-scheme: dark 与 light
+//     断言纸色 --paper 切换为深石板炭黑，恢复 light 后还原为米白色。
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+await cdp.send("Emulation.setEmulatedMedia", {
+  media: "screen",
+  features: [{ name: "prefers-color-scheme", value: "dark" }],
+});
+await sleep(300);
+
+const darkTheme = JSON.parse(
+  await evaluate(
+    `(() => {
+       const paper = document.querySelector('.paper');
+       if (!paper) return JSON.stringify({ error: '没有 .paper' });
+       const style = window.getComputedStyle(paper);
+       return JSON.stringify({
+         bg: style.backgroundColor,
+         color: style.color,
+       });
+     })()`,
+    true,
+  ),
+);
+
+await cdp.send("Emulation.setEmulatedMedia", {
+  media: "screen",
+  features: [{ name: "prefers-color-scheme", value: "light" }],
+});
+await sleep(300);
+
+const lightTheme = JSON.parse(
+  await evaluate(
+    `(() => {
+       const paper = document.querySelector('.paper');
+       const style = window.getComputedStyle(paper);
+       return JSON.stringify({
+         bg: style.backgroundColor,
+         color: style.color,
+       });
+     })()`,
+    true,
+  ),
+);
+
+await cdp.send("Emulation.setEmulatedMedia", { media: "" });
+
+check(
+  "深色模式下自动切换为深色便签纸",
+  darkTheme.bg === "rgb(32, 30, 27)",
+  `darkBg=${darkTheme.bg}`,
+);
+check(
+  "深色模式下文字自动变为浅墨米白色",
+  darkTheme.color === "rgb(241, 235, 216)",
+  `darkColor=${darkTheme.color}`,
+);
+check(
+  "恢复浅色模式下回到米色纸面",
+  lightTheme.bg === "rgb(251, 247, 238)",
+  `lightBg=${lightTheme.bg}`,
+);
 
 cdp.close();
 process.exit(failed ? 1 : 0);

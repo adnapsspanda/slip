@@ -41,6 +41,7 @@
 
 | ID | 事项 | 证据 | 验收标准 | 状态 |
 |---|---|---|---|---|
+| R-31 | 深浅色模式自适应 | 原界面硬编码浅色纸张，Windows 11 深色模式下刺眼；色阶缺乏全局变量体系 | 引入 CSS 自定义属性提取与 `@media (prefers-color-scheme: dark)`，深色下石板炭黑纸面+浅墨白字，WCAG AA 对比度均达标（13.8:1），端到端 CDP 仿真测试 3 项全过 | ✅ 见完成记录 |
 | R-02 | 死视图路径 | 整个 `ui/` 零引用 `toggleCollapse` / `DragEnd` / `DockSideChanged` / `CollapseToggled`；后端仍保留 `ViewEvent` 四变体、`Command::ToggleCollapse`、`PaperViewSet.collapsed/dock_side`，以及**只为它们服务**的 `PREFS_DEBOUNCE`（仅 `dispatch.rs:400`、`:418` 触发） | 二选一并在 `docs/design` 落定：① 接线（需要先定义 UI 入口）；② 整体删除并把 `prefs` 收窄，同时保证旧 `ui-state.json` 仍可读（serde default）。删除可连带简化 `dispatch` 的去抖机制 | ✅ 已按方案②执行：R16+R18 整块删除（净减 522 行），`Prefs` 收窄为只剩 `hotkey`，旧 `ui-state.json` 的余字段被 serde 忽略、仍可读；`docs/design` 修订 15 已记录 |
 | R-06 | `csp: null` | `tauri.conf.json` 未设 CSP。当前无远程内容、无 `{@html}`，风险低但无纵深 | 补最小 CSP（`default-src 'self'`），确认 Svelte 内联样式与 WebView2 下仍正常：验收全过 | ✅ 见完成记录 |
 | R-07 | 前端无 lint/format | 只有 `vite build`；格式靠人。仓库其余部分都有门禁 | 引入 `prettier --check` 并接进钩子与 CI；**不**引入 eslint 规则集 | ✅ 见完成记录 |
@@ -51,6 +52,21 @@
 | R-01 | ~~归档撤销承诺与实现不符~~ | **撤回**：`Patch::Unarchive`（`model.rs:52`）、`apply_patch` 分支（`state.rs:135`）、`inverse_batch` 双向映射（`dispatch.rs:565-568`）、领域测试（`state.rs:304`）、端到端测试（`pipeline.rs:301` `archive_and_undo_preserve_done_state_through_disk`）全部就位 | 无需改动。文档承诺与实现**一致** | ✅ 撤回 |
 
 ## 完成记录
+
+- **R31 完成：深浅色模式自适应与主题变量化（本轮）**：
+  - **动机**：原界面颜色散落硬编码在 CSS 各处，在 Windows 11 设置为深色模式时仍为刺眼的明亮黄便签纸。
+  - **设计与实现**：
+    - 统一将便签纸色彩体系抽取为 CSS Custom Properties（`--paper`, `--paper-card`, `--paper-edge`, `--paper-hover`, `--paper-active`, `--paper-disabled`, `--ink`, `--ink-soft`, `--accent`, `--banner-*` 等）。
+    - 引入系统媒体查询 `@media (prefers-color-scheme: dark)`：深色模式采用石板炭黑底色（`#201e1b`）、柔和浅米墨字（`#f1ebd8`，13.8:1 高对比度）、次级文本（`#a89f8d`，6.2:1 WCAG AA 达标）、琥珀暖橙强调色（`#e07a47`）、以及微光发丝边框与深色立体阴影。
+    - 浅色模式保持原暖米纸质色彩不变，无任何视觉回退。
+    - 零第三方依赖、零 JS 轮询开销，完全由系统/浏览器标准渲染引擎原生响应。
+  - **端到端验证**：
+    - 在 `tools/cdp-probe.mjs` 中新增 3 项仿真测试（通过 CDP `Emulation.setEmulatedMedia` 模拟 dark 与 light）：
+      ① 模拟 dark 媒体查询：断言便签纸背景自动切换为石板黑 `rgb(32, 30, 27)`（PASS）；
+      ② 模拟 dark 媒体查询：断言主文字颜色自动切换为浅米白 `rgb(241, 235, 216)`（PASS）；
+      ③ 还原为 light：断言便签纸背景平滑还原为经典暖米色 `rgb(251, 247, 238)`（PASS）。
+    - 验证通过，端到端 CDP 测试组持续全绿。
+
 
 - **R08 完成：一键复制诊断（本轮）**：代理修好、依赖下载成功之后落地。
   - 依赖：`tauri-plugin-clipboard-manager = "2"`。

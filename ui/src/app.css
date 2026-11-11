@@ -7,7 +7,11 @@
 
 :root {
   --paper: #fbf7ee;
+  --paper-card: #fffdf8;
   --paper-edge: #e2d9c6;
+  --paper-hover: #f3ecdd;
+  --paper-active: #e9e1cf;
+  --paper-disabled: #f6f1e6;
   --ink: #2b2620;
   /*
    * 次级文字色。原值 #8a8172 在纸色上只有 3.59:1，低于 WCAG AA 对正文的 4.5:1——
@@ -16,7 +20,41 @@
    */
   --ink-soft: #787061;
   --accent: #b4663a;
+  --accent-focus-ring: rgb(180 102 58 / 14%);
+  --paper-shadow:
+    0 0 0 1px rgb(43 38 32 / 35%), 0 18px 40px rgb(43 38 32 / 22%),
+    0 2px 6px rgb(43 38 32 / 14%);
+  --banner-bg: #fbeae2;
+  --banner-edge: #d9b2a0;
+  --banner-text: #7a3a1d;
+  --banner-diag: #8c4524;
+  --banner-btn-bg: #fff6f1;
+  --banner-btn-edge: #c98f74;
   --radius: 14px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #201e1b;
+    --paper-card: #282521;
+    --paper-edge: #3c3831;
+    --paper-hover: #322e28;
+    --paper-active: #3e3932;
+    --paper-disabled: #25221e;
+    --ink: #f1ebd8;
+    --ink-soft: #a89f8d;
+    --accent: #e07a47;
+    --accent-focus-ring: rgb(224 122 71 / 20%);
+    --paper-shadow:
+      0 0 0 1px rgb(255 255 255 / 12%), 0 18px 40px rgb(0 0 0 / 60%),
+      0 2px 8px rgb(0 0 0 / 40%);
+    --banner-bg: #321c13;
+    --banner-edge: #5c3321;
+    --banner-text: #f0b497;
+    --banner-diag: #d88e6a;
+    --banner-btn-bg: #402418;
+    --banner-btn-edge: #734029;
+  }
 }
 
 * {
@@ -58,10 +96,7 @@ body {
    * 压出一圈灰框。要满足 WCAG 1.4.11 的 3:1 得用 alpha 0.5，那圈灰边会把便签变成
    * "带框的卡片"，观感代价大于收益。灰色（3.7:1）与深色壁纸本就达标。
    */
-  box-shadow:
-    0 0 0 1px rgb(43 38 32 / 35%),
-    0 18px 40px rgb(43 38 32 / 22%),
-    0 2px 6px rgb(43 38 32 / 14%);
+  box-shadow: var(--paper-shadow);
   overflow: hidden;
 }
 
@@ -94,7 +129,7 @@ body {
   padding: 2px 7px;
   border: 1px solid var(--paper-edge);
   border-radius: 6px;
-  background: #fffdf8;
+  background: var(--paper-card);
   color: var(--ink-soft);
   font: inherit;
   font-size: 11px;
@@ -119,7 +154,7 @@ body {
   padding: 1px 6px;
   border: 1px solid var(--paper-edge);
   border-radius: 6px;
-  background: #fffdf8;
+  background: var(--paper-card);
   color: var(--ink-soft);
   font: inherit;
   font-size: 11px;
@@ -149,7 +184,7 @@ body {
   padding: 5px 8px;
   border: 1px solid var(--paper-edge);
   border-radius: 7px;
-  background: #fffdf8;
+  background: var(--paper-card);
   color: var(--ink);
   font: inherit;
   font-size: 12px;
@@ -158,7 +193,7 @@ body {
 .filter__input:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgb(180 102 58 / 14%);
+  box-shadow: 0 0 0 3px var(--accent-focus-ring);
 }
 
 .filter__count {
@@ -176,9 +211,9 @@ body {
   margin-bottom: 8px;
   padding: 8px 10px;
   border-radius: 8px;
-  border: 1px solid #d9b2a0;
-  background: #fbeae2;
-  color: #7a3a1d;
+  border: 1px solid var(--banner-edge);
+  background: var(--banner-bg);
+  color: var(--banner-text);
   font-size: 12px;
   line-height: 1.5;
   user-select: text;
@@ -193,7 +228,7 @@ body {
   margin-top: 2px;
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 11px;
-  color: #8c4524;
+  color: var(--banner-diag);
   word-break: break-all;
 }
 
@@ -207,10 +242,10 @@ body {
 .banner button {
   flex: none;
   padding: 4px 8px;
-  border: 1px solid #c98f74;
+  border: 1px solid var(--banner-btn-edge);
   border-radius: 6px;
-  background: #fff6f1;
-  color: #7a3a1d;
+  background: var(--banner-btn-bg);
+  color: var(--banner-text);
   font: inherit;
   cursor: pointer;
 }
@@ -220,7 +255,7 @@ body {
   resize: none;
   border: 1px solid var(--paper-edge);
   border-radius: 10px;
-  background: #fffdf8;
+  background: var(--paper-card);
   padding: 10px 12px;
   font: inherit;
   font-size: 14px;
@@ -232,12 +267,12 @@ body {
 
 .capture__input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgb(180 102 58 / 14%);
+  box-shadow: 0 0 0 3px var(--accent-focus-ring);
 }
 
 .capture__input:disabled {
   color: var(--ink-soft);
-  background: #f6f1e6;
+  background: var(--paper-disabled);
 }
 
 .capture__hint {
@@ -283,7 +318,7 @@ body {
   padding: 1px 5px;
   border: 1px solid var(--paper-edge);
   border-radius: 4px;
-  background: #fffdf8;
+  background: var(--paper-card);
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 12px;
 }
@@ -296,7 +331,7 @@ body {
   border: 1px solid var(--paper-edge);
   border-bottom-width: 2px;
   border-radius: 5px;
-  background: #fffdf8;
+  background: var(--paper-card);
   color: var(--ink);
   font-family: inherit;
   font-size: 12px;
@@ -323,7 +358,7 @@ body {
 }
 
 .slip:hover {
-  background: #f3ecdd;
+  background: var(--paper-hover);
 }
 
 .slip__box {
@@ -355,7 +390,7 @@ body {
   top: 1px;
   width: 4px;
   height: 8px;
-  border: solid #fffdf8;
+  border: solid var(--paper-card);
   border-width: 0 2px 2px 0;
   transform: rotate(42deg);
 }
@@ -392,7 +427,7 @@ body {
   padding: 0 4px;
   border: 1px solid var(--paper-edge);
   border-radius: 4px;
-  background: #fffdf8;
+  background: var(--paper-card);
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 0.92em;
 }
@@ -414,7 +449,7 @@ body {
   padding: 1px 6px;
   border: 1px solid var(--paper-edge);
   border-radius: 7px;
-  background: #fffdf8;
+  background: var(--paper-card);
   font: inherit;
   font-size: 13.5px;
   line-height: 1.45;
@@ -425,7 +460,7 @@ body {
 
 .slip__edit:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgb(180 102 58 / 14%);
+  box-shadow: 0 0 0 3px var(--accent-focus-ring);
 }
 
 .slip__lock,
@@ -456,7 +491,7 @@ body {
 
 .slip__lock:hover,
 .slip__archive:hover {
-  background: #e9e1cf;
+  background: var(--paper-active);
   opacity: 1;
 }
 
@@ -474,7 +509,7 @@ body {
   padding: 5px 8px;
   border-radius: 8px;
   border: 1px solid var(--paper-edge);
-  background: #f6f1e6;
+  background: var(--paper-disabled);
   font-size: 12px;
   color: var(--ink);
   user-select: none;
@@ -483,9 +518,9 @@ body {
 .notice button {
   flex: none;
   padding: 3px 8px;
-  border: 1px solid #c98f74;
+  border: 1px solid var(--banner-btn-edge);
   border-radius: 6px;
-  background: #fffdf8;
+  background: var(--paper-card);
   color: var(--accent);
   font: inherit;
   font-size: 11px;
