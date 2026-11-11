@@ -11,6 +11,20 @@ use crate::id::SlipId;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ContentRev(pub u64);
 
+impl ContentRev {
+    /// 下一个版本号：**饱和递增**。
+    ///
+    /// 为什么不是 `+ 1`：release 构建下 u64 溢出会**回绕到 0**，而 `content_rev` 是
+    /// 冲突检测的依据——回绕等于把版本号倒退回"尚未载入"，后果比停住严重得多。
+    /// 为什么不 panic：一个计数到顶不该让用户的待办应用崩掉。
+    ///
+    /// 到顶后停住是"已知的有损边界"：u64::MAX 次内容变更在本产品生命周期内不可达
+    /// （按每次 1ms 计也要 5.8 亿年），这里的选择是**可预测地饱和**而不是失控地回绕。
+    pub fn next(self) -> Self {
+        ContentRev(self.0.saturating_add(1))
+    }
+}
+
 /// 一张纸条的内容。**不含任何几何、展示或运行时状态。**
 #[derive(Debug, Clone, PartialEq)]
 pub struct Slip {

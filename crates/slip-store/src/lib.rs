@@ -341,7 +341,7 @@ impl Loaded {
     }
 
     fn bump(&mut self) {
-        self.content_rev = ContentRev(self.content_rev.0 + 1);
+        self.content_rev = self.content_rev.next();
     }
 
     fn degrade_with(&mut self, diagnostic: Diagnostic) {
@@ -1844,6 +1844,28 @@ mod tests {
         // 重新载入能读回同一条——说明写出的东西确实可解析。
         let reloaded = MarkdownStore::new(&path);
         assert_eq!(reloaded.snapshot().slips.len(), 1);
+    }
+
+    /// `content_rev` 必须严格递增——它是冲突检测的依据，倒退或停滞都会让判断失效。
+    #[test]
+    fn content_rev_strictly_increases_and_saturates_at_the_ceiling() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut state = startup_state(dir.path().join("inbox.md"));
+
+        let mut previous = state.content_rev.0;
+        for _ in 0..1000 {
+            state.bump();
+            assert!(state.content_rev.0 > previous, "版本必须严格递增");
+            previous = state.content_rev.0;
+        }
+
+        // 到顶后饱和而不是回绕：回绕会把版本退回"尚未载入"（0），比停住严重得多。
+        state.content_rev = ContentRev(u64::MAX);
+        state.bump();
+        assert_eq!(state.content_rev.0, u64::MAX, "到顶应饱和，不能回绕到 0");
+        // 再调一次也不变（幂等在顶）
+        state.bump();
+        assert_eq!(state.content_rev.0, u64::MAX);
     }
 
     #[test]
