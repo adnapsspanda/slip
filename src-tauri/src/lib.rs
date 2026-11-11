@@ -268,6 +268,32 @@ async fn unarchive(
         .await)
 }
 
+/// 把当前清单导出成一份不带机器标记的 Markdown，并在资源管理器里定位到它。
+///
+/// 内容取自**视图快照**而不是 `inbox.md`：后者带 marker，导出的东西是给人看的，
+/// 不该把人造标记一起带走。返回文件路径，供界面显示。
+#[tauri::command]
+async fn export_markdown(state: tauri::State<'_, ShellState>) -> Result<String, String> {
+    let snapshot = state
+        .dispatcher
+        .get_snapshot()
+        .await
+        .map_err(|error| format!("读取快照失败：{error:?}"))?;
+    let rows: Vec<(&str, bool)> = snapshot
+        .slips
+        .iter()
+        .filter(|slip| !slip.archived)
+        .map(|slip| (slip.text.as_str(), slip.done))
+        .collect();
+    let title = "Slip 导出";
+    let content = system::render_plain(title, &rows);
+    let path = system::write_export(&state.vault, &content)?;
+    // 导出完直接定位到文件：用户下一步多半就是复制或打开它。
+    let arg = format!("/select,{}", path.display());
+    let _ = std::process::Command::new("explorer.exe").arg(arg).spawn();
+    Ok(path.display().to_string())
+}
+
 /// 回滚最近一次内容编辑、勾选或归档。
 #[tauri::command]
 async fn undo(state: tauri::State<'_, ShellState>, request_id: String) -> Result<Ack, String> {
@@ -346,6 +372,7 @@ pub fn run() {
             corrupt_files,
             reveal_corrupt,
             open_url,
+            export_markdown,
             hotkey::dismiss_window,
         ])
         .setup(|app| {

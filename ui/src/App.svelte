@@ -332,6 +332,16 @@
     }
   }
 
+  /** 导出为可读 Markdown。不做确认弹窗：它只写一个新文件，不动 inbox.md。 */
+  async function handleExport() {
+    try {
+      const path = await bridge.exportMarkdown();
+      hint = `已导出：${path.split(/[\\/]/).pop()}`;
+    } catch (error) {
+      hint = `导出失败：${error}`;
+    }
+  }
+
   /** 把一条已归档的纸条恢复回列表。归档是墓碑不是删除，恢复只是清掉归档时间。 */
   async function handleUnarchive(slip) {
     try {
@@ -544,6 +554,16 @@
   <header class="paper__bar" data-tauri-drag-region>
     <span class="paper__title">Slip</span>
     <div class="paper__bar-right">
+      {#if activeSlips.length > 0}
+        <button
+          type="button"
+          class="paper__archive-all"
+          onclick={handleExport}
+          title="导出为可读 Markdown（不含内部标记）"
+        >
+          导出
+        </button>
+      {/if}
       {#if archivedSlips.length > 0}
         <!-- 归档抽屉：归档只是墓碑，得能翻回来看，也得能恢复。 -->
         <button

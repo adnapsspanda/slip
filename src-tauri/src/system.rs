@@ -261,6 +261,38 @@ pub fn corrupt_artifacts(vault: &std::path::Path) -> Vec<std::path::PathBuf> {
     found
 }
 
+/// 把当前清单渲染成人能读的 Markdown 清单（**不含** `<!-- slip:v1 -->` 标记）。
+///
+/// 为什么单独渲染而不是复制 `inbox.md`：后者带着机器标记，粘到别处既脏又可能被别的
+/// 工具误解析。这里只输出 `- [ ]` / `- [x]` 与正文。
+///
+/// 纯函数，不碰磁盘——导出是"给人看"的，不该因为写文件失败就无法测试。
+pub fn render_plain(title: &str, slips: &[(&str, bool)]) -> String {
+    let mut out = format!("# {title}\n\n");
+    if slips.is_empty() {
+        out.push_str("（没有内容）\n");
+        return out;
+    }
+    for (text, done) in slips {
+        let mark = if *done { "x" } else { " " };
+        out.push_str(&format!("- [{mark}] {text}\n"));
+    }
+    out
+}
+
+/// 把导出内容写到 vault 下的 `export-<unix_ms>.md`，返回路径。
+pub fn write_export(vault: &std::path::Path, content: &str) -> Result<std::path::PathBuf, String> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let path = vault.join(format!("export-{stamp}.md"));
+    if let Err(error) = std::fs::write(&path, content) {
+        return Err(format!("写入失败：{error}"));
+    }
+    Ok(path)
+}
+
 /// 在资源管理器里选中最新那个损坏文件。
 ///
 /// **不接收前端传来的路径**：那等于让 webview 决定 explorer 打开什么。
@@ -280,7 +312,20 @@ pub fn reveal_newest_corrupt(app: &AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_url;
+    use super::{render_plain, validate_url};
+
+    #[test]
+    fn render_plain_marks_state_and_drops_markers() {
+        // 导出的东西是给人看的：不能带 <!-- slip:v1 --> 这种人造标记。
+        let out = render_plain("Slip 导出", &[("买发票", false), ("已完成的", true)]);
+        assert_eq!(out, "# Slip 导出\n\n- [ ] 买发票\n- [x] 已完成的\n");
+    }
+
+    #[test]
+    fn render_plain_says_so_when_empty() {
+        let out = render_plain("Slip 导出", &[]);
+        assert!(out.contains("没有内容"), "{out}");
+    }
 
     #[test]
     fn accepts_plain_http_and_https() {

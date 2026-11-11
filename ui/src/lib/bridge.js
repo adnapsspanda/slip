@@ -123,6 +123,12 @@ export const revealCorrupt = () => call("reveal_corrupt");
 export const openUrl = (url) => call("open_url", { url });
 
 /**
+ * 导出成不带机器标记的 Markdown，返回文件路径（后端会顺便在资源管理器里定位）。
+ * @returns {Promise<string>}
+ */
+export const exportMarkdown = () => call("export_markdown");
+
+/**
  * 订阅热键唤出事件。非 Tauri 环境返回一个空的退订函数。
  * @param {() => void} handler
  * @returns {Promise<() => void>}

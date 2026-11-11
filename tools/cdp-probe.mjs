@@ -683,5 +683,27 @@ check("恢复后纸条回到列表且入口消失",
   drawer.backToggle === 0 && drawer.backInList === true,
   `toggle=${drawer.backToggle} backInList=${drawer.backInList}`);
 
+// 16. 导出：只写一个新文件，不动 inbox.md。
+const exported = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const wait = (ms) => new Promise(r => setTimeout(r, ms));
+       const btn = [...document.querySelectorAll('.paper__archive-all')]
+         .find((b) => b.textContent.trim() === '导出');
+       if (!btn) return JSON.stringify({ error: '没有导出按钮' });
+       btn.click();
+       await wait(1300);
+       return JSON.stringify({
+         error: null,
+         hint: document.querySelector('.capture__hint')?.textContent ?? '',
+       });
+     })()`,
+    true,
+  ),
+);
+check("导出后提示区给出文件名",
+  !exported.error && /^已导出：export-\d+\.md$/.test(exported.hint ?? ""),
+  `hint=${exported.hint}`);
+
 cdp.close();
 process.exit(failed ? 1 : 0);
