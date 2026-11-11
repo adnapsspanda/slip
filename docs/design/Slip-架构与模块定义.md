@@ -25,6 +25,7 @@
 | 12 | **降级** | §2.4 把"spike 失败只换 shell"写成结论 | 降级为**待验证假设**，列明会连带变动的边界（§2.4、§12） |
 | 13 | **切分** | 25 条不变量压在第一步 | §12 切分 M0/M1/M2，明确各阶段验收子集 |
 | 14 | 澄清 | §9.7 的 `spike_*` 命令集已随实现删除 | 自检并入 `src-tauri/src/diag.rs`，只在 `SLIP_LOG=debug` 输出；IPC 不再暴露任何窗口开关（§9.7.1） |
+| 15 | **删除** | 展示层视图通路（`ViewEvent` 四变体、`ToggleCollapse`、`Prefs.order/collapsed/dock_side`、`FlushPrefs` 与 1s 去抖）在**前端从未产生过事件**，是实打实的死路径 | 整块删除（净减 522 行）；`Prefs` 收窄为只剩 `hotkey`；`dispatch` 主循环少一个 `select!` 分支与 dirty/due 状态机。将来若要重新引入拖拽/折叠，**必须先给出 UI 入口与验收用例**（§1.8、§3.5、§6.1、§9.7） |
 
 ---
 
@@ -145,9 +146,9 @@ visible_in_default_view = !effective_archived;
 - 外部把归档条目改成未完成，即使 `archived_at` 残留，也在默认视图显示；读取不改文件。
 - 完成时间缺失时显示"完成时间未记录"；未完成条目残留 `done_at` 时不把它当作当前完成状态。
 - 从未完成改为完成时，按 §1.3 清残留 `archived_at`；归档必须由独立操作表达。
-- 内存排序由唯一的 `Vec<SlipId>` 决定；`DragEnd` 的 `order` 是目标插入位置，**不维护第二套持久化 `order: u32`**。
-- 载入偏好时去重、移除已不存在的 ID；新 ID 按文档记录顺序追加；`collapsed` 同样只保留现有 ID。
-- 不持久化坐标；恢复 `order`/`collapsed`/`dock_side` 后由 `dock` 重算。溢出滚动，不截断记录。
+- 列表顺序**就是文档顺序**。显式 `order`、拖拽通路与折叠状态已随视图死路径一并删除（修订 15）；
+  要重新引入，先给出 UI 入口与验收用例，再谈持久化。
+- 不持久化坐标；窗口摆放每次唤出时由 `place_near_cursor` 重算。溢出滚动，不截断记录。
 - `ui-state.json` 缺失或损坏只影响展示偏好，不影响 Markdown 载入。
 
 ---
@@ -185,7 +186,6 @@ export async function subscribeSnapshot(fn: (s: UiSnapshot) => void): Promise<()
 export async function getSnapshot(): Promise<UiSnapshot>;
 export async function capture(text: string, requestId: string, draftVersion: number): Promise<Ack>;
 export async function complete(id: string): Promise<Ack>;
-export async function toggleCollapse(id: string): Promise<Ack>;
 export async function reloadVault(): Promise<Ack>;
 export async function isolateAndReset(): Promise<Ack>;
 ```
@@ -219,7 +219,7 @@ accept(await getSnapshot());                        // ② 再取首个全量
 - `dock::layout` 的输出语义：从"窗口内相对几何"变为"每窗口的绝对屏幕坐标"；
 - `MonitorSnapshot` 的分发：从"一次给一个窗口"变为"按纸片分发到多个窗口"；
 - `presenter.emit` 的合成：从"一份 `Vec<Rect>`"变为"跨窗口几何集合 + 窗口生命周期"；
-- `ViewEvent::DragEnd` 的语义、焦点策略、窗口创建/销毁顺序。
+- 拖拽/折叠的语义、焦点策略、窗口创建/销毁顺序。`ViewEvent` 通路已随修订 15 删除，这里指将来若重新引入时会连带变动的边界。
 
 spike 时即按 `presenter` 输出 `Vec<PaperRender>{ id, rect, content, state }` 的边界实现，**以便把改动限制在 `shell` 与 `dock` 的输出适配层**；若实测连这层也无法隔离，则明示返工范围，不假装"只换壳"。
 
@@ -318,7 +318,8 @@ pub enum RecoveryState {
 ### 3.5 偏好存储与单一拥有者
 
 ```rust
-pub struct Prefs { pub order: Vec<SlipId>, pub collapsed: Vec<SlipId>, pub dock_side: DockSide }
+// 已收窄为只有热键（修订 15）：视图状态不再持久化。
+pub struct Prefs { pub hotkey: Option<String> }
 pub trait PrefsStore: Send + Sync {
     fn load_prefs(&self) -> Prefs;
     fn save_prefs(&self, p: &Prefs) -> Result<(), PrefsError>;
@@ -326,9 +327,8 @@ pub trait PrefsStore: Send + Sync {
 ```
 
 - 只有 `slip-store` 执行偏好 I/O；`serde_json` 编码，独立于 Markdown 事务，**不增 `content_rev`**；
-- `presenter`/消费者拥有当前 `Prefs`；前端只发 `Collapse`/`DragEnd`/`DockSide` 意图，**不提交整份旧 Prefs 覆盖新状态**；
-- 展示变化先更新内存并发布；折叠、排序、dock_side 都置 dirty；拖拽过程中不写；
-- 消费者合并最后一次变更后 1s 的保存请求。定时消息是 **`FlushPrefs`，不携带数据**；处理时取消费者当前的完整偏好，避免旧计时器保存旧副本；
+- `Prefs` 只在启动时读一次；运行期不再写回，因此没有"前端提交旧副本覆盖新状态"这个问题；
+- 视图状态（过滤词、归档抽屉、备份面板）是**每次唤出的临时状态**，不落盘（见 `AGENTS.md` 的状态生命周期表）；
 - 保存走 `spawn_blocking`；同目录 tmp + 原子替换，**不 fsync**。失败仅日志，`dirty` 保留；下次变更或正常退出时再试一次，**不循环重试**；
 - 损坏时尝试保留为 `ui-state.json.bad-<unix_ms>`，重名不覆盖；隔离失败仍用默认偏好且不阻塞 Markdown；
 - `load_prefs` 只在初始化调用一次；`getSnapshot` 不反复读偏好或重复隔离坏文件；
@@ -495,19 +495,12 @@ pub enum RuntimeStatus { Running, Fatal { reason: String } }
 enum Command {
     Capture { request_id: RequestId, raw: String, draft_version: u64, ack: oneshot::Sender<Ack> },
     Complete { request_id: RequestId, id: SlipId, ack: oneshot::Sender<Ack> },
-    ToggleCollapse { request_id: RequestId, id: SlipId, ack: oneshot::Sender<Ack> },
     Reload { request_id: RequestId, ack: oneshot::Sender<Ack> },
     IsolateAndReset { request_id: RequestId, ack: oneshot::Sender<Ack> },
     GetSnapshot { reply: oneshot::Sender<Result<UiSnapshot, QueryError>> },  // 可承载查询错误
-    ViewEvent(ViewEvent),
-    FlushPrefs,
     Shutdown { reply: oneshot::Sender<()> },
 }
-enum ViewEvent {
-    MonitorsChanged(MonitorSnapshot),
-    DragEnd { id: SlipId, order: u32 },
-    DockSideChanged(DockSide),
-}
+// 修订 15：ViewEvent 四变体与 FlushPrefs 已整体删除。
 ```
 
 app 只有一个消费者拥有 `presenter`。所有同步磁盘调用均 `spawn_blocking` 并等待结果；正常 store 结果依次执行"调用 → accept → 尝试发布 → 应答"，**不能把发布另开一个乱序任务**。
@@ -525,7 +518,7 @@ app 只有一个消费者拥有 `presenter`。所有同步磁盘调用均 `spawn
 
 **入队边界**：用户命令经有界队列 `try_send` 入队；`Full` → `rejected`/`Busy`，`Closed` → `rejected`/`NotExecuted`，均明确**尚未执行**。成功入队后，即使等待者超时或断开，也继续处理。队列容量是实现常量，首次取 64，实测后调整。`GetSnapshot` 入队失败通过 reply 返回 `QueryError`（或由调用方在 `try_send` 失败时直接返回，因此 reply 仍在调用方手里）。
 
-平台事件与内部 `FlushPrefs` 不同步阻塞 OS/UI 回调：异步等待入队，退出时允许丢弃并记日志。消费者**不能向自己的有界队列等待发送**；偏好计时器只发无状态的 `FlushPrefs`，或由消费者自己的定时分支处理。
+平台事件不同步阻塞 OS/UI 回调：异步等待入队，退出时允许丢弃并记日志。消费者**不能向自己的有界队列等待发送**。（偏好计时器与 `FlushPrefs` 已随修订 15 删除。）
 
 ### 6.2 业务错误、Fatal 与正常退出
 
@@ -538,7 +531,7 @@ app 只有一个消费者拥有 `presenter`。所有同步磁盘调用均 `spawn
 
 **禁止在 `JoinError` 分支直接调用 `store.snapshot()` 补救**；panic 可能发生在提交后，并可能使 `Mutex` 中毒，立即重读不构成可靠恢复。也不以 `clear_poison` 后继续写作 v1 恢复策略。
 
-只有带应答句柄的命令才要求一次发送尝试；`GetSnapshot`/`Shutdown` 使用各自的 reply 类型；`ViewEvent`/`FlushPrefs` **没有 ACK**。应答"恰好一次尝试"不等于网络/窗口一定收到。
+只有带应答句柄的命令才要求一次发送尝试；`GetSnapshot`/`Shutdown` 使用各自的 reply 类型。应答"恰好一次尝试"不等于网络/窗口一定收到。
 
 **正常退出**：队列位置在 `Shutdown` 之前的命令顺序执行完；处理 `Shutdown` 时关闭入队端，后续缓冲命令逐个回 `NotExecuted`；在 `Running` 且偏好存储未故障时对 `dirty` prefs 最后尝试保存一次，再完成退出。等待当前已启动的阻塞任务结束，不能通过关窗或取消 `JoinHandle` 假装取消已开始的保存。
 
@@ -565,7 +558,7 @@ pub struct Presenter {
 - **凡生成并发射一份新的 `UiSnapshot`，无论来源（store 结果、视图事件、运行时变化），均递增 `ui_rev`**；
 - `GetSnapshot` 返回已保存的 `current`，**不递增**；
 - 传输重发沿用原版本；
-- 若无此规则，`ViewEvent`（DPI、拖拽、dock_side，均无 ACK）生成的新几何会与上一份同版本，被前端 `s.ui_rev > last.ui_rev` **永久丢弃**。
+- 若无此规则，任何新状态都可能与上一份同版本，被前端 `s.ui_rev > last.ui_rev` **永久丢弃**。
 
 `accept` 正常 outcome 时只作 `content_rev` 不回退的断言，无条件接纳，再由 `latest + view + runtime` 合成并保存 `current`，递增 `ui_rev` 后尝试 emit。视图变化同样从这些当前状态合成。
 
@@ -707,7 +700,7 @@ applied
 - **备份**：同毫秒冲突不覆盖；成功轮转保留 5 代；失败不影响主提交。
 - **提交点**：备份失败和提交后目录同步失败不改变已提交结果；临时文件写入/同步/替换失败明确未提交。
 - **冲突**：hash 不同不写任何文件；`needs_reload` 期间不读写；有效重载清除，失败重载仍发布门禁。
-- **偏好**：旧 `FlushPrefs` 不覆盖更新的折叠/排序；损坏隔离失败不阻断内容；正常退出最后尝试保存 dirty 状态。
+- **偏好**：只在启动时读一次；损坏隔离失败不阻断内容。
 - **前端**：`rejected`/`conflict`/`needsReload`/`unknown` 均不清输入；新草稿不被旧 ACK 清空；首订阅与查询交错无回退；迟到成功 ACK 与当前草稿正确关联。
 - **队列**：`Full`/`Closed` 明确尚未执行；内部消息无 ACK 的行为符合类型；Fatal 仍可查看冻结快照和复制草稿。
 - **状态组合**：§5 表格五种组合各自文案与主操作正确，尤其是 `Degraded`+`needs_reload` 不显示"外部已修改"。
@@ -837,7 +830,7 @@ M0 验收子集：§9.1 第 1、6 条；§9.2 中"文本往返""原字节保留"
 ### M1：恢复与偏好
 
 5. 恢复矩阵：隔离、重建、外部修复、`Isolated` 死锁出口（§9.1 第 3 条）；
-6. 偏好：单一拥有者、`FlushPrefs`、原子替换、损坏降级。
+6. 偏好：启动时读取、损坏降级、`hotkey` 无损往返。
 
 ### M2：异常路径与前端保护
 
@@ -989,7 +982,11 @@ Capability 只加了实际用到的：`core:window:allow-hide/show/set-focus`、
 | 托盘是唯一入口 | tooltip 与菜单都显示**实际生效**的热键（不是写死的字符串） |
 | 热键可配 | `ui-state.json` 的 `hotkey` 字段；解析失败回落默认并留 warn |
 
-#### 14.6.1 这个决定暴露的一个数据丢失 bug
+#### 14.6.1 这个决定暴露的一个数据丢失 bug（历史记录）
+
+> 修订 15 之后 `order`/`collapsed`/`dock_side` 与偏好保存通路都已删除，
+> 下面这段描述的是**当时**的缺陷。保留它是因为"少带一个字段就静默擦掉配置"
+> 这个教训仍然适用于将来任何改回"运行期写偏好"的设计。
 
 把 `hotkey` 加进 `Prefs` 之后，`PaperViewSet::to_prefs()` 立刻编译失败——它只搬运
 `order` / `collapsed` / `dock_side` 三个字段。而 `dispatch.rs` 里任何一次拖拽或折叠
