@@ -445,6 +445,24 @@ if (Test-Path $inbox) {
     Check "磁盘上出现 inbox.md" $false "文件不存在"
 }
 
+# --- 多实例：第二个进程应当转发给第一个，并把窗口唤出来 ---
+# 这条链路完全没有其它覆盖：单实例插件的回调一旦接错，表现是"点第二次图标没反应"，
+# 而进程数、日志、界面全都正常——只能靠这个场景测出来。
+Write-Output "--- 多实例转发 ---"
+& $bun run $probe $Port --dismiss 2>&1 | Out-Null
+Start-Sleep -Milliseconds 900
+$hiddenBeforeSecond = -not (Test-SlipVisible)
+Check "第二个实例启动前窗口已收走" $hiddenBeforeSecond "visible=$(-not $hiddenBeforeSecond)"
+
+$secondLog = Join-Path $env:TEMP ("slip-second-" + [guid]::NewGuid().ToString("N") + ".log")
+$second = Start-Process -FilePath $exe -PassThru `
+    -RedirectStandardOutput $secondLog -RedirectStandardError ($secondLog + ".err")
+Start-Sleep -Seconds 3
+Check "第二个进程自行退出" $second.HasExited "hasExited=$($second.HasExited)"
+Check "转发后窗口被唤出" (Test-SlipVisible) "visible=$(Test-SlipVisible)"
+$count = (Get-Process slip-shell -ErrorAction SilentlyContinue | Measure-Object).Count
+Check "只剩一个实例" ($count -eq 1) "进程数=$count"
+
 Write-Output "--- 启动日志（stderr）---"
 # 应用此刻仍在运行、日志文件还被它持有，直接 ReadAllBytes 会撞共享冲突。
 try {
