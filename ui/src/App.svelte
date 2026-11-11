@@ -1,7 +1,7 @@
 <script>
   import { onMount, tick } from "svelte";
   import { bannerLevel as statusBannerLevel } from "./lib/status.js";
-  import { noticeAction } from "./lib/keys.js";
+  import { noticeAction, filterKeyIntent } from "./lib/keys.js";
   import { createSerialQueue, nextToggleTarget } from "./lib/queue.js";
   import * as bridge from "./lib/bridge.js";
   import Capture from "./lib/Capture.svelte";
@@ -685,11 +685,19 @@
 
   /** 过滤条里按 Esc：整体退出过滤（清词 + 收起），焦点交回捕获框。 */
   function handleFilterKeydown(event) {
-    if (event.key !== "Escape") return;
-    event.preventDefault();
-    filter = "";
-    filtering = false;
-    captureRef?.focus();
+    const intent = filterKeyIntent(event.key);
+    if (intent === "exit") {
+      event.preventDefault();
+      filter = "";
+      filtering = false;
+      captureRef?.focus();
+      return;
+    }
+    if (intent === "focusFirst") {
+      // 词已经打好了，焦点直接交给列表首条——过滤词**保留**，用户还能接着改。
+      event.preventDefault();
+      listRef?.focusFirst();
+    }
   }
 
   async function handleReload() {

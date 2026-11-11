@@ -110,3 +110,23 @@ export function noticeAction(notice) {
   // 有撤销动作就执行它；纯信息提示没有按钮，此时快捷键的语义是"收起"。
   return notice.undo === true ? "undo" : "dismiss";
 }
+
+/**
+ * 过滤输入框里按某个键该做什么。
+ *
+ * 抽成纯函数的原因和前面几个一样：这三条分支（退出 / 进列表 / 交给输入框）
+ * 一旦搞混，表现是"按了没反应"或"过滤框被关掉、词也丢了"，很难靠点两下发现。
+ *
+ * @param {string} key
+ * @returns {"exit"|"focusFirst"|"none"}
+ */
+export function filterKeyIntent(key) {
+  if (key === "Escape") {
+    return "exit";
+  }
+  // ↓ 或 Enter：词已经打好了，焦点交给列表第一条。Enter 也算——它是最自然的那一个。
+  if (key === "ArrowDown" || key === "Enter") {
+    return "focusFirst";
+  }
+  return "none";
+}

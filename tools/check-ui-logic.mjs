@@ -14,7 +14,13 @@ import {
   TRAILING_PUNCTUATION,
   tokenize,
 } from "../ui/src/lib/inline.js";
-import { submitIntent, listNavTarget, tabTarget, noticeAction } from "../ui/src/lib/keys.js";
+import {
+  submitIntent,
+  listNavTarget,
+  tabTarget,
+  noticeAction,
+  filterKeyIntent,
+} from "../ui/src/lib/keys.js";
 
 let failed = 0;
 const check = (label, actual, expected) => {
@@ -183,6 +189,13 @@ const ok2 = q2.run(async () => "after");
 check("失败任务之后的排队任务仍会执行", await ok2, "after");
 await bad.catch(() => {});
 check("失败任务之前的结果不受影响", await ok1, "ok");
+
+// ---- R50 过滤框：↓ / Enter 进首项，Esc 退出 ----
+check("过滤框 ↓ 进首项", filterKeyIntent("ArrowDown"), "focusFirst");
+check("过滤框 Enter 进首项", filterKeyIntent("Enter"), "focusFirst");
+check("过滤框 Esc 退出", filterKeyIntent("Escape"), "exit");
+check("普通字符交给输入框", filterKeyIntent("a"), "none");
+check("过滤框 ↑ 不劫持", filterKeyIntent("ArrowUp"), "none");
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);
