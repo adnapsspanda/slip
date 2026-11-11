@@ -53,6 +53,19 @@
 
 ## 完成记录
 
+- **R67 任务栏与 Alt+Tab 驻留（本轮：静态已验，运行时断言待执行）**：
+  - **静态取证**：`src-tauri/tauri.conf.json` 里 `skipTaskbar: true`（另有 `alwaysOnTop: true`、
+    `decorations: false`），且**全仓库没有任何运行时覆写**——`grep skip_taskbar src-tauri/src`
+    零命中，说明这个属性只由配置决定，不会被某处 `set_skip_taskbar(false)` 悄悄改回来。
+  - 矩阵要求"确认在深浅色切换、显示隐藏之间不出现闪烁"——真正该钉的是**窗口属性的稳定性**：
+    Windows 上 `skipTaskbar` 的落地形态是「带 `WS_EX_TOOLWINDOW` 且不带 `WS_EX_APPWINDOW`」，
+    隐藏再显示是最容易把它重建丢掉的时候。
+  - 因此在端到端里新增 `Test-NotInTaskbar`：唤出后查一次，再用**真实热键**收走/唤起后查一次
+    （用热键而不是内部调用，因为那才是用户的路径），每次同时断言 `WS_EX_TOOLWINDOW` 在、
+    `WS_EX_APPWINDOW` 不在。
+  - **这 4 条新断言本轮没被执行**：exe 被 SAC 连拒（本轮又试 6 次）。脚本语法与 BOM 已校验，
+    但"跑过"这件事不能假装——已单列，不计入已验证。
+
 - **R66 第二实例唤出与聚焦（本轮：核心已验，补一条未获执行的断言）**：
   - **矩阵要求的验收项在本轮之前已经真的验过**（那次端到端 121 项全过）：
     `第二个进程自行退出 / 转发后窗口被唤出 / 只剩一个实例 / 唤出后草稿仍在 /

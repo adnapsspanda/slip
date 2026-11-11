@@ -133,6 +133,12 @@ public static class Win {
     [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr p);
     [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int nIndex);
 
+    /// 读窗口扩展样式（`GWL_EXSTYLE`）。
+    public static int ExStyle(IntPtr h) {
+        const int GWL_EXSTYLE = -20;
+        return GetWindowLong(h, GWL_EXSTYLE);
+    }
+
     /// 窗口是否置顶（WS_EX_TOPMOST）。
     ///
     /// 这是"唤出后窗口一定在最前面"唯一可靠的程序化判据——截屏比对太脆，
@@ -493,6 +499,32 @@ Check "唤出后焦点回到捕获框" ($afterSummon.focused -eq $true) "focused
 # 之前没有任何断言守着它——去掉 set_always_on_top 也照样全绿。
 $slipWindow = Get-SlipWindow
 Check "唤出后窗口置顶" ([Win]::IsTopmost($slipWindow)) "topmost=$([Win]::IsTopmost($slipWindow))"
+
+# 任务栏驻留（R67）：`skipTaskbar: true` 在 Windows 上的实际表现是
+# 窗口带 `WS_EX_TOOLWINDOW` 且不带 `WS_EX_APPWINDOW`——两者共同决定它不出现在
+# 任务栏与 Alt+Tab 列表里。这里在**唤出/收走/再唤出**之后各查一次：
+# 隐藏再显示是这类属性最容易被重新创建而丢掉的时候。
+function Test-NotInTaskbar($label) {
+    $h = Get-SlipWindow
+    if ($h -eq [IntPtr]::Zero) {
+        Check "$label：窗口句柄可读" $false "handle=0"
+        return
+    }
+    $ex = [Win]::ExStyle($h)
+    $tool = ($ex -band 0x00000080) -ne 0   # WS_EX_TOOLWINDOW
+    $app = ($ex -band 0x00040000) -ne 0   # WS_EX_APPWINDOW
+    Check "$label：带 WS_EX_TOOLWINDOW" $tool ("ex=0x{0:X}" -f $ex)
+    Check "$label：不带 WS_EX_APPWINDOW" (-not $app) ("ex=0x{0:X}" -f $ex)
+}
+Test-NotInTaskbar "唤出后"
+
+# 收走 → 用**真实热键**再唤出：隐藏再显示是 skip_taskbar 这类窗口属性
+# 最容易被重新创建而丢掉的时候。用热键而不是内部调用，是因为这才是用户的路径。
+[Win]::SendHotkey()
+Start-Sleep -Milliseconds 900
+[Win]::SendHotkey()
+Start-Sleep -Milliseconds 900
+Test-NotInTaskbar "收走再唤出后"
 
 # --- 复制诊断：webview 没有剪贴板权限，所以从 PowerShell 侧读出来核对 ---
 Write-Output "--- 复制诊断（剪贴板）---"
