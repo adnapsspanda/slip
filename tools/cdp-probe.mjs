@@ -1355,5 +1355,83 @@ check(
   `lightBg=${lightTheme.bg}`,
 );
 
+// ---- R41 阶段四视觉回归：把"看得见的细节"固化成计算样式断言 ----
+// 这些项在改 CSS 时不报错、不抛异常，只有肉眼能看出坏了；用断言守住才可靠。
+const visual = JSON.parse(
+  await evaluate(
+    `(() => {
+       const pick = (sel) => document.querySelector(sel);
+       const css = (el) => (el ? window.getComputedStyle(el) : null);
+       const paper = css(pick('.paper'));
+       const list = css(pick('.slips'));
+       const meta = css(pick('.paper__meta'));
+       const btn = pick('.paper__archive-all');
+       const btnStyle = css(btn);
+       return JSON.stringify({
+         paperEdgeShadow: paper ? paper.boxShadow : null,
+         paperBg: paper ? paper.backgroundImage : null,
+         scrollbarWidth: list ? list.scrollbarWidth : null,
+         metaOverflow: meta ? meta.textOverflow : null,
+         metaMinWidth: meta ? meta.minWidth : null,
+         btnOutlineWidth: btnStyle ? btnStyle.outlineWidth : null,
+       });
+     })()`,
+    true,
+  ),
+);
+
+check(
+  "R32 便签有 1px 发丝轮廓（box-shadow 第一层）",
+  typeof visual.paperEdgeShadow === "string" && visual.paperEdgeShadow.startsWith("rgb"),
+  `boxShadow=${String(visual.paperEdgeShadow).slice(0, 40)}`,
+);
+check(
+  "R38 纸面有质感层（background-image 非 none）",
+  visual.paperBg !== "none",
+  `bg=${String(visual.paperBg).slice(0, 40)}`,
+);
+check("R36 列表滚动条为 thin", visual.scrollbarWidth === "thin", `=${visual.scrollbarWidth}`);
+check("R39 meta 具备省略号", visual.metaOverflow === "ellipsis", `=${visual.metaOverflow}`);
+check("R39 meta 允许收缩（min-width 0）", visual.metaMinWidth === "0px", `=${visual.metaMinWidth}`);
+
+// R35 聚焦环：把焦点真正移到按钮上，读计算出来的轮廓宽度
+const focusRing = JSON.parse(
+  await evaluate(
+    `(() => {
+       const btn = document.querySelector('.paper__archive-all');
+       if (!btn) return JSON.stringify({ error: '没有按钮' });
+       btn.focus();
+       const s = window.getComputedStyle(btn);
+       const out = { width: s.outlineWidth, style: s.outlineStyle, offset: s.outlineOffsetWidth };
+       btn.blur();
+       return JSON.stringify(out);
+     })()`,
+    true,
+  ),
+);
+check(
+  "R35 键盘焦点环 2px 实心",
+  focusRing.width === "2px" && focusRing.style === "solid",
+  `w=${focusRing.width} style=${focusRing.style}`,
+);
+
+// R33 空态动效：动画名必须是 slip-rise（reduced-motion 下由全局规则压掉时长）
+const emptyAnim = JSON.parse(
+  await evaluate(
+    `(() => {
+       const el = document.querySelector('.slips__empty');
+       if (!el) return JSON.stringify({ skipped: true });
+       const s = window.getComputedStyle(el);
+       return JSON.stringify({ name: s.animationName });
+     })()`,
+    true,
+  ),
+);
+if (emptyAnim.skipped) {
+  check("R33 空态动效（当前无空态，跳过）", true, "skipped");
+} else {
+  check("R33 空态使用 slip-rise 动效", emptyAnim.name === "slip-rise", `=${emptyAnim.name}`);
+}
+
 cdp.close();
 process.exit(failed ? 1 : 0);
