@@ -1,6 +1,7 @@
 <script>
   import { onMount, tick } from "svelte";
   import { bannerLevel as statusBannerLevel } from "./lib/status.js";
+  import { noticeAction } from "./lib/keys.js";
   import * as bridge from "./lib/bridge.js";
   import Capture from "./lib/Capture.svelte";
   import SlipList from "./lib/SlipList.svelte";
@@ -21,6 +22,39 @@
   let listEditing = $state(false);
   /** 撤销提示：与普通 hint 分开，因为只有它需要挂一个按钮。 */
   let notice = $state(null);
+  /** 淡出中：先降到透明，再真正从 DOM 移除，避免"啪一下消失"。 */
+  let noticeLeaving = $state(false);
+  let noticeTimer = null;
+  let noticeFadeTimer = null;
+
+  /**
+   * 提示条 4 秒后自动收起。
+   *
+   * 用 `$effect` 挂在这里而不是在每个赋值点写定时器：`notice` 有 8 处赋值，
+   * 逐处维护必然漏。这里只要 notice 变成非空就重排一次计时（所以连续操作会
+   * 把倒计时重置，而不是被上一条的定时器提前收走）。
+   */
+  $effect(() => {
+    const current = notice;
+    clearTimeout(noticeTimer);
+    clearTimeout(noticeFadeTimer);
+    if (!current) {
+      noticeLeaving = false;
+      return;
+    }
+    noticeLeaving = false;
+    noticeTimer = setTimeout(() => {
+      noticeLeaving = true;
+      noticeFadeTimer = setTimeout(() => {
+        notice = null;
+        noticeLeaving = false;
+      }, 220);
+    }, 4000);
+    return () => {
+      clearTimeout(noticeTimer);
+      clearTimeout(noticeFadeTimer);
+    };
+  });
   /** 撤销请求在途，避免连按 Ctrl+Z 把后端的撤销栈一次抽干。 */
   let undoing = $state(false);
   /**
@@ -590,8 +624,28 @@
    * - `Ctrl+Shift+D`：切换 §9.7 窗口验收调试面板。
    */
   function handleKeydown(event) {
+    const lowered = event.key.toLowerCase();
+    // Alt+Z：精准响应当前提示条上那个按钮（有撤销就撤销，纯提示就收起）。
+    // 之所以还要 Alt 组合：Ctrl+Z 是"撤销"的通用语义，而提示条有时只是通知，没有可撤销的。
+    if (
+      event.altKey &&
+      !event.ctrlKey &&
+      !event.shiftKey &&
+      !event.metaKey &&
+      lowered === "z"
+    ) {
+      const action = noticeAction(notice);
+      if (action === "none") return;
+      event.preventDefault();
+      if (action === "undo") {
+        handleUndo();
+      } else {
+        notice = null;
+      }
+      return;
+    }
     if (!event.ctrlKey || event.shiftKey || event.altKey) return;
-    const key = event.key.toLowerCase();
+    const key = lowered;
     if (key !== "z" && key !== "f") return;
     if (listEditing) return;
     const target = event.target;
@@ -834,7 +888,7 @@
       onseeklist={() => listRef?.focusFirst()}
     />
     {#if notice}
-      <div class="notice">
+      <div class="notice" class:notice--leaving={noticeLeaving}>
         <span>{notice.message}</span>
         {#if notice.undo}
           <button type="button" onclick={handleUndo} disabled={undoing}>

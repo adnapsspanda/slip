@@ -8,7 +8,7 @@
 // 用法：& "C:\Users\spand\.bun\bin\bun.exe" run tools/check-ui-logic.mjs
 import { bannerLevel } from "../ui/src/lib/status.js";
 import { cleanPastedText } from "../ui/src/lib/inline.js";
-import { submitIntent, listNavTarget, tabTarget } from "../ui/src/lib/keys.js";
+import { submitIntent, listNavTarget, tabTarget, noticeAction } from "../ui/src/lib/keys.js";
 
 let failed = 0;
 const check = (label, actual, expected) => {
@@ -98,6 +98,12 @@ check(
 );
 check("只剥第一层前缀，不重复剥", cleanPastedText("- - 买牛奶"), { text: "- 买牛奶", changed: true });
 check("空字符串不动", cleanPastedText(""), { text: "", changed: false });
+
+// ---- R47 提示条动作（按钮与键盘共用同一判定）----
+check("无提示条 → 不动作", noticeAction(null), "none");
+check("可撤销的提示条 → 撤销", noticeAction({ undo: true }), "undo");
+check("纯信息提示 → 收起", noticeAction({ undo: false }), "dismiss");
+check("缺字段按纯信息处理", noticeAction({}), "dismiss");
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);

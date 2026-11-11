@@ -93,3 +93,20 @@ export function tabTarget(index, total, shift) {
   }
   return target;
 }
+
+/**
+ * 当前提示条（notice）上"那个按钮"对应什么动作。
+ *
+ * 抽成纯函数的原因：这条判定被两个入口共用（键盘 Alt+Z 与按钮点击），
+ * 一旦两处判断不一致，就会出现"键盘按了没反应、点按钮却能用"的割裂。
+ *
+ * @param {{undo?: boolean}|null|undefined} notice
+ * @returns {"undo"|"dismiss"|"none"}
+ */
+export function noticeAction(notice) {
+  if (!notice) {
+    return "none";
+  }
+  // 有撤销动作就执行它；纯信息提示没有按钮，此时快捷键的语义是"收起"。
+  return notice.undo === true ? "undo" : "dismiss";
+}
