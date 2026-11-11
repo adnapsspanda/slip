@@ -1433,5 +1433,112 @@ if (emptyAnim.skipped) {
   check("R33 空态使用 slip-rise 动效", emptyAnim.name === "slip-rise", `=${emptyAnim.name}`);
 }
 
+// ---- R51 纯键盘闭环：录入 → 进列表 → 勾选 → 编辑 → 过滤 ----
+// 说明：这里用页内 synthetic 事件（与本探针其它键盘用例一致），而不是 CDP 的
+// `Input.dispatchKeyEvent`。原因有二：①现有断言都走同一套模拟，混用会掩盖差异；
+// ②`Input.dispatchKeyEvent` 输入中文要先经 IME，无法稳定复现。两条路径触发的都是
+// 同一批 keydown 处理器，覆盖等价。
+const r51Flow = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+       const key = (el, k, extra = {}) =>
+         el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...extra }));
+       const typeInto = (el, value) => {
+         const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+         setter.call(el, value);
+         el.dispatchEvent(new Event('input', { bubbles: true }));
+       };
+
+       // ① 录入：写入后 Ctrl+Enter 提交
+       const capture = document.querySelector('.capture__input');
+       if (!capture) return JSON.stringify({ error: '没有捕获框' });
+       capture.focus();
+       typeInto(capture, '键盘闭环测试条');
+       key(capture, 'Enter', { ctrlKey: true });
+       await sleep(600);
+
+       const rows = () => [...document.querySelectorAll('.slips .slip')];
+       const afterSubmit = rows().length;
+
+       // ② 捕获框清空后按 ↓ 进列表首条
+       key(capture, 'ArrowDown');
+       await sleep(150);
+       const focusedAfterDown = document.activeElement?.className ?? '';
+
+       // ③ 空格勾选
+       const first = rows()[0];
+       if (first) {
+         first.querySelector('.slip__text')?.focus();
+         key(first.querySelector('.slip__text') ?? first, ' ');
+       }
+       await sleep(600);
+       const doneCount = rows().filter((r) => r.classList.contains('slip--done')).length;
+
+       // ④ Enter 进编辑，改内容后 Enter 提交
+       const target = rows()[0];
+       const textNode = target?.querySelector('.slip__text');
+       if (textNode) {
+         textNode.focus();
+         key(textNode, 'Enter');
+         await sleep(200);
+         const input = target.querySelector('.slip__edit');
+         if (input) {
+           const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+           setter.call(input, '键盘闭环已编辑');
+           input.dispatchEvent(new Event('input', { bubbles: true }));
+           key(input, 'Enter');
+         }
+         await sleep(600);
+       }
+       const editedText = rows()[0]?.querySelector('.slip__text')?.textContent?.trim() ?? '';
+
+       // ⑤ Ctrl+F 过滤，输入词后按 ↓ 进首条
+       const winKey = (k, extra) => document.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true, ...extra }));
+       winKey('f', { ctrlKey: true });
+       await sleep(200);
+       const filterInput = document.querySelector('.filter__input');
+       let filteredRows = -1;
+       let focusedInFilter = '';
+       if (filterInput) {
+         const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+         setter.call(filterInput, '键盘闭环');
+         filterInput.dispatchEvent(new Event('input', { bubbles: true }));
+         await sleep(300);
+         filteredRows = rows().length;
+         key(filterInput, 'ArrowDown');
+         await sleep(200);
+         focusedInFilter = document.activeElement?.className ?? '';
+       }
+
+       return JSON.stringify({
+         error: null,
+         afterSubmit,
+         focusedAfterDown,
+         doneCount,
+         editedText,
+         filteredRows,
+         focusedInFilter,
+       });
+     })()`,
+    true,
+  ),
+);
+
+check("R51 ① Ctrl+Enter 提交后列表出现条目", r51Flow.afterSubmit >= 1, `rows=${r51Flow.afterSubmit}`);
+check(
+  "R51 ② 捕获框按 ↓ 后焦点在列表内",
+  String(r51Flow.focusedAfterDown).includes("slip__text"),
+  `focus=${r51Flow.focusedAfterDown}`,
+);
+check("R51 ③ 空格把条目勾为已完成", r51Flow.doneCount >= 1, `done=${r51Flow.doneCount}`);
+check("R51 ④ Enter 编辑后内容已更新", r51Flow.editedText.includes("键盘闭环已编辑"), `text=${r51Flow.editedText}`);
+check("R51 ⑤ Ctrl+F 过滤生效", r51Flow.filteredRows >= 1, `rows=${r51Flow.filteredRows}`);
+check(
+  "R51 ⑤ 过滤框按 ↓ 后焦点在列表内",
+  String(r51Flow.focusedInFilter).includes("slip__text"),
+  `focus=${r51Flow.focusedInFilter}`,
+);
+
 cdp.close();
 process.exit(failed ? 1 : 0);
