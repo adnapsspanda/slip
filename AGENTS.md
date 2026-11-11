@@ -219,6 +219,35 @@ pwsh -File tools/verify-hotkey.ps1
    新增/修改这些路径时，能补断言就补；补不上的（例如需要构造降级态、或要清空整个列表
    才能触发），在 `docs/ralph-backlog.md` 里写明"为什么没覆盖"，不要默默留空。
 
+### 环境陷阱：crates.io 被本地代理劫持
+
+本机（2026-11-11）实测：`cargo search` / 新增依赖失败，报
+`SSL connect error (schannel: failed to receive handshake)`，但**不是断网**——
+
+```
+https://www.baidu.com       → 200
+https://www.microsoft.com   → 200
+https://github.com          → 失败
+crates.io                   → 解析到 198.18.1.197
+```
+
+`198.18.0.0/15` 是保留的基准测试网段，Clash 一类的本地代理会用它做"假 IP"透明劫持，
+再自己转发。这台机器上代理没转发成功，于是 TLS 握手对着本地端口失败。
+
+**影响**：任何需要新增 crate 的轮次（本项目里是 R03/R08/R28/R29 的
+`tauri-plugin-notification` / `tauri-plugin-clipboard-manager`）都无法进行——
+与"要不要加权限"无关，是拿不到依赖包。
+
+**加依赖前的检查**：
+
+```powershell
+cargo search tauri-plugin-notification --limit 1   # 能返回结果才继续
+Resolve-DnsName crates.io -Type A                  # 若解析到 198.18.x.x，说明走了代理
+```
+
+修法是用户侧的事：让代理正常工作、或临时关掉代理直连、或配置
+`~/.cargo/config.toml` 的 `[source]` 指向可用镜像。
+
 ### 环境陷阱：`os error 4551`（应用控制策略阻止执行）
 
 **症状**：`cargo test` / `cargo clippy` 或直接启动产物时报

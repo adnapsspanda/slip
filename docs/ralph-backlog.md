@@ -52,6 +52,18 @@
 
 ## 完成记录
 
+- **R03/R08/R28/R29 的真实阻塞：拿不到依赖（本轮查清）**
+  - 现象：`cargo search tauri-plugin-notification` 报
+    `SSL connect error (schannel: failed to receive handshake, SSL/TLS connection failed)`。
+  - 进一步取证：`baidu.com` 200、`microsoft.com` 200、`github.com` 失败、
+    **`crates.io` 解析到 `198.18.1.197`**。`198.18.0.0/15` 是保留的基准测试网段——
+    Clash 一类本地代理用它做透明劫持，而这台机器上转发失败，于是 TLS 打到了失效端口。
+  - 结论：这四个轮次卡的不是"要不要加权限"，而是**根本下载不到插件包**。
+    无本地镜像（无 `~/.cargo/config.toml`、无 `vendor/`）、本地 registry 缓存里也没有这两个插件。
+  - 已把检查方法与三种修法写进 `AGENTS.md`（让代理正常工作 / 临时直连 / 配镜像源）。
+  - 顺带：本轮全量测试经重试仍卡在 `slip-shell --lib`（6 次全拒），87 项通过；
+    端到端本轮早些时候是 104/104。环境仍在"部分产物持续被拒"的阶段。
+
 - **端到端基线复跑（本轮）**：`tools/verify-hotkey.ps1` **104 项全过、0 失败、0 跳过**，
   与今天早些时候那次一致——说明主程序与界面行为是稳定的，此前多轮的红都是环境所致。
   - 同时确认 `archive_guard.rs` 仍未获准执行（6 次重试全被 4551 拦），已如实标注为
