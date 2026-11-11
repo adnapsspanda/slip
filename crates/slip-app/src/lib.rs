@@ -4,6 +4,7 @@
 //! ACK 映射、四条件清空。
 
 pub mod dispatch;
+pub mod geometry;
 pub mod presenter;
 
 use std::collections::BTreeSet;
