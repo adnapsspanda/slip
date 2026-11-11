@@ -133,3 +133,26 @@ wsl.exe -d Arch -- bash -lc 'cd /mnt/d/Dev/simple-todo && CARGO_TARGET_DIR=$HOME
 # 变异审计
 python tools/mutation-audit.py
 ```
+
+## 九、最后一次核查（第 40 轮，收尾）
+
+```
+Windows workspace   254 项通过（exit 0，0 个 4551）
+WSL 全套            241 项通过
+前端纯逻辑断言       108 条通过
+cargo clippy        -D warnings 通过
+cargo fmt --check   通过
+不可回退约束（8 项）  通过
+设计文档同步         通过（IPC 21 个、capability 2 项）
+钩子与 CI 零漂移     通过
+前端产物体积         CSS 9.99 KB / 10 KB（余 10 字节）、JS 68.04 KB / 70 KB
+提交总数            129
+```
+
+**仍然做不到的两项**（原因已在 `docs/handover.md` 里写清，且都不是代码问题）：
+
+- 端到端 `verify-hotkey.ps1`：本轮最后探了 5 次，`slip-shell.exe` 仍被 Smart App Control 拒；
+- `cargo build --release` 与发布包：release 侧 proc-macro DLL 同样被拒。
+
+交接文档 `docs/handover.md` 记录了"什么能跑 / 什么被挡住 / **哪些绕法已被证明无效**"，
+以及环境恢复后的继续顺序。
