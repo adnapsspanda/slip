@@ -155,6 +155,8 @@ body {
 .paper__title {
   font-weight: 600;
   color: var(--ink);
+  /* 标题是身份标识，永远不参与收缩。 */
+  flex: none;
 }
 
 .paper__bar-right {
@@ -186,6 +188,13 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /*
+   * 关键是 `min-width: 0`：flex 子项默认 `min-width: auto`（= 内容宽度），
+   * 不加这一条，它宁可不收缩也不会省略——`text-overflow` 就永远不生效。
+   * 这里允许它收缩，把空间让给右侧按钮。
+   */
+  min-width: 0;
+  flex: 0 1 auto;
 }
 
 /* meta 行里的文字型按钮：只在有东西可定位时出现，不占常驻空间。 */

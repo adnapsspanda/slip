@@ -53,6 +53,15 @@
 
 ## 完成记录
 
+- **R39 头部弹性与截断（本轮）**：原来的写法**永远不会出现省略号**。
+  - `.paper__meta` 虽然写了 `overflow: hidden` + `text-overflow: ellipsis` + `nowrap`，但缺
+    `min-width: 0`——flex 子项默认 `min-width: auto`（= 内容宽度），它会宁可不收缩也不省略。
+    补上 `min-width: 0` 与 `flex: 0 1 auto` 后，空间不够时先截断 meta，而不是把右侧按钮挤出去。
+  - `.paper__title` 补 `flex: none`：标题是身份标识，永远不参与收缩。
+  - 产物证据：`.paper__meta{...;flex:0 auto;min-width:0;overflow:hidden}`（压缩器把
+    `0 1 auto` 简写成 `0 auto`，语义相同）。
+  - 体积 9.72 KB，仍在 10 KB 预算内（R41 之前基本没有空间了，后续视觉改动需先压缩别处）。
+
 - **R35 统一键盘焦点环（本轮）**：原来三种情况不一致，其中一处**等于没有焦点提示**。
   - `.slip__lock` / `.slip__archive` 的 `:focus-visible` 只改 `opacity: 0.85`——而这两颗按钮
     平时就是半透明，1 → 0.85 肉眼看不出来，键盘用户无法知道焦点在哪。
