@@ -135,6 +135,39 @@ body {
   padding: 0 12px 8px;
 }
 
+/* 过滤条：只在 Ctrl+F 时出现，不占常驻空间。 */
+.filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 8px;
+}
+
+.filter__input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--paper-edge);
+  border-radius: 7px;
+  background: #fffdf8;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+}
+
+.filter__input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(180 102 58 / 14%);
+}
+
+.filter__count {
+  flex: none;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+}
+
 .banner {
   display: flex;
   align-items: center;

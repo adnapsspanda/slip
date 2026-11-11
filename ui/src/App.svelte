@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import * as bridge from "./lib/bridge.js";
   import Capture from "./lib/Capture.svelte";
   import SlipList from "./lib/SlipList.svelte";
@@ -32,9 +32,27 @@
 
   // 归档判定只看 `archived`：后端 `SlipView.archived` 是唯一判据
   // （`done && archived_at.is_some()`，见 v11 §1.8），没有独立的 archivedAt 字段。
-  let visible = $derived(
+  let allVisible = $derived(
     (snapshot?.slips ?? []).filter((slip) => !slip.archived),
   );
+
+  /**
+   * 过滤关键字。**纯视图**：只影响显示，不影响快照、撤销栈与磁盘。
+   *
+   * 撤销按后端真实提交顺序记录；过滤若参与排序或索引，`Ctrl+Z` 就会撤错东西。
+   */
+  let filter = $state("");
+  /** 过滤条是否展开。Ctrl+F 展开，Esc 收起。 */
+  let filtering = $state(false);
+  let filterRef = $state(null);
+
+  let visible = $derived.by(() => {
+    const needle = filter.trim().toLowerCase();
+    if (!needle) return allVisible;
+    return allVisible.filter((slip) =>
+      slip.text.toLowerCase().includes(needle),
+    );
+  });
   let pendingCount = $derived(visible.filter((slip) => !slip.done).length);
   let doneSlips = $derived(visible.filter((slip) => slip.done));
   let doneCount = $derived(doneSlips.length);
@@ -359,8 +377,9 @@
    * - `Ctrl+Shift+D`：切换 §9.7 窗口验收调试面板。
    */
   function handleKeydown(event) {
-    if (event.key !== "z" && event.key !== "Z") return;
     if (!event.ctrlKey || event.shiftKey || event.altKey) return;
+    const key = event.key.toLowerCase();
+    if (key !== "z" && key !== "f") return;
     if (listEditing) return;
     const target = event.target;
     const tag = target?.tagName;
@@ -368,7 +387,22 @@
       return;
     }
     event.preventDefault();
+    if (key === "f") {
+      filtering = true;
+      // 过滤框是条件渲染出来的，等一帧再聚焦。
+      tick().then(() => filterRef?.focus());
+      return;
+    }
     handleUndo();
+  }
+
+  /** 过滤条里按 Esc：整体退出过滤（清词 + 收起），焦点交回捕获框。 */
+  function handleFilterKeydown(event) {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    filter = "";
+    filtering = false;
+    captureRef?.focus();
   }
 
   async function handleReload() {
@@ -539,11 +573,27 @@
         {/if}
       </div>
     {/if}
+    {#if filtering}
+      <!-- 纯视图过滤：只筛显示，不动快照、撤销栈与磁盘。 -->
+      <div class="filter">
+        <input
+          bind:this={filterRef}
+          bind:value={filter}
+          class="filter__input"
+          type="text"
+          placeholder="过滤纸条…（Esc 退出）"
+          aria-label="过滤纸条"
+          onkeydown={handleFilterKeydown}
+        />
+        <span class="filter__count">{visible.length}</span>
+      </div>
+    {/if}
   </section>
 
   <SlipList
     bind:this={listRef}
     slips={visible}
+    filtering={filter.trim().length > 0}
     ontoggle={handleToggle}
     onedit={handleEdit}
     onlock={handleLock}

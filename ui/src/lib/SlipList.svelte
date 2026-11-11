@@ -23,6 +23,8 @@
     onnotice,
     /** 在最上面一条按 ↑ 时把焦点交回捕获框。 */
     onseekcapture,
+    /** 列表为空是因为过滤没匹配到，而不是真的没有内容。 */
+    filtering = false,
     /** 双向暴露"是否正在编辑"，让 App 的 Ctrl+Z 知道该不该让路。 */
     editing = $bindable(false),
   } = $props();
@@ -236,7 +238,16 @@
 </script>
 
 <ul class="slips">
-  {#if slips.length === 0}
+  {#if slips.length === 0 && filtering}
+    <!--
+      "过滤没匹配到"和"真的没有内容"必须分开说。给过滤空结果看首次使用引导，
+      用户会以为数据没了——这比没有空态更糟。
+    -->
+    <li class="slips__empty">
+      <p class="slips__empty-title">没有匹配的纸条</p>
+      <p class="slips__empty-foot">按 <kbd>Esc</kbd> 退出过滤</p>
+    </li>
+  {:else if slips.length === 0}
     <!--
       空态不是装饰：第一次启动这张纸是空的时候，用户最容易以为"什么也没发生"。
       这里不展示具体热键——视图里的 hotkey 是**配置原值**，可能写过但没注册成功，

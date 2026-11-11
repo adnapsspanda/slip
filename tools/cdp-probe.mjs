@@ -526,5 +526,61 @@ check("Ctrl+Enter 提交",
     (switchEdit.afterCtrlEnter ?? []).includes("切换测试 B 改过"),
   `editorGone=${switchEdit.editorGone} texts=${JSON.stringify(switchEdit.afterCtrlEnter)}`);
 
+// 13. 过滤：Ctrl+F 展开、输入筛选、Esc 退出；且"没匹配到"不能显示成"还没有内容"。
+const filtered = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const wait = (ms) => new Promise(r => setTimeout(r, ms));
+       // Ctrl+F 由窗口级快捷键接管
+       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
+       await wait(200);
+       const input = document.querySelector('.filter__input');
+       if (!input) return JSON.stringify({ error: '过滤框没有展开' });
+       const focused = document.activeElement === input;
+
+       // 筛到只剩下那一条
+       input.value = '切换测试 A 改过';
+       input.dispatchEvent(new Event('input', { bubbles: true }));
+       await wait(150);
+       const rows = document.querySelectorAll('.slip').length;
+       const count = document.querySelector('.filter__count')?.textContent ?? '';
+
+       // 过滤状态下勾选仍然生效
+       const box = document.querySelector('.slip__box');
+       box?.click();
+       await wait(1200);
+       const checked = document.querySelector('.slip__box')?.getAttribute('aria-checked');
+
+       // 换成匹配不到的词：必须说"没有匹配"，不能退回首次使用引导
+       input.value = '不存在的关键词zzz';
+       input.dispatchEvent(new Event('input', { bubbles: true }));
+       await wait(150);
+       const emptyTitle = document.querySelector('.slips__empty-title')?.textContent ?? '';
+
+       // Esc 退出过滤
+       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+       await wait(150);
+       return JSON.stringify({
+         error: null,
+         focused,
+         rows,
+         count,
+         checked,
+         emptyTitle,
+         closed: document.querySelector('.filter__input') === null,
+       });
+     })()`,
+    true,
+  ),
+);
+check("Ctrl+F 展开过滤框并获得焦点",
+  !filtered.error && filtered.focused === true, `focused=${filtered.focused}`);
+check("输入关键字后只剩匹配项",
+  filtered.rows === 1 && filtered.count === "1", `rows=${filtered.rows} count=${filtered.count}`);
+check("过滤状态下仍能勾选", filtered.checked === "true", `aria-checked=${filtered.checked}`);
+check("无匹配时提示的是『没有匹配』而不是空态引导",
+  filtered.emptyTitle === "没有匹配的纸条", `title=${filtered.emptyTitle}`);
+check("Esc 退出过滤", filtered.closed === true, `closed=${filtered.closed}`);
+
 cdp.close();
 process.exit(failed ? 1 : 0);
