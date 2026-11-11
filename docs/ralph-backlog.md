@@ -52,6 +52,17 @@
 
 ## 完成记录
 
+- **归档前置条件的跨层守卫（本轮）**：`Patch::Archive` 的"必须先完成才能归档"原本只有
+  `slip-domain` 的单元测试守着，而那个 crate 的测试二进制此刻被 SAC 持续拒绝。
+  - 新增 `crates/slip-store/tests/archive_guard.rs`：从 **store 侧**走真实路径
+    （`apply` → `apply_patch` → 领域校验），断言①被拒；②**文件一个字节都不动**
+    （若有人把领域校验挪到写盘之后，这条立刻红）；③不留 `done`/`archived_at`。
+  - **尚未执行**：`cargo check --tests -p slip-store` 通过（类型与借用都对），
+    但执行期 6 次重试全被 `os error 4551` 拦。已如实标注，首次执行将由 CI 完成
+    （CI 跑在没有 SAC 的环境里）。这是本轮唯一未经验证的提交内容。
+  - 顺带记录：新增/改动的测试二进制几乎必然先被拒——本机现在处于"新产物一律先拒"的阶段，
+    只能等窗口或交给 CI。
+
 - **纠正一个错误诊断 + 拿回验证（本轮）**：此前我判定"连工具链都被 SAC 拦"，
   **这是错的**，源于我只看事件消息里的最后一个文件名。
   - 完整原文是：`a process (…\rustup\…\bin\cargo.exe) attempted to load
