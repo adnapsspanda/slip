@@ -52,6 +52,19 @@
 
 ## 完成记录
 
+- **环境自检脚本（本轮）**：把 SAC 拦截的排查过程固化成 `tools/check-environment.ps1`。
+  - 报告：管理员状态、SAC（`VerifiedAndReputablePolicyState`）、
+    `CodeIntegrityPolicyEnforcementStatus`、生效策略数、产物的**拦截事件记录**，
+    并据"是否被拦"给出结论与三条可行解法；退出码 1 = 产物不可运行。
+  - `-Probe` 会真的启动一次产物做实测（默认只查事件日志，更轻）。
+  - 三种模式都当场验证过：默认可诊断、`-Probe` 能复现"被系统拒绝"、
+    仓库的 `check-ps1-syntax.ps1` 也认它。
+  - 本轮同时把定论写进 `AGENTS.md`：拦截来自 **Smart App Control 本体**
+    （`VerifiedAndReputableDesktop`，平台策略、已签名、强制），
+    SAC **没有白名单**——自签名、补充策略、杀软排除、改名换目录全部无效；
+    可解的只有关 SAC / 换无 SAC 的 Windows 环境 / 换机器。WSL 帮不上（已说明原因）。
+  - 产物仍不可运行（本轮实测再次被拒），端到端继续不可跑；测试与静态门禁可用。
+
 - **环境对策落地（本轮）**：4551 时好时坏，与其每次手工删产物/绕过钩子，把对策做进工具。
   - 新增 `tools/cargo-test-retry.ps1`：**只对 `os error 4551` 重试**——命中时删掉被点名
     的产物再跑一轮（最多 5 次）；其它任何失败原样上抛，绝不掩盖。

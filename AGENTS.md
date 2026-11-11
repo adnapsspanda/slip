@@ -221,6 +221,39 @@ pwsh -File tools/verify-hotkey.ps1
 
 ### 环境陷阱：`os error 4551`（应用控制策略阻止执行）
 
+**先跑自检**：`pwsh -File tools/check-environment.ps1`（加 `-Probe` 会真的启动一次产物）。
+它报告 SAC 状态、生效策略、产物的拦截记录，并直接给出处置建议；退出码 1 表示
+"产物不可运行"。PowerShell 自身是微软签名的，不受这个策略影响，所以这条自检永远可用。
+
+本机（2026-11-11）的定论：拦截来自 **Smart App Control 本体**——
+
+```
+Policy ID: 0283ac0f-fff1-49ae-ada1-8a933130cad6     （自身即 Base 策略）
+好记的名称: VerifiedAndReputableDesktop
+平台策略: true    策略已签名: true    当前强制执行: true
+拒绝理由: did not meet the Enterprise signing level requirements
+```
+
+`CiTool -lp` 里其余的 `.cip` 都是微软内置（驱动策略、VBS 策略、未启用的 Evaluation/
+Lockdown 变体），没有企业自定义策略。
+
+**SAC 没有白名单**，以下做法全部无效，别浪费时间：
+
+| 尝试 | 为什么无效 |
+|---|---|
+| 自签名证书 + `signtool` / `Set-AuthenticodeSignature` | SAC 看云端信誉（ISG），不看本地证书链 |
+| 加补充 WDAC 策略放行 `target\**` | SAC 是签过名的平台策略，不接受用户补充策略 |
+| Defender 排除目录 / 关实时保护 / 改 SmartScreen | 都不是代码完整性机制 |
+| 换目录 / 改文件名 | 拦截按文件内容，与路径无关 |
+
+真正可行的只有三条：关闭 SAC（单向开关，可能要重置系统）、换到没有 SAC 的 Windows
+环境（Windows Sandbox / Hyper-V）、换一台机器。
+
+**WSL 帮不上**：它能让 188 项（domain/store/app）测试跑起来，但 GUI 与端到端需要
+Windows 窗口、全局热键与 WebView2；而且拦截发生在 **Windows 执行 exe 时**，
+在 WSL 里交叉编译出来的 Windows exe 拷回去照样被拒。
+
+
 症状：`cargo test` / `cargo clippy` 报
 `应用程序控制策略已阻止此文件。 (os error 4551)`，而被点名的往往是
 `target/debug/deps/` 下某个 DLL 或刚编出来的测试二进制。
