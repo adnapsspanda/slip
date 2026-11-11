@@ -8,6 +8,7 @@
 // 用法：& "C:\Users\spand\.bun\bin\bun.exe" run tools/check-ui-logic.mjs
 import { bannerLevel } from "../ui/src/lib/status.js";
 import { createSerialQueue, nextToggleTarget } from "../ui/src/lib/queue.js";
+import { confirmStep, CONFIRM_WINDOW_MS } from "../ui/src/lib/confirm.js";
 import {
   cleanPastedText,
   stripTrailingPunctuation,
@@ -196,6 +197,14 @@ check("过滤框 Enter 进首项", filterKeyIntent("Enter"), "focusFirst");
 check("过滤框 Esc 退出", filterKeyIntent("Escape"), "exit");
 check("普通字符交给输入框", filterKeyIntent("a"), "none");
 check("过滤框 ↑ 不劫持", filterKeyIntent("ArrowUp"), "none");
+
+// ---- R52 危险操作两步确认 ----
+check("未武装时第一下只武装", confirmStep({ armedAt: null, now: 1000 }), "arm");
+check("窗口内第二下执行", confirmStep({ armedAt: 1000, now: 2000 }), "execute");
+check("恰好等于窗口仍执行", confirmStep({ armedAt: 1000, now: 1000 + CONFIRM_WINDOW_MS }), "execute");
+check("超窗后重新武装（不会误执行）", confirmStep({ armedAt: 1000, now: 1000 + CONFIRM_WINDOW_MS + 1 }), "arm");
+check("时钟回拨按过期处理", confirmStep({ armedAt: 5000, now: 1000 }), "arm");
+check("自定义更短窗口", confirmStep({ armedAt: 0, now: 900, windowMs: 500 }), "arm");
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);

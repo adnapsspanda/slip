@@ -752,8 +752,8 @@ body {
   vertical-align: bottom;
 }
 
-/* 二次确认态：恢复会覆盖当前内容，用浅红底让"这一下会改数据"变得可感知。 */
-.slip__archive--confirm {
+/* 二次确认态：恢复备份、隔离重建这类"会改数据"的按钮共用，浅红底让它可感知。 */
+.confirm-danger {
   width: auto;
   min-width: 52px;
   padding: 0 8px;

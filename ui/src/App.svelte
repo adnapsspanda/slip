@@ -3,6 +3,7 @@
   import { bannerLevel as statusBannerLevel } from "./lib/status.js";
   import { noticeAction, filterKeyIntent } from "./lib/keys.js";
   import { createSerialQueue, nextToggleTarget } from "./lib/queue.js";
+  import { confirmStep, CONFIRM_WINDOW_MS } from "./lib/confirm.js";
   import * as bridge from "./lib/bridge.js";
   import Capture from "./lib/Capture.svelte";
   import SlipList from "./lib/SlipList.svelte";
@@ -93,6 +94,13 @@
   let backups = $state([]);
   /** 等待二次确认的备份名——恢复会覆盖当前内容，不该一次点击就执行。 */
   let pendingRestore = $state(null);
+  /**
+   * 「隔离并重建」的二次确认时间戳。`null` = 未武装。
+   *
+   * 为什么必须拦一下：这一下会把当前 inbox 换成空文件，手滑点错就是"当前内容没了"。
+   */
+  let isolateArmedAt = $state(null);
+  let isolateArmTimer = null;
 
   /**
    * 过滤关键字。**纯视图**：只影响显示，不影响快照、撤销栈与磁盘。
@@ -717,6 +725,21 @@
     await refresh();
   }
 
+  /** 二次确认的入口：第一下武装，第二下（4 秒内）才真的执行。 */
+  function handleIsolateClick() {
+    const step = confirmStep({ armedAt: isolateArmedAt, now: Date.now() });
+    clearTimeout(isolateArmTimer);
+    if (step === "execute") {
+      isolateArmedAt = null;
+      handleIsolate();
+      return;
+    }
+    isolateArmedAt = Date.now();
+    isolateArmTimer = setTimeout(() => {
+      isolateArmedAt = null;
+    }, CONFIRM_WINDOW_MS);
+  }
+
   async function handleIsolate() {
     hint = "正在隔离并重建…";
     try {
@@ -899,7 +922,15 @@
               <button type="button" onclick={handleIsolate}>重试重建</button>
             {:else if snapshot && !snapshot.health.writable}
               <button type="button" onclick={handleReload}>重新载入</button>
-              <button type="button" onclick={handleIsolate}>隔离并重建</button>
+              <button
+                type="button"
+                class:confirm-danger={isolateArmedAt !== null}
+                title={isolateArmedAt !== null
+                  ? "再点一次确认：当前内容会被清空重建"
+                  : "把当前文件隔离保存，并重建一个空 Inbox"}
+                onclick={handleIsolateClick}
+                >{isolateArmedAt !== null ? "确认重建？" : "隔离并重建"}</button
+              >
             {:else if snapshot?.needsReload}
               <button type="button" onclick={handleReload}>重新载入</button>
             {/if}
@@ -966,7 +997,7 @@
             <button
               type="button"
               class="slip__archive"
-              class:slip__archive--confirm={pendingRestore === backup.name}
+              class:confirm-danger={pendingRestore === backup.name}
               aria-label={pendingRestore === backup.name
                 ? "确认恢复"
                 : "恢复这个备份"}
