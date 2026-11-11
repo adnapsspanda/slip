@@ -29,6 +29,10 @@
     ondelink,
     /** 列表为空是因为过滤没匹配到，而不是真的没有内容。 */
     filtering = false,
+    /** 正在看归档抽屉：每行给出"恢复"而不是"归档"。 */
+    archivedView = false,
+    /** 把一条已归档的纸条恢复回列表。 */
+    onunarchive,
     /** 双向暴露"是否正在编辑"，让 App 的 Ctrl+Z 知道该不该让路。 */
     editing = $bindable(false),
   } = $props();
@@ -242,7 +246,14 @@
 </script>
 
 <ul class="slips">
-  {#if slips.length === 0 && filtering}
+  {#if slips.length === 0 && archivedView}
+    <li class="slips__empty">
+      <p class="slips__empty-title">还没有归档</p>
+      <p class="slips__empty-foot">
+        归档只是从列表收起，内容仍然在 inbox.md 里
+      </p>
+    </li>
+  {:else if slips.length === 0 && filtering}
     <!--
       "过滤没匹配到"和"真的没有内容"必须分开说。给过滤空结果看首次使用引导，
       用户会以为数据没了——这比没有空态更糟。
@@ -339,7 +350,31 @@
               {:else}{token.value}{/if}
             {/each}
           </span>
-          {#if slip.done}
+          {#if archivedView}
+            <button
+              type="button"
+              class="slip__archive"
+              aria-label="恢复纸条"
+              title="恢复到列表"
+              onclick={() => onunarchive?.(slip)}
+            >
+              <svg
+                viewBox="0 0 16 16"
+                width="13"
+                height="13"
+                aria-hidden="true"
+              >
+                <path
+                  d="M3 8a5 5 0 1 1 1.6 3.7M3 4.5V8h3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.4"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+          {:else if slip.done}
             <button
               type="button"
               class="slip__archive"

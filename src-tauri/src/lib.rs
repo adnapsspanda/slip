@@ -245,6 +245,29 @@ async fn archive(
     Ok(state.dispatcher.apply(request_id, mutations).await)
 }
 
+/// 把一条已归档的纸条恢复回列表。
+///
+/// 归档在界面上是"眼不见为净"，但 `archived_at` 是**墓碑**不是删除——恢复只是清掉它。
+/// 没有这个入口，抽屉就只是个只能看不能动的死胡同。
+#[tauri::command]
+async fn unarchive(
+    state: tauri::State<'_, ShellState>,
+    request_id: String,
+    id: String,
+) -> Result<Ack, String> {
+    let id = match SlipId::parse_strict(&id) {
+        Ok(id) => id,
+        Err(error) => {
+            return Ok(rejected(&request_id, "domain", error.to_string()));
+        }
+    };
+    let patch = Patch::Unarchive;
+    Ok(state
+        .dispatcher
+        .apply(request_id, vec![Mutation::Patch { id, patch }])
+        .await)
+}
+
 /// 回滚最近一次内容编辑、勾选或归档。
 #[tauri::command]
 async fn undo(state: tauri::State<'_, ShellState>, request_id: String) -> Result<Ack, String> {
@@ -315,6 +338,7 @@ pub fn run() {
             edit,
             set_locked,
             archive,
+            unarchive,
             undo,
             reload,
             isolate_and_reset,

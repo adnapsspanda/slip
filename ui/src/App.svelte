@@ -32,9 +32,14 @@
 
   // 归档判定只看 `archived`：后端 `SlipView.archived` 是唯一判据
   // （`done && archived_at.is_some()`，见 v11 §1.8），没有独立的 archivedAt 字段。
-  let allVisible = $derived(
+  let activeSlips = $derived(
     (snapshot?.slips ?? []).filter((slip) => !slip.archived),
   );
+  let archivedSlips = $derived(
+    (snapshot?.slips ?? []).filter((slip) => slip.archived),
+  );
+  /** 是否在看归档抽屉。归档是墓碑不是删除，所以这一层只是换个筛选方向。 */
+  let showArchived = $state(false);
 
   /**
    * 过滤关键字。**纯视图**：只影响显示，不影响快照、撤销栈与磁盘。
@@ -47,14 +52,14 @@
   let filterRef = $state(null);
 
   let visible = $derived.by(() => {
+    const base = showArchived ? archivedSlips : activeSlips;
     const needle = filter.trim().toLowerCase();
-    if (!needle) return allVisible;
-    return allVisible.filter((slip) =>
-      slip.text.toLowerCase().includes(needle),
-    );
+    if (!needle) return base;
+    return base.filter((slip) => slip.text.toLowerCase().includes(needle));
   });
-  let pendingCount = $derived(visible.filter((slip) => !slip.done).length);
-  let doneSlips = $derived(visible.filter((slip) => slip.done));
+  // 统计始终看**未归档**那一侧：归档抽屉里显示"3 条未完成"只会让人困惑。
+  let pendingCount = $derived(activeSlips.filter((slip) => !slip.done).length);
+  let doneSlips = $derived(activeSlips.filter((slip) => slip.done));
   let doneCount = $derived(doneSlips.length);
 
   let meta = $derived(
@@ -327,7 +332,25 @@
     }
   }
 
-  /** 一键归档当前所有已完成的纸条（同一事务，一次 Ctrl+Z 即可整批恢复）。 */
+  /** 把一条已归档的纸条恢复回列表。归档是墓碑不是删除，恢复只是清掉归档时间。 */
+  async function handleUnarchive(slip) {
+    try {
+      const ack = await bridge.unarchive(bridge.newRequestId(), slip.id);
+      await refresh();
+      if (ack.result === "applied") {
+        hint = DEFAULT_HINT;
+        // 恢复掉最后一条后抽屉就空了：继续留在空列表里只会让人以为数据没了。
+        // （探针实测过这个手感问题。）
+        if (archivedSlips.length === 0) showArchived = false;
+      } else {
+        hint = `恢复失败：${formatAckError(ack)}`;
+      }
+    } catch (error) {
+      hint = `恢复失败：${error}`;
+      await refresh();
+    }
+  }
+
   async function handleArchiveAll() {
     const ids = doneSlips.map((slip) => slip.id);
     if (ids.length === 0) return;
@@ -521,6 +544,17 @@
   <header class="paper__bar" data-tauri-drag-region>
     <span class="paper__title">Slip</span>
     <div class="paper__bar-right">
+      {#if archivedSlips.length > 0}
+        <!-- 归档抽屉：归档只是墓碑，得能翻回来看，也得能恢复。 -->
+        <button
+          type="button"
+          class="paper__archive-all"
+          onclick={() => (showArchived = !showArchived)}
+          title={showArchived ? "回到未归档列表" : "查看已归档的纸条"}
+        >
+          {showArchived ? "返回列表" : `已归档 ${archivedSlips.length}`}
+        </button>
+      {/if}
       {#if doneCount > 0 && !blockedReason}
         <button
           type="button"
@@ -608,6 +642,8 @@
     bind:this={listRef}
     slips={visible}
     filtering={filter.trim().length > 0}
+    archivedView={showArchived}
+    onunarchive={handleUnarchive}
     ontoggle={handleToggle}
     onedit={handleEdit}
     onlock={handleLock}

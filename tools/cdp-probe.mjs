@@ -632,5 +632,56 @@ check("新收录的纸条显示『刚刚』", inline.timeLabel === "刚刚", `la
 check("<time> 带 RFC3339 的 datetime", /^\d{4}-\d{2}-\d{2}T/.test(inline.timeAttr ?? ""),
   `datetime=${inline.timeAttr}`);
 
+// 15. 归档抽屉：能翻回来看，也能恢复。
+const drawer = JSON.parse(
+  await evaluate(
+    `(async () => {
+       const wait = (ms) => new Promise(r => setTimeout(r, ms));
+       const rows = () => [...document.querySelectorAll('.slip')];
+       const last = rows()[rows().length - 1];
+       const label = last?.querySelector('.slip__text')?.textContent ?? '';
+
+       // 勾选 → 归档这一条
+       last.querySelector('.slip__box').click();
+       await wait(1200);
+       const archiveBtn = rows()[rows().length - 1].querySelector('.slip__archive');
+       if (!archiveBtn) return JSON.stringify({ error: '归档按钮没出现' });
+       archiveBtn.click();
+       await wait(1400);
+
+       const toggle = [...document.querySelectorAll('.paper__archive-all')]
+         .find((b) => b.textContent.includes('已归档'));
+       const toggleText = toggle?.textContent.trim() ?? '';
+       if (!toggle) return JSON.stringify({ error: '没出现已归档入口', toggleText });
+
+       // 进抽屉
+       toggle.click();
+       await wait(250);
+       const inDrawer = rows().length;
+       const restoreLabel = rows()[0]?.querySelector('.slip__archive')?.getAttribute('aria-label') ?? '';
+       const drawerText = rows()[0]?.querySelector('.slip__text')?.textContent ?? '';
+
+       // 恢复
+       rows()[0]?.querySelector('.slip__archive')?.click();
+       await wait(1600);
+       const backToggle = [...document.querySelectorAll('.paper__archive-all')]
+         .filter((b) => b.textContent.includes('已归档')).length;
+       const backInList = rows().some((r) => r.querySelector('.slip__text')?.textContent === label);
+
+       return JSON.stringify({ error: null, label, toggleText, inDrawer, restoreLabel, drawerText, backToggle, backInList });
+     })()`,
+    true,
+  ),
+);
+check("归档后出现『已归档 N』入口",
+  /^已归档 \d+$/.test(drawer.toggleText ?? ""), `toggleText=${drawer.toggleText}`);
+check("抽屉里能看到归档的纸条", drawer.inDrawer >= 1 && drawer.drawerText === drawer.label,
+  `count=${drawer.inDrawer} text=${drawer.drawerText}`);
+check("抽屉里的按钮是『恢复纸条』", drawer.restoreLabel === "恢复纸条",
+  `aria-label=${drawer.restoreLabel}`);
+check("恢复后纸条回到列表且入口消失",
+  drawer.backToggle === 0 && drawer.backInList === true,
+  `toggle=${drawer.backToggle} backInList=${drawer.backInList}`);
+
 cdp.close();
 process.exit(failed ? 1 : 0);
