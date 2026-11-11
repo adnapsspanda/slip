@@ -1802,6 +1802,50 @@ mod tests {
         assert!(backups(dir.path()).len() == 1, "一次提交一次备份");
     }
 
+    /// 0 字节的 inbox 是**健康的空 vault**，不是损坏文件。
+    ///
+    /// 这条守的是"自愈"：用户新建空文件、或用编辑器把内容清空，程序都应当正常打开，
+    /// 不弹告警、不进降级，而且第一次写入要产出**规范格式**的条目（带标记）。
+    /// 反过来说：如果把空文件当成解析失败，用户会看到一个空白的、要求"隔离并重建"的
+    /// 应用面，而他的文件其实完好。
+    #[test]
+    fn empty_inbox_is_healthy_and_first_write_is_canonical() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md");
+        std::fs::write(&path, b"").expect("write empty");
+
+        let store = MarkdownStore::new(&path);
+        let snap = store.snapshot();
+        assert!(snap.health.is_writable(), "空文件必须可写");
+        assert!(
+            snap.diagnostics.is_empty(),
+            "空文件不该产生诊断：{:?}",
+            snap.diagnostics
+        );
+        assert!(snap.slips.is_empty());
+        assert!(!snap.needs_reload);
+
+        let outcome = store.apply(&[Mutation::Append(slip("买发票"))]);
+        assert!(outcome.result.is_ok(), "结果：{:?}", outcome.result);
+
+        let bytes = read(&path);
+        let text = String::from_utf8(bytes).expect("utf8");
+        assert!(
+            text.starts_with("- [ ] 买发票 <!-- slip:v1;"),
+            "应当是规范记录：{text}"
+        );
+        // 结尾换行**沿用原文件的风格**（本项目的不变量，见 format_closure 系列测试）：
+        // 空文件没有结尾换行，所以写入后也不加。这里显式钉住，免得有人误以为是漏写。
+        assert!(
+            !text.ends_with('\n'),
+            "空文件写入后不应凭空加结尾换行：{text:?}"
+        );
+        assert_eq!(text.lines().count(), 1, "只应有一行记录");
+        // 重新载入能读回同一条——说明写出的东西确实可解析。
+        let reloaded = MarkdownStore::new(&path);
+        assert_eq!(reloaded.snapshot().slips.len(), 1);
+    }
+
     #[test]
     fn real_pipeline_startup_creates_missing_file() {
         let dir = tempfile::tempdir().expect("temp dir");
