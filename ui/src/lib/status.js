@@ -57,3 +57,37 @@ export function hotkeyWarning(status) {
   const name = status.text ? `（${status.text}）` : "";
   return `全局热键${name}未注册，多半已被其它程序占用。可以用托盘图标打开；关掉占用它的程序后重启 Slip 即可恢复。`;
 }
+
+/** 回到前台后最少隔多久才静默刷新一次（毫秒）。 */
+export const SILENT_REFRESH_GAP_MS = 2000;
+
+/**
+ * 拿回焦点时要不要静默拉一次快照。
+ *
+ * 场景：合上盖子、切走很久、系统休眠——期间磁盘上的 `inbox.md` 可能被别的程序改过，
+ * 而应用只知道"上次看到的样子"。回到前台不刷新，用户就会对着过期内容操作，
+ * 下一次写入直接撞冲突。
+ *
+ * 但**不能每次 focus 都刷**：Alt+Tab 来回切、点击窗口、打开菜单都可能连续触发，
+ * 那样会把 get_snapshot 打成高频请求。所以设一个最小间隔。
+ *
+ * @param {number|null|undefined} lastAt 上次刷新时刻（毫秒）
+ * @param {number} now 当前时刻（毫秒）
+ * @param {number} [gapMs]
+ * @returns {boolean}
+ */
+export function shouldSilentRefresh(
+  lastAt,
+  now,
+  gapMs = SILENT_REFRESH_GAP_MS,
+) {
+  if (typeof lastAt !== "number" || !Number.isFinite(lastAt)) {
+    return true;
+  }
+  const elapsed = now - lastAt;
+  // 时钟回拨（elapsed < 0）按"该刷"处理：宁可多刷一次，也不要拿着可能过期的状态。
+  if (elapsed < 0) {
+    return true;
+  }
+  return elapsed >= gapMs;
+}

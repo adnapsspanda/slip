@@ -10,6 +10,8 @@ import {
   bannerLevel,
   shouldShowReadonlyGuide,
   hotkeyWarning,
+  shouldSilentRefresh,
+  SILENT_REFRESH_GAP_MS,
 } from "../ui/src/lib/status.js";
 import { createSerialQueue, nextToggleTarget } from "../ui/src/lib/queue.js";
 import { confirmStep, CONFIRM_WINDOW_MS } from "../ui/src/lib/confirm.js";
@@ -228,6 +230,14 @@ const hkWarn = hotkeyWarning({ registered: false, text: "Ctrl+Alt+Space" });
 check("提示带上具体组合键", hkWarn.includes("Ctrl+Alt+Space"), true);
 check("提示给出可操作下一步（托盘）", hkWarn.includes("托盘"), true);
 check("提示说明原因（被占用）", hkWarn.includes("占用"), true);
+
+// ---- R69 回到前台时的静默刷新限流 ----
+check("从未刷过 → 要刷", shouldSilentRefresh(null, 10000), true);
+check("刚刷过 → 不刷", shouldSilentRefresh(10000, 10000 + 100), false);
+check("刚好到间隔 → 要刷", shouldSilentRefresh(10000, 10000 + SILENT_REFRESH_GAP_MS), true);
+check("超过间隔 → 要刷", shouldSilentRefresh(10000, 60000), true);
+check("时钟回拨 → 保守要刷", shouldSilentRefresh(10000, 5000), true);
+check("非法值 → 要刷", shouldSilentRefresh(Number.NaN, 10000), true);
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);

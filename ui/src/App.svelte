@@ -4,6 +4,7 @@
     bannerLevel as statusBannerLevel,
     shouldShowReadonlyGuide,
     hotkeyWarning,
+    shouldSilentRefresh,
   } from "./lib/status.js";
   import { noticeAction, filterKeyIntent } from "./lib/keys.js";
   import { createSerialQueue, nextToggleTarget } from "./lib/queue.js";
@@ -299,6 +300,31 @@
    * 只在 `ui_rev` 不比手上旧时替换——这是"发射丢失"能被补偿的唯一机制，
    * 也是前端唯一被允许做的版本判断。
    */
+  /** 上次静默刷新的时刻（毫秒）。用来给 focus 触发的刷新限流。 */
+  let lastSilentRefreshAt = $state(null);
+
+  /**
+   * 静默刷新：拿回焦点时拉一次最新快照。
+   *
+   * **不碰提示区**：用户可能只是切了个窗口，不该看到"正在刷新…"这种噪音；
+   * 失败也不吭声——下次真正操作时该报的错自然会报。
+   */
+  async function silentRefresh() {
+    const now = Date.now();
+    if (!shouldSilentRefresh(lastSilentRefreshAt, now)) {
+      return;
+    }
+    lastSilentRefreshAt = now;
+    try {
+      const next = await bridge.getSnapshot();
+      if (!snapshot || next.uiRev >= snapshot.uiRev) {
+        snapshot = next;
+      }
+    } catch {
+      // 静默路径不报错：拿不到就沿用当前状态，等真实操作时再说。
+    }
+  }
+
   async function refresh() {
     try {
       const next = await bridge.getSnapshot();
@@ -806,6 +832,14 @@
     let disposed = false;
     let unlisten;
 
+    // 回到前台就跑一次静默刷新：休眠/长时间切走期间，磁盘上的文件可能已被别的程序改过。
+    const onFocus = () => void silentRefresh();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void silentRefresh();
+    };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+
     // 热键状态只在启动时取一次：它由注册结果决定，运行期不会变。
     // 取不到（非 Tauri 环境 / 命令缺失）就当作"正常"，不拿一个查询失败去吓用户。
     bridge
@@ -855,6 +889,8 @@
     return () => {
       disposed = true;
       unlisten?.();
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   });
 </script>
