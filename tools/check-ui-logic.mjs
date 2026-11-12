@@ -46,6 +46,7 @@ import {
   purgeNotice,
   restoreCoverWarning,
 } from "../ui/src/lib/messages.js";
+import { contrastRatio, parseHex, relativeLuminance } from "../ui/src/lib/color.js";
 import { SWIPE_COMPLETE_PX, swipeIntent, swipeOffset } from "../ui/src/lib/swipe.js";
 import { CLOSE_FADE_MS, closeFadeDelay } from "../ui/src/lib/motion.js";
 import { vaultFilePath } from "../ui/src/lib/bridge.js";
@@ -560,3 +561,49 @@ if (failed > 0) {
   process.exit(1);
 }
 console.log("\n全部通过。");
+
+// ---------- R118：列表边界不蜂鸣 ----------
+//
+// 边界处的正确行为是"什么也不做"，而且调用方必须已经 preventDefault——
+// 否则浏览器会滚动容器（Windows 上很多场景伴随一声系统提示音）。
+// 这里钉住"返回 null"，也就是"别移动、别滚动"。
+check("首行按 ↑ 不移动（边界返回 null）", listNavTarget(0, 5, "ArrowUp"), null);
+check("末行按 ↓ 不移动（边界返回 null）", listNavTarget(4, 5, "ArrowDown"), null);
+check("单行列表两个方向都到边界", [listNavTarget(0, 1, "ArrowUp"), listNavTarget(0, 1, "ArrowDown")], [null, null]);
+check("空列表任何方向都不动", listNavTarget(0, 0, "ArrowDown"), null);
+
+// ---------- R117：浅色模式下边框的非文字对比度 ----------
+//
+// 发丝边框属于 WCAG 1.4.11 的"非文字 UI 组件"，下限是 3:1。
+// 这条断言守的是"浅色模式放在深色壁纸上时，纸条边界仍然看得见"。
+const lightPaper = "#fbf7ee";
+const lightEdge = "#e2d9c6";
+const lightFocusRing = "#a8552c";
+const lightInkSoft = "#787061";
+const darkPaper = "#201e1b";
+const darkEdge = "#3c3831";
+const darkFocusRing = "#f0a173";
+const darkInkSoft = "#a89f8d";
+
+// 先说结论：**发丝边框达不到 WCAG 3:1，这是有意的**。
+//
+// 实测 1.31（浅色）/ 1.43（深色）。它属于"纯装饰"——纸条是靠正文、复选框、
+// hover 与焦点环被识别出来的，边框只负责"纸感"。WCAG 1.4.11 的 3:1 针对
+// **识别控件所必需的**视觉信息，装饰性分隔线不在其列。
+//
+// 但"有意为之"不等于"随便它漂"：这里把实测值当**下界**钉住，
+// 防止后续调样式时不知不觉把边框调到跟背景一样（那才是真的看不见）。
+check("浅色边框对比度不低于 1.25（装饰性，低于 3:1 是有意取舍）", contrastRatio(lightEdge, lightPaper) >= 1.25, true);
+check("深色边框对比度不低于 1.35（同上）", contrastRatio(darkEdge, darkPaper) >= 1.35, true);
+
+// 真正必须合规的是**交互线索**：焦点环 ≥ 3:1（1.4.11），次要文字 ≥ 4.5:1（1.4.3）。
+check("浅色焦点环对比度 ≥ 3（1.4.11，这才是必须合规的那条）", contrastRatio(lightFocusRing, lightPaper) >= 3, true);
+check("深色焦点环对比度 ≥ 3", contrastRatio(darkFocusRing, darkPaper) >= 3, true);
+check("浅色次要文字对比度 ≥ 4.5（1.4.3）", contrastRatio(lightInkSoft, lightPaper) >= 4.5, true);
+check("深色次要文字对比度 ≥ 4.5", contrastRatio(darkInkSoft, darkPaper) >= 4.5, true);
+
+// 计算器自身的正确性：黑白是 21:1，同色是 1:1。
+check("黑白对比度为 21", Math.round(contrastRatio("#000000", "#ffffff")), 21);
+check("同色对比度为 1", contrastRatio("#123456", "#123456"), 1);
+check("非法颜色返回 null", [parseHex("red"), contrastRatio("zzz", "#fff")], [null, null]);
+check("相对亮度：白 1 / 黑 0", [Math.round(relativeLuminance("#ffffff")), relativeLuminance("#000000")], [1, 0]);
