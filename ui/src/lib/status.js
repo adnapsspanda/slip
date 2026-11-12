@@ -9,22 +9,62 @@
  */
 
 /**
+ * §5 的展示优先级：Fatal > Isolated > Degraded > needs_reload > 正常。
+ *
+ * 只在这里实现一次。横幅文案、横幅严重级别、提交禁用理由三处都从它派生；
+ * 旧实现各写一遍 if-chain，新增状态或调顺序时必然漂移
+ * （典型症状：横幅提示 A，提交却因 B 被禁）。
+ *
+ * @param {object|null|undefined} snapshot
+ * @returns {"none"|"fatal"|"isolated"|"degraded"|"needsReload"|"normal"}
+ */
+export function uiPriority(snapshot) {
+  if (!snapshot) return "none";
+  if (snapshot.runtime?.state === "fatal") return "fatal";
+  if (snapshot.recovery?.state === "isolated") return "isolated";
+  if (snapshot.health && snapshot.health.writable === false) return "degraded";
+  if (snapshot.needsReload === true) return "needsReload";
+  return "normal";
+}
+
+/**
  * @param {object|null|undefined} snapshot
  * @returns {"error"|"warn"|"info"}
  */
 export function bannerLevel(snapshot) {
-  if (!snapshot) return "info";
-  // Fatal：运行时已停止。内容还在，但功能没了——必须一眼看见。
-  if (snapshot.runtime?.state === "fatal") return "error";
-  // 数据可能有风险、需要用户处理的三类。
-  if (
-    snapshot.recovery?.state === "isolated" ||
-    (snapshot.health && snapshot.health.writable === false) ||
-    snapshot.needsReload === true
-  ) {
-    return "warn";
+  switch (uiPriority(snapshot)) {
+    case "fatal":
+      return "error";
+    case "isolated":
+    case "degraded":
+    case "needsReload":
+      return "warn";
+    default:
+      return "info";
   }
-  return "info";
+}
+
+/**
+ * 提交被禁用的原因；空字符串表示可以提交。
+ *
+ * `bridge.available` 不在这里判断——它不是快照状态，由 App 层先挡。
+ *
+ * @param {object|null|undefined} snapshot
+ * @returns {string}
+ */
+export function uiBlockedReason(snapshot) {
+  switch (uiPriority(snapshot)) {
+    case "fatal":
+      return "运行时已停止，不能收录";
+    case "isolated":
+      return "等待重建 Inbox";
+    case "degraded":
+      return "当前不可写入，详见横幅诊断";
+    case "needsReload":
+      return "磁盘文件已变化，请先重新载入";
+    default:
+      return "";
+  }
 }
 
 /**

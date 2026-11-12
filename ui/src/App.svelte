@@ -5,6 +5,8 @@
     shouldShowReadonlyGuide,
     hotkeyWarning,
     shouldSilentRefresh,
+    uiBlockedReason,
+    uiPriority,
   } from "./lib/status.js";
   import { noticeAction, filterKeyIntent } from "./lib/keys.js";
   import { matchesFilter, parseQuery } from "./lib/filter.js";
@@ -321,26 +323,26 @@
     if (!snapshot) {
       return "";
     }
-    // §5 展示优先级：Fatal > Isolated > Degraded > needs_reload，只显示最需要处理的一条。
-    if (snapshot.runtime?.state === "fatal") {
-      return `运行时已停止：${snapshot.runtime.reason}`;
+    // §5 展示优先级只在 lib/status.js 的 `uiPriority` 里实现一次；
+    // 这里只负责把对应状态翻译成文案。
+    switch (uiPriority(snapshot)) {
+      case "fatal":
+        return `运行时已停止：${snapshot.runtime.reason}`;
+      case "isolated":
+        return `无效文件已隔离到 ${snapshot.recovery.corruptPath}。可以重建一个空 Inbox。`;
+      case "degraded":
+        // 不可写的原因不止"解析失败"：文件被其它程序占用、读盘失败同样会让它变 false。
+        // 具体原因在 diagnostics 里（例如"文件被其它程序占用"），这里只说清楚该怎么办。
+        return "当前不可写入。处理好下方诊断里的问题后可重新载入，或隔离并重建空 Inbox。";
+      case "needsReload":
+        return externalDiff
+          ? `磁盘上的文件已被外部修改（${describeDiff(externalDiff)}），需要重新载入。`
+          : "磁盘上的文件已被外部修改，需要重新载入。";
+      default:
+        // 优先级最低：内容层面的问题更急；但只要没有更急的，热键问题就必须让用户看见
+        // ——否则表现是"按热键没反应"，用户只会以为是自己记错了键。
+        return hotkeyWarning(hotkeyState);
     }
-    if (snapshot.recovery?.state === "isolated") {
-      return `无效文件已隔离到 ${snapshot.recovery.corruptPath}。可以重建一个空 Inbox。`;
-    }
-    if (snapshot.health && !snapshot.health.writable) {
-      // 不可写的原因不止"解析失败"：文件被其它程序占用、读盘失败同样会让它变 false。
-      // 具体原因在 diagnostics 里（例如"文件被其它程序占用"），这里只说清楚该怎么办。
-      return "当前不可写入。处理好下方诊断里的问题后可重新载入，或隔离并重建空 Inbox。";
-    }
-    if (snapshot.needsReload) {
-      return externalDiff
-        ? `磁盘上的文件已被外部修改（${describeDiff(externalDiff)}），需要重新载入。`
-        : "磁盘上的文件已被外部修改，需要重新载入。";
-    }
-    // 优先级最低：内容层面的问题更急；但只要没有更急的，热键问题就必须让用户看见
-    // ——否则表现是"按热键没反应"，用户只会以为是自己记错了键。
-    return hotkeyWarning(hotkeyState);
   });
 
   // 判据抽在 lib/status.js：纯函数，能脱离应用验证（tools/check-ui-logic.mjs）。
@@ -404,12 +406,7 @@
   /** 内容提交被禁用时的原因；空字符串表示可以提交。 */
   let blockedReason = $derived.by(() => {
     if (!bridge.available) return "后端不可用";
-    if (snapshot?.runtime?.state === "fatal") return "运行时已停止，不能收录";
-    if (snapshot?.recovery?.state === "isolated") return "等待重建 Inbox";
-    if (snapshot && !snapshot.health.writable)
-      return "当前不可写入，详见横幅诊断";
-    if (snapshot?.needsReload) return "磁盘文件已变化，请先重新载入";
-    return "";
+    return uiBlockedReason(snapshot);
   });
 
   /**

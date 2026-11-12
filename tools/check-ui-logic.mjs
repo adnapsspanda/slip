@@ -10,6 +10,8 @@ import { readFile } from "node:fs/promises";
 import {
   bannerLevel,
   shouldShowReadonlyGuide,
+  uiBlockedReason,
+  uiPriority,
   hotkeyWarning,
   shouldSilentRefresh,
   SILENT_REFRESH_GAP_MS,
@@ -106,6 +108,19 @@ check(
   "error",
 );
 check("缺字段也不炸 → info", bannerLevel({}), "info");
+
+// 展示优先级只实现一次：横幅、严重级别、提交禁用理由都从 uiPriority 派生。
+check("优先级：无快照 → none", uiPriority(null), "none");
+check("优先级：Fatal 最高", uiPriority({ runtime: { state: "fatal" }, recovery: { state: "isolated" }, health: { writable: false }, needsReload: true }), "fatal");
+check("优先级：Isolated 高于 Degraded", uiPriority({ recovery: { state: "isolated" }, health: { writable: false }, needsReload: true }), "isolated");
+check("优先级：Degraded 高于 needsReload", uiPriority({ health: { writable: false }, needsReload: true }), "degraded");
+check("优先级：needsReload 高于正常", uiPriority({ health: { writable: true }, needsReload: true }), "needsReload");
+check("优先级：正常", uiPriority({ health: { writable: true }, needsReload: false }), "normal");
+check("禁用理由：Fatal", uiBlockedReason({ runtime: { state: "fatal" } }), "运行时已停止，不能收录");
+check("禁用理由：Isolated", uiBlockedReason({ recovery: { state: "isolated" } }), "等待重建 Inbox");
+check("禁用理由：Degraded", uiBlockedReason({ health: { writable: false } }), "当前不可写入，详见横幅诊断");
+check("禁用理由：needsReload", uiBlockedReason({ health: { writable: true }, needsReload: true }), "磁盘文件已变化，请先重新载入");
+check("禁用理由：正常为空", uiBlockedReason({ health: { writable: true } }), "");
 
 // ---- R42 捕获框提交意图：回车 / Ctrl+Enter / Shift+Enter / 输入法组合期 ----
 check("Enter 提交", submitIntent({ key: "Enter" }), "submit");
