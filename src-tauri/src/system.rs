@@ -119,7 +119,9 @@ pub fn install_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     let copy_latest = MenuItem::with_id(app, "copyLatest", "复制最近一条", true, None::<&str>)?;
     // R116：默认热键被占用时的第二选择。做成菜单项而不是自动抢键——
     // 抢键会让"为什么我的快捷键变了"变成一条查不到原因的现象。
-    let fallback = MenuItem::with_id(app, "fallbackHotkey", "改用 Win+Alt+S", true, None::<&str>)?;
+    // 文案从常量派生：Linux 上是 Super 不是 Win，写死会让说明与真实键不符。
+    let fallback_label = format!("改用 {}", pretty_hotkey(crate::hotkey::FALLBACK_SHORTCUT));
+    let fallback = MenuItem::with_id(app, "fallbackHotkey", fallback_label, true, None::<&str>)?;
     // 初始勾选读系统状态，而不是写死 false：用户可能在上次运行后手动改过注册表。
     let autostart = CheckMenuItem::with_id(
         app,
@@ -168,7 +170,9 @@ pub fn install_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
                 crate::hotkey::summon(app);
             }
             "show" => {
-                crate::hotkey::summon(app);
+                // 「打开看看」不上膛：点别的窗口不该把它收走。
+                // 只有「快速唤出捕获」与热键走 `summon`（上膛失焦收走）。
+                crate::hotkey::show_on_launch(app);
             }
             "open" => {
                 let _ = open_inbox(app);

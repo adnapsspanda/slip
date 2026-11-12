@@ -41,6 +41,18 @@ pub fn vault_from(home: &Path, documents_is_dir: bool) -> PathBuf {
     base.join("Slip")
 }
 
+/// 启动子进程并**异步回收**：不阻塞 UI 线程，也不留下僵尸。
+///
+/// 直接丢弃 `Child` 不会 `wait()`；在 Linux 长驻托盘下，每次 `xdg-open`
+/// 都会留下一个已退出的僵尸，直到 Slip 自己退出。
+fn spawn_and_reap(mut command: std::process::Command) -> io::Result<()> {
+    let mut child = command.spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// 用系统默认程序打开一个路径（文件或目录）。
 ///
 /// 只启动子进程，不等待：菜单回调跑在 UI 线程上，等子进程退出会卡住整个托盘。
@@ -50,7 +62,8 @@ pub fn open_path(path: &Path) -> io::Result<()> {
     #[cfg(not(windows))]
     let mut command = std::process::Command::new("xdg-open");
 
-    command.arg(path).spawn().map(|_| ())
+    command.arg(path);
+    spawn_and_reap(command)
 }
 
 /// 用系统默认浏览器打开一个 URL。
@@ -69,7 +82,8 @@ pub fn open_url(url: &str) -> io::Result<()> {
     #[cfg(not(windows))]
     let mut command = std::process::Command::new("xdg-open");
 
-    command.arg(url).spawn().map(|_| ())
+    command.arg(url);
+    spawn_and_reap(command)
 }
 
 /// 在文件管理器里定位一个文件。
@@ -81,10 +95,9 @@ pub fn reveal(path: &Path) -> io::Result<()> {
     #[cfg(windows)]
     {
         let arg = format!("/select,{}", path.display());
-        std::process::Command::new("explorer.exe")
-            .arg(arg)
-            .spawn()
-            .map(|_| ())
+        let mut command = std::process::Command::new("explorer.exe");
+        command.arg(arg);
+        spawn_and_reap(command)
     }
     #[cfg(not(windows))]
     {

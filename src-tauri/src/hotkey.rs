@@ -140,33 +140,55 @@ pub fn next_hotkey(outcome: &FallbackOutcome, current: &str) -> Option<String> {
 ///
 /// 解析备选键或注销旧键失败仍是 `Err`：前者没动过注册，后者连"重来"的起点都没有，
 /// 两者都不该被当成一次有效的切换尝试。
-pub fn switch_to_fallback(handle: &AppHandle, current: &str) -> Result<FallbackOutcome, String> {
-    let fallback: Shortcut = FALLBACK_SHORTCUT
-        .parse()
-        .map_err(|error| format!("备选热键无法解析：{error}"))?;
+/// 换键时的候选顺序：备选 → 旧键（若非空）→ 默认键（若与前面不同）。
+///
+/// 为什么需要默认键兜底：上次持久化了备选键，下次登录它也被占用时，
+/// 只重试备选键会永远失败——即使默认键此刻已经释放，本次会话仍然没有热键，
+/// 用户只能手改 `ui-state.json`。纯函数，顺序可断言。
+fn fallback_candidates(current: &str) -> Vec<String> {
+    let current = current.trim();
+    let mut candidates = vec![FALLBACK_SHORTCUT.to_owned()];
+    if !current.is_empty() && current != FALLBACK_SHORTCUT {
+        candidates.push(current.to_owned());
+    }
+    if current != DEFAULT_SHORTCUT && FALLBACK_SHORTCUT != DEFAULT_SHORTCUT {
+        candidates.push(DEFAULT_SHORTCUT.to_owned());
+    }
+    candidates
+}
 
+pub fn switch_to_fallback(handle: &AppHandle, current: &str) -> Result<FallbackOutcome, String> {
+    let candidates = fallback_candidates(current);
     handle
         .global_shortcut()
         .unregister_all()
         .map_err(|error| format!("注销旧热键失败：{error}"))?;
 
-    if let Err(error) = bind(handle, fallback) {
-        tracing::warn!("备选热键注册失败，尝试恢复原键：{error}");
-        // 旧键文本解析不出来就无从恢复——此刻确实没有热键，如实返回三态。
-        let Ok(previous) = current.parse::<Shortcut>() else {
-            return Ok(FallbackOutcome::NoneRegistered);
+    let mut last_error = String::new();
+    for candidate in candidates {
+        let Ok(shortcut) = candidate.parse::<Shortcut>() else {
+            last_error = format!("热键无法解析：{candidate}");
+            continue;
         };
-        return match bind(handle, previous) {
-            Ok(()) => Ok(FallbackOutcome::RestoredOld(current.to_owned())),
-            Err(restore) => {
-                tracing::warn!("原热键也无法恢复：{restore}");
-                Ok(FallbackOutcome::NoneRegistered)
+        match bind(handle, shortcut) {
+            Ok(()) => {
+                tracing::info!("hotkey switched to {candidate}");
+                if candidate == FALLBACK_SHORTCUT {
+                    return Ok(FallbackOutcome::Switched(candidate));
+                }
+                if candidate == current.trim() {
+                    return Ok(FallbackOutcome::RestoredOld(candidate));
+                }
+                return Ok(FallbackOutcome::Switched(candidate));
             }
-        };
+            Err(error) => {
+                tracing::warn!("热键 {candidate} 注册失败：{error}");
+                last_error = error;
+            }
+        }
     }
-
-    tracing::info!("hotkey switched to {FALLBACK_SHORTCUT}");
-    Ok(FallbackOutcome::Switched(FALLBACK_SHORTCUT.to_owned()))
+    tracing::error!("所有热键候选都注册失败：{last_error}");
+    Ok(FallbackOutcome::NoneRegistered)
 }
 
 /// 失焦即收走。
@@ -183,6 +205,18 @@ fn install_auto_dismiss(app: &App) {
     let handle = app.handle().clone();
     window.on_window_event(move |event| {
         match event {
+            WindowEvent::CloseRequested { api, .. } => {
+                // 召唤式常驻托盘：关窗只是收起，不是退出。Alt+F4 / WM 关闭若销毁
+                // 最后一个窗口，Tauri 会默认结束进程——托盘消失、dispatcher 的
+                // shutdown 从未执行，正在写盘的 capture 被静默丢弃。
+                // 真正的退出在托盘「退出」，它会先排空 dispatcher。
+                api.prevent_close();
+                if let Some(window) = handle.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+                FOCUSED_SINCE_SUMMON.store(false, Ordering::SeqCst);
+                return;
+            }
             WindowEvent::Focused(true) => {
                 // 记下"这次唤出后确实被用过"，此后失焦才算真的离开。
                 FOCUSED_SINCE_SUMMON.store(true, Ordering::SeqCst);
@@ -414,7 +448,27 @@ mod tests {
 
     // -------------------------------------------------- R116 回落三态到热键文本
 
-    use super::{FallbackOutcome, next_hotkey};
+    use super::{FallbackOutcome, fallback_candidates, next_hotkey};
+
+    /// 候选顺序：备选 → 旧键 → 默认。空旧键时也要尝试默认。
+    #[test]
+    fn fallback_candidates_try_fallback_then_old_then_default() {
+        assert_eq!(
+            fallback_candidates("ctrl+alt+space"),
+            vec![String::from("super+alt+s"), String::from("ctrl+alt+space")],
+            "旧键就是默认键时不该重复"
+        );
+        assert_eq!(
+            fallback_candidates(""),
+            vec![String::from("super+alt+s"), String::from("ctrl+alt+space")],
+            "没有旧键时仍要尝试默认键，否则重启后可能永无热键"
+        );
+        assert_eq!(
+            fallback_candidates("super+alt+s"),
+            vec![String::from("super+alt+s"), String::from("ctrl+alt+space")],
+            "旧键等于备选键时不要重复"
+        );
+    }
 
     /// 成功换键：状态里必须写成**新键**，否则托盘继续显示旧键。
     #[test]

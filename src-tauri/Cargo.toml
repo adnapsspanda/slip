@@ -17,7 +17,7 @@ serde_json = { workspace = true }
 time = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "std"] }
-tokio = { workspace = true, features = ["sync", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["sync", "rt-multi-thread", "time"] }
 
 slip-domain = { path = "../crates/slip-domain" }
 slip-store = { path = "../crates/slip-store" }

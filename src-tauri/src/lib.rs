@@ -178,11 +178,17 @@ async fn complete(
 /// 界面只需要"有几个、叫什么"，绝对路径既没必要暴露给定 webview 的代码，
 /// 也是 `reveal_corrupt` 拒绝接收前端路径的前提。
 #[tauri::command]
-fn corrupt_files(state: tauri::State<'_, ShellState>) -> Vec<String> {
-    system::corrupt_artifacts(&state.vault)
-        .into_iter()
-        .filter_map(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
-        .collect()
+async fn corrupt_files(state: tauri::State<'_, ShellState>) -> Result<Vec<String>, String> {
+    let vault = state.vault.clone();
+    tauri::async_runtime::spawn_blocking(move || system::corrupt_artifacts(&vault))
+        .await
+        .map_err(|error| format!("读取损坏文件被中断：{error}"))
+        .map(|paths| {
+            paths
+                .into_iter()
+                .filter_map(|path| path.file_name().map(|n| n.to_string_lossy().into_owned()))
+                .collect()
+        })
 }
 
 /// 在资源管理器里选中最新的损坏文件。定位目标由 Rust 自己查，不接受参数。
@@ -385,7 +391,10 @@ async fn export_markdown(state: tauri::State<'_, ShellState>) -> Result<String, 
         .collect();
     let title = "Slip 导出";
     let content = system::render_plain(title, &rows);
-    let path = system::write_export(&state.vault, &content)?;
+    let vault = state.vault.clone();
+    let path = tauri::async_runtime::spawn_blocking(move || system::write_export(&vault, &content))
+        .await
+        .map_err(|error| format!("导出被中断：{error}"))??;
     // 导出完直接定位到文件：用户下一步多半就是复制或打开它。
     // 定位失败只影响便利性，不该让导出本身报错，所以只忽略。
     let _ = platform::reveal(&path);
@@ -403,8 +412,13 @@ async fn external_diff(state: tauri::State<'_, ShellState>) -> Result<system::Di
         .await
         .map_err(|error| format!("读取快照失败：{error:?}"))?;
     let path = state.vault.join("inbox.md");
-    let disk: Vec<(String, String, bool)> = slip_store::peek_slips(&path)
-        .map_err(|kind| format!("读取 inbox 失败：{kind}"))?
+    // 整份解析放到阻塞线程：大 inbox（10k 条）或网络盘上，这个同步调用会卡住
+    // async worker，而它只是给横幅算"外部改了几条"。
+    let peeks = tauri::async_runtime::spawn_blocking(move || slip_store::peek_slips(&path))
+        .await
+        .map_err(|error| format!("读取 inbox 被中断：{error}"))?
+        .map_err(|kind| format!("读取 inbox 失败：{kind}"))?;
+    let disk: Vec<(String, String, bool)> = peeks
         .into_iter()
         .map(|slip| (slip.id.to_canonical_string(), slip.text, slip.done))
         .collect();
@@ -667,7 +681,17 @@ fn guard_corrupt_path(vault: &std::path::Path, raw: &str) -> Result<std::path::P
     if !name.starts_with("inbox.md.corrupt-") {
         return Err("只能预览 inbox.md.corrupt-* 证据文件".to_owned());
     }
-    // 先规范化**最终路径**，再比对它的父目录。
+    // **先做廉价词法判断**：前端传进来的可能是 `\\dead-host\share\...`，
+    // 直接 canonicalize 会等 SMB 超时，整个 IPC 卡住。只要父目录词法上不是
+    // vault，就立刻拒绝，连磁盘都不碰。
+    let trim_sep = |text: &str| text.trim_end_matches(['/', '\\']).to_owned();
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| "路径没有父目录".to_owned())?;
+    if trim_sep(&parent.to_string_lossy()) != trim_sep(&vault.to_string_lossy()) {
+        return Err("只能预览 vault 目录下的文件".to_owned());
+    }
+    // 词法通过后再规范化**最终路径**，挡住符号链接与 `..` 的剩余情形。
     //
     // 只 canonicalize 父目录是不够的：`vault/inbox.md.corrupt-x` 可以是一个指向
     // vault 外部的符号链接，父目录检查照样通过，随后 `read_corrupt_preview`
@@ -705,9 +729,17 @@ fn guard_corrupt_path(vault: &std::path::Path, raw: &str) -> Result<std::path::P
 }
 
 #[tauri::command]
-fn corrupt_preview(state: tauri::State<'_, ShellState>, path: String) -> Result<String, String> {
-    let path = guard_corrupt_path(&state.vault, &path)?;
-    slip_store::fsops::read_corrupt_preview(&path).map_err(|error| error.to_string())
+async fn corrupt_preview(
+    state: tauri::State<'_, ShellState>,
+    path: String,
+) -> Result<String, String> {
+    let vault = state.vault.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = guard_corrupt_path(&vault, &path)?;
+        slip_store::fsops::read_corrupt_preview(&path).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("读取证据被中断：{error}"))?
 }
 
 #[tauri::command]
