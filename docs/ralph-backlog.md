@@ -53,6 +53,11 @@
 
 ## 完成记录
 
+- **R96 后端：批量完成命令（本轮）**：新增 IPC `complete_many(ids, done)`——一批走**同一个
+  `apply` 批次**，共用一次原子替换、`content_rev` 只 +1、撤销栈里算一步（与 `archive` 的批处理
+  语义一致）。与单条 `complete` **并存而不合并**：单条是热路径（空格键），批量是低频操作，
+  合并会让热路径多一次 `Vec` 分配。命令数 22 → 23，文档同步。
+
 - **R94/R95 后端桥接（本轮）**：为前端置顶 UI 打通数据通路——
   - `SlipView` 增加 `pinned: bool`（`crates/slip-app/src/lib.rs`），presenter 两处映射补齐；
   - 新增 IPC 命令 `set_pinned`（与 `set_locked` 同构：一条 Patch、一次 `apply`、

@@ -276,6 +276,47 @@ async fn set_pinned(
         .await)
 }
 
+/// 批量切换完成状态（R96 的"完成匹配项"）。
+///
+/// 一批走**同一个 `apply` 批次**：共用一次原子替换、`content_rev` 只 +1，
+/// 且在撤销栈里算作一步——按一次 `Ctrl+Z` 整批恢复。这与 `archive` 的批处理语义一致。
+///
+/// 与单条 `complete` 并存而不是替换它：单条是热路径（空格键），批量是低频操作，
+/// 合并成一个命令会让热路径多一次 `Vec` 分配。
+#[tauri::command]
+async fn complete_many(
+    state: tauri::State<'_, ShellState>,
+    request_id: String,
+    ids: Vec<String>,
+    done: bool,
+) -> Result<Ack, String> {
+    let at = OffsetDateTime::now_utc();
+    let mut mutations = Vec::with_capacity(ids.len());
+    for raw_id in ids {
+        let id = match SlipId::parse_strict(&raw_id) {
+            Ok(id) => id,
+            Err(error) => {
+                return Ok(rejected(&request_id, "domain", error.to_string()));
+            }
+        };
+        mutations.push(Mutation::Patch {
+            id,
+            patch: Patch::SetDone {
+                done,
+                at: at.replace_nanosecond(0).unwrap_or(at),
+            },
+        });
+    }
+    if mutations.is_empty() {
+        return Ok(rejected(
+            &request_id,
+            "domain",
+            "没有可操作的纸条".to_owned(),
+        ));
+    }
+    Ok(state.dispatcher.apply(request_id, mutations).await)
+}
+
 /// 归档一条或多条已完成的纸条。
 ///
 /// 一批归档走同一个 `apply` 批次：共用一次原子替换、`content_rev` 只 +1，
@@ -599,6 +640,7 @@ pub fn run() {
             get_snapshot,
             capture,
             complete,
+            complete_many,
             edit,
             set_locked,
             set_pinned,
