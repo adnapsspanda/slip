@@ -191,8 +191,10 @@ CI（`.github/workflows/ci.yml`）还跑前端构建、release 构建、Linux �
 
 ## 安全与配置
 
-- capability 只授两项：`core:default` + `core:window:allow-start-dragging`。前者不含拖拽，
-  少了它无边框窗口**看起来正常但完全拖不动**。加权限前先在 `ui/src` grep 到真实调用。
+- capability 只授三项：`core:event:allow-listen`、`core:event:allow-unlisten` 与
+  `core:window:allow-start-dragging`。前两项供唤出事件订阅；少了第三项，无边框窗口
+  **看起来正常但完全拖不动**。加权限前先在 `ui/src` grep 到真实调用；自定义命令由
+  本地 origin 直接调用，不需要 capability。
 - 写剪贴板也走 Rust 侧（`copy_diagnostics` 经 `ClipboardExt`），所以 capability 里没有
   `clipboard-manager:*`。能少给一项能力就少给一项。
 - 不把密钥、机器相关路径写进仓库；示例配置用占位值。

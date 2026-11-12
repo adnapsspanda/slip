@@ -629,8 +629,9 @@ vault 内的符号链接/硬链接可让「只读证据」读到 vault 外的文
 `verify-hotkey.ps1`。这些需要交互式 Windows 桌面，本机是 WSL。
 
 **明确未做**（记录为欠账，不是遗忘）：
-- `capabilities/default.json` 收窄为 `core:event` + `start-dragging`：逻辑上可行，但无 GUI
-  验证，改错会让应用启动后无法交互；留待真机确认。
+- `capabilities/default.json` 收窄为 `core:event` + `start-dragging`：**已完成（批次 I）**——
+  权限从 `core:default` 聚合包收窄为 `core:event:allow-listen` / `allow-unlisten` /
+  `core:window:allow-start-dragging`；构建与文档同步检查通过，**event.listen 与拖拽仍需真机确认**。
 - `PaperViewSet` 死抽象清理：**已完成（批次 H）**——删除类型、`with_view`/`view` 与两条只测字段复制的测试；`Presenter::new` 直接构造，外壳不再从偏好拼视图。
 - 三处展示优先级统一为 `resolveUiState`：当前三份实现一致，属于可读性优化。
 - `peek_slips` 的解析问题没有传给 `external_diff`：外部改坏一条时仍可能显示「消失 N 条」。

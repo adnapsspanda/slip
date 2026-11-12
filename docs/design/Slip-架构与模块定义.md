@@ -1032,16 +1032,17 @@ M0 验收子集（§9.1 第 1、6 条；§9.2 的文本往返、原字节保留�
 插件：`tauri-plugin-global-shortcut`、`tauri-plugin-autostart`、`tauri-plugin-single-instance`
 （单实例**必须最先注册**，否则其它插件可能在它判定前就建好窗口）。`tauri` 开启 `tray-icon` feature。
 
-Capability 只有两项：`core:default` 与 `core:window:allow-start-dragging`。
+Capability 只有三项：`core:event:allow-listen`、`core:event:allow-unlisten` 与 `core:window:allow-start-dragging`。
 
-- 前端实际只用 `core.invoke`（自定义命令）与 `event.listen`（唤出事件），两者都在
-  `core:default` 里；
+- 前端只用 `core.invoke`（自定义命令）、`event.listen`/`unlisten`（唤出事件）与
+  `data-tauri-drag-region` 所需的 start-dragging。**自定义命令由本地 origin 直接调用，
+  不需要 capability**（`has_app_acl_manifest` 为假；Tauri 只对 plugin 命令与非本地 origin 做 ACL）；
+- `core:default` 是一个聚合包（app/event/image/menu/path/resources/tray/webview/window），
+  远超前端实际所需；2026-11-12 已移除，避免脚本注入或前端依赖回归时扩大影响面；
 - 窗口显隐/聚焦、全局热键、开机自启全部由 Rust 侧直接调用插件 API，**不经过 webview IPC**，
   因此不需要对应 capability；
-- **`core:default` 不含 `allow-start-dragging`**（它的组成是 `core:window:default` +
-  `core:webview:default` + …，而 `core:window:default` 只有只读类命令）。
-  标题栏的 `data-tauri-drag-region` 因此必须单独授这一条，否则**无边框窗口完全无法移动**，
-  而外观毫无异常。收窄权限时踩过这个坑，现由验收脚本钉住（修订 16）。
+- **`core:window:allow-start-dragging` 不能省**：标题栏的 `data-tauri-drag-region` 依赖它，
+  否则**无边框窗口完全无法移动**，而外观毫无异常。收窄权限时踩过这个坑，现由验收脚本钉住（修订 16）。
 
 **真实热键验收（Windows；Win32 `keybd_event` 发真键 + CDP 读界面 + 文件系统读磁盘 + `GetForegroundWindow` 读焦点）**：
 
