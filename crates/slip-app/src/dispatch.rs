@@ -238,6 +238,11 @@ async fn run(
     const UNDO_DEPTH: usize = 50;
     let mut undo: VecDeque<Vec<Mutation>> = VecDeque::new();
 
+    // 先补发一次初始快照：`Presenter` 在构造时就发布了 `ui_rev = 1`，而 sink 是
+    // 之后才注入消费者的。不补这一发，将来真接上推送时首帧永远缺失——前端只能
+    // 靠一次 `GetSnapshot` 自救，而"推送通路没被任何测试走过"正是审计指出的缺口。
+    emit(&presenter, &mut *sink);
+
     loop {
         let Some(command) = rx.recv().await else {
             break;
@@ -255,16 +260,21 @@ async fn run(
                 }
                 // "正文编辑 / 勾选 / 归档"进撤销栈：归档后纸条立即从默认列表隐藏，
                 // 没有开关可点回去，因此必须能靠撤销恢复；追加无删除变更，锁定有显式开关。
-                let inverse = if undoable(&mutations) {
-                    inverse_batch(&store.snapshot(), &mutations)
-                } else {
-                    None
-                };
-                let ack =
-                    run_batch(&store, &mut presenter, &mut *sink, request_id, mutations).await;
-                if matches!(ack.result, AckResult::Applied)
-                    && let Some(inverse) = inverse
-                {
+                //
+                // **只有内容真的变了才入栈**：Noop 也是 `Applied`（pipeline 测试明确
+                // 锁住了这条），把它当成"可撤销的一步"会让 Ctrl+Z 白白消耗一次——
+                // 用户看到"已撤销"，状态却停在原处。
+                let track_undo = undoable(&mutations);
+                let (ack, inverse, changed) = run_batch(
+                    &store,
+                    &mut presenter,
+                    &mut *sink,
+                    request_id,
+                    mutations,
+                    track_undo,
+                )
+                .await;
+                if changed && let Some(inverse) = inverse {
                     push_undo(&mut undo, inverse, UNDO_DEPTH);
                 }
                 let _ = reply.send(ack);
@@ -280,12 +290,13 @@ async fn run(
                     continue;
                 };
                 // 撤销走与普通修改完全相同的写入路径：全有或全无、同一个提交点。
-                let ack = run_batch(
+                let (ack, _, _) = run_batch(
                     &store,
                     &mut presenter,
                     &mut *sink,
                     request_id,
                     inverse.clone(),
+                    false,
                 )
                 .await;
                 // 撤销失败（例如目标刚被锁定）就把这一步放回去，解锁后还能再撤。
@@ -310,8 +321,13 @@ async fn run(
                 let ack = match result {
                     Ok(outcome) => {
                         // 恢复是"覆盖当前内容"，同样不能被撤销栈重放，所以不进 undo。
+                        // 但**失败时不能清栈**：备份名非法、备份已被保留策略删掉时文档
+                        // 一个字节都没变，用户手上的撤销步仍然有效（与 `Reload` 同一规则）。
+                        let error = outcome.result.as_ref().err().map(map_store_error);
                         let ack = settle(&mut presenter, &mut *sink, request_id, &outcome);
-                        undo.clear();
+                        if error.is_none() {
+                            undo.clear();
+                        }
                         ack
                     }
                     Err(join) => fatal(&mut presenter, &mut *sink, request_id, join.to_string()),
@@ -382,35 +398,17 @@ async fn run(
                 let ack = match result {
                     Ok(outcome) => {
                         let error = outcome.result.as_ref().err().map(map_store_error);
-                        presenter.accept(&outcome);
-                        let ui_rev = presenter.ui_rev();
-                        emit(&presenter, &mut *sink);
+                        let ack = settle(&mut presenter, &mut *sink, request_id, &outcome);
                         if error.is_none() {
                             undo.clear();
                         }
-                        match error {
-                            None => Ack {
-                                request_id,
-                                result: AckResult::Applied,
-                                ui_rev: Some(ui_rev),
-                                error: None,
-                            },
-                            Some((code, message)) => Ack {
-                                request_id,
-                                result: AckResult::Rejected,
-                                ui_rev: Some(ui_rev),
-                                error: Some(AckError {
-                                    code: code.to_owned(),
-                                    message,
-                                }),
-                            },
-                        }
+                        ack
                     }
-                    Err(join_error) => {
-                        tracing::error!(?join_error, "purge 任务失败");
-                        let _ = reply.send(not_executed(request_id));
-                        continue;
-                    }
+                    // 与 `run_batch` 同一规则：`JoinError` 可能发生在 rename 之后，
+                    // 磁盘上那一行也许已经没了。报 `not_executed` 等于对用户撒谎，
+                    // 而且**不进 Fatal** 会让下一次 Apply 在锁中毒时再次 panic，
+                    // 消费者任务随之静默死亡——所有后续请求都变成 dropped。
+                    Err(join) => fatal(&mut presenter, &mut *sink, request_id, join.to_string()),
                 };
                 let _ = reply.send(ack);
             }
@@ -424,31 +422,16 @@ async fn run(
                 let result =
                     tokio::task::spawn_blocking(move || store_handle.isolate_and_reset()).await;
                 // 隔离重建 = 整库换成空文档，旧撤销记录指向的条目全都不存在了。
+                // 但**只有真的换了内容才清栈**：健康态下调用会得到 `NotDegraded`，
+                // 此时文档一个字节都没动，清掉撤销历史只会让 Ctrl+Z 凭空失效。
                 let ack = match result {
                     Ok(outcome) => {
                         let error = outcome.result.as_ref().err().map(map_store_error);
-                        presenter.accept(&outcome);
-                        let ui_rev = presenter.ui_rev();
-                        emit(&presenter, &mut *sink);
-                        // 整库已换，撤销栈一并清空。
-                        undo.clear();
-                        match error {
-                            None => Ack {
-                                request_id,
-                                result: AckResult::Applied,
-                                ui_rev: Some(ui_rev),
-                                error: None,
-                            },
-                            Some((code, message)) => Ack {
-                                request_id,
-                                result: result_for_code(code),
-                                ui_rev: Some(ui_rev),
-                                error: Some(AckError {
-                                    code: code.to_owned(),
-                                    message,
-                                }),
-                            },
+                        let ack = settle(&mut presenter, &mut *sink, request_id, &outcome);
+                        if error.is_none() {
+                            undo.clear();
                         }
+                        ack
                     }
                     Err(join) => fatal(&mut presenter, &mut *sink, request_id, join.to_string()),
                 };
@@ -514,20 +497,49 @@ fn settle(
 ///
 /// `Apply` 与 `Undo` 共用同一段：撤销必须走**完全相同**的写入路径，
 /// 否则"提交点""全有或全无""JoinError 即未知"这些约定会出现两套实现。
+///
+/// 返回值里的 `inverse` 与 `changed` 只对 `Apply` 有意义（`track_undo` 为真时才算）：
+/// - `inverse` 用**写入前**的快照算出；快照就在同一个 `spawn_blocking` 里取，
+///   主循环再也不做整份文档的深拷贝——否则数千条的大纲上每次编辑都会卡住消费者，
+///   连 `GetSnapshot` 和托盘轮询都排在它后面；
+/// - `changed` 表示 store 是否真的推进了 `content_rev`。Noop 也是 `Applied`，
+///   按 ACK 判断会把空操作塞进撤销栈。
 async fn run_batch(
     store: &Arc<dyn Store>,
     presenter: &mut Presenter,
     sink: &mut (dyn SnapshotSink + 'static),
     request_id: String,
     mutations: Vec<Mutation>,
-) -> Ack {
+    track_undo: bool,
+) -> (Ack, Option<Vec<Mutation>>, bool) {
     let store_handle = Arc::clone(store);
-    let result = tokio::task::spawn_blocking(move || store_handle.apply(&mutations)).await;
+    let result = tokio::task::spawn_blocking(move || {
+        let (before_rev, inverse) = if track_undo {
+            let before = store_handle.snapshot();
+            let rev = before.content_rev;
+            (Some(rev), inverse_batch(&before, &mutations))
+        } else {
+            (None, None)
+        };
+        let outcome = store_handle.apply(&mutations);
+        let changed = outcome.result.is_ok()
+            && before_rev.is_some_and(|rev| outcome.snapshot.content_rev != rev);
+        (outcome, inverse, changed)
+    })
+    .await;
     match result {
-        Ok(outcome) => settle(presenter, sink, request_id, &outcome),
+        Ok((outcome, inverse, changed)) => (
+            settle(presenter, sink, request_id, &outcome),
+            inverse,
+            changed,
+        ),
         // 得到 JoinError 意味着我们无法知道磁盘上到底发生了什么：可能 rename
         // 已经成功。只能报 unknown 并进入 Fatal。
-        Err(join) => fatal(presenter, sink, request_id, join.to_string()),
+        Err(join) => (
+            fatal(presenter, sink, request_id, join.to_string()),
+            None,
+            false,
+        ),
     }
 }
 
@@ -561,27 +573,54 @@ fn inverse_batch(before: &StoreSnapshot, mutations: &[Mutation]) -> Option<Vec<M
             return None;
         };
         let slip = before.slips.iter().find(|slip| slip.id == *id)?;
-        let patch = match patch {
+        let inverse_patch = match patch {
             Patch::SetText(_) => Patch::SetText(slip.text.clone()),
-            Patch::SetDone { .. } => match (slip.done, slip.done_at) {
-                // 原本已完成：恢复原来的完成时间，别用"此刻"覆盖历史。
-                (true, Some(at)) => Patch::SetDone { done: true, at },
-                // 原本未完成：逆操作是取消完成，`at` 在使用上被忽略。
-                _ => Patch::SetDone {
-                    done: false,
-                    at: OffsetDateTime::now_utc(),
-                },
-            },
+            Patch::SetDone { .. } => {
+                // 判据必须是 `slip.done`，**不是 `done_at` 是否存在**：文件里允许
+                // "已完成但没有 done_at"（state.rs 的 `accepts_done_without_done_at`），
+                // 那种状态原来会落进"原本未完成"分支，逆操作被算成 SetDone{false}，
+                // 于是"取消完成 → Ctrl+Z"什么也没恢复。
+                if !slip.done {
+                    // 原本未完成：逆操作是取消完成，`at` 在使用上被忽略。
+                    Patch::SetDone {
+                        done: false,
+                        at: OffsetDateTime::now_utc(),
+                    }
+                } else {
+                    // 原本已完成。`at` 用原值；缺失时只能补"此刻"——那是文件里没有
+                    // 这个信息时能做的最好近似。领域层对已完成条目直接 Noop，
+                    // 所以这里的 `at` 不会覆盖历史。
+                    let at = slip.done_at.unwrap_or_else(OffsetDateTime::now_utc);
+                    // `SetDone{false}` 会**连 archived_at 一起清掉**（state.rs §4.7）：
+                    // 在归档抽屉里取消完成再撤销，done 回来了、条目却跑回主列表，
+                    // 是"界面说已撤销、状态没回到原样"的静默错误。补一条归档，
+                    // 顺序必须是先完成后归档（Archive 要求 done 为真）。
+                    if let Some(archived_at) = slip.archived_at {
+                        inverse.push(Mutation::Patch {
+                            id: *id,
+                            patch: Patch::SetDone { done: true, at },
+                        });
+                        inverse.push(Mutation::Patch {
+                            id: *id,
+                            patch: Patch::Archive { at: archived_at },
+                        });
+                        continue;
+                    }
+                    Patch::SetDone { done: true, at }
+                }
+            }
             Patch::Archive { .. } | Patch::Unarchive => match slip.archived_at {
                 Some(at) => Patch::Archive { at },
                 None => Patch::Unarchive,
             },
             // 置顶与定稿同类：它们是"标注"，不是内容编辑。撤销一条正文改动时
             // 不该顺带把用户刚点的置顶也翻回去——那会让撤销变成不可预测的连带操作。
-            Patch::SetLocked(_) => return None,
-            Patch::SetPinned(_) => return None,
+            Patch::SetLocked(_) | Patch::SetPinned(_) => return None,
         };
-        inverse.push(Mutation::Patch { id: *id, patch });
+        inverse.push(Mutation::Patch {
+            id: *id,
+            patch: inverse_patch,
+        });
     }
     Some(inverse)
 }
@@ -689,7 +728,7 @@ fn map_store_error(error: &StoreError) -> (&'static str, String) {
         StoreError::Io(kind) => ("io", kind.to_string()),
         StoreError::NotDegraded => (
             "notDegraded",
-            String::from("isolation is only allowed while degraded"),
+            String::from("只有处于降级状态时才允许隔离重建"),
         ),
     }
 }
@@ -751,6 +790,11 @@ mod tests {
         log: Arc<Mutex<Vec<String>>>,
         rev: Mutex<u64>,
         behavior: Mutex<Behavior>,
+        /// 恢复/彻底删除各有自己的行为：这两条路径原来在 mock 里走默认实现
+        /// （永远失败），所以 dispatch 侧对它们的处理从来没有被单测覆盖过。
+        restore: Mutex<Behavior>,
+        purge: Mutex<Behavior>,
+        slips: Vec<Slip>,
         gate: Option<Mutex<std::sync::mpsc::Receiver<()>>>,
     }
 
@@ -765,7 +809,7 @@ mod tests {
         fn snapshot(&self, rev: u64) -> StoreSnapshot {
             StoreSnapshot {
                 content_rev: ContentRev(rev),
-                slips: Vec::new(),
+                slips: self.slips.clone(),
                 health: Health::default(),
                 needs_reload: false,
                 recovery: RecoveryState::Normal,
@@ -782,24 +826,32 @@ mod tests {
             }
             self.log.lock().unwrap().push(event);
         }
-    }
 
-    impl Store for MockStore {
-        fn apply(&self, _mutations: &[Mutation]) -> StoreOutcome {
-            let behavior = self.behavior.lock().unwrap().clone();
+        /// 一次"推进版本 + 记录 + 按行为返回结果"的通用步骤。
+        fn step(&self, behavior: Behavior, event: &str) -> StoreOutcome {
             if behavior == Behavior::Panic {
-                panic!("simulated panic inside the store task");
+                panic!("simulated panic inside the store task ({event})");
             }
-            let mut rev = self.rev.lock().unwrap();
-            *rev += 1;
-            let current = *rev;
-            self.record(format!("exec:{current}"));
+            // 先放开 `rev` 锁再 `record`：`record` 可能阻塞在测试的 gate 上。
+            let current = {
+                let mut rev = self.rev.lock().unwrap();
+                *rev += 1;
+                *rev
+            };
+            self.record(format!("{event}:{current}"));
             let snapshot = self.snapshot(current);
             match behavior {
                 Behavior::Ok => StoreOutcome::ok(snapshot),
                 Behavior::Fail(error) => StoreOutcome::failed(snapshot, error),
                 Behavior::Panic => unreachable!(),
             }
+        }
+    }
+
+    impl Store for MockStore {
+        fn apply(&self, _mutations: &[Mutation]) -> StoreOutcome {
+            let behavior = self.behavior.lock().unwrap().clone();
+            self.step(behavior, "exec")
         }
 
         fn reload(&self) -> StoreOutcome {
@@ -812,6 +864,16 @@ mod tests {
                 self.snapshot(*self.rev.lock().unwrap()),
                 StoreError::NotDegraded,
             )
+        }
+
+        fn restore_backup(&self, _name: &str) -> StoreOutcome {
+            let behavior = self.restore.lock().unwrap().clone();
+            self.step(behavior, "restore")
+        }
+
+        fn purge_archived(&self, _id: SlipId) -> StoreOutcome {
+            let behavior = self.purge.lock().unwrap().clone();
+            self.step(behavior, "purge")
         }
 
         fn snapshot(&self) -> StoreSnapshot {
@@ -857,10 +919,36 @@ mod tests {
         failures_left: usize,
         capacity: usize,
     ) -> Dispatcher {
+        build_full(
+            log,
+            behavior,
+            Behavior::Ok,
+            Behavior::Ok,
+            Vec::new(),
+            gate,
+            failures_left,
+            capacity,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_full(
+        log: Arc<Mutex<Vec<String>>>,
+        behavior: Behavior,
+        restore: Behavior,
+        purge: Behavior,
+        slips: Vec<Slip>,
+        gate: Option<std::sync::Mutex<std::sync::mpsc::Receiver<()>>>,
+        failures_left: usize,
+        capacity: usize,
+    ) -> Dispatcher {
         let store = Arc::new(MockStore {
             log: Arc::clone(&log),
             rev: Mutex::new(1),
             behavior: Mutex::new(behavior),
+            restore: Mutex::new(restore),
+            purge: Mutex::new(purge),
+            slips,
             gate,
         });
         let sink = RecordingSink {
@@ -904,6 +992,8 @@ mod tests {
         assert_eq!(
             *log.lock().unwrap(),
             vec![
+                // 消费者启动时先补发一次初始快照（ui_rev=1 的那份）。
+                String::from("emit:1"),
                 String::from("exec:2"),
                 String::from("emit:2"),
                 String::from("exec:3"),
@@ -942,8 +1032,9 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn failed_emit_still_reports_applied_with_version() {
         let log = Arc::new(Mutex::new(Vec::new()));
-        // 第一次发射失败，模拟"窗口已关/事件没送到"。
-        let dispatcher = build(Arc::clone(&log), Behavior::Ok, None, 1, 8);
+        // 前两次发射失败（启动时补发的初始快照 + 这次 Apply 的），
+        // 模拟"窗口已关/事件没送到"。
+        let dispatcher = build(Arc::clone(&log), Behavior::Ok, None, 2, 8);
         let ack = dispatcher
             .apply(String::from("r1"), vec![Mutation::Append(slip("a"))])
             .await;
@@ -1031,6 +1122,7 @@ mod tests {
             StoreError::Blocking(slip_store::BlockingError::NonUtf8Record { line: 7 }),
             StoreError::Io(slip_store::IoKind::PermissionDenied),
             StoreError::Io(slip_store::IoKind::Busy),
+            StoreError::NotDegraded,
         ];
 
         let mut codes = std::collections::BTreeSet::new();
@@ -1049,6 +1141,7 @@ mod tests {
 
         // 码集合必须与前端 `formatAckError` 的 case 一致；这里少一个或前端少一个，
         // 都会让某条错误退回"直接显示 message"或显示"未知错误"。
+        // `notDegraded` 曾经漏在这份清单外：消息是英文，而断言却声称"每一条都是中文"。
         assert_eq!(
             codes.into_iter().collect::<Vec<_>>(),
             vec![
@@ -1057,6 +1150,7 @@ mod tests {
                 "domain",
                 "io",
                 "needsReload",
+                "notDegraded",
                 "readOnly"
             ],
             "错误码集合变了：请同步更新前端 formatAckError"
@@ -1110,6 +1204,262 @@ mod tests {
             "Fatal 之后不得再调用 store"
         );
 
+        dispatcher.shutdown().await;
+    }
+
+    // ------------------------------------------------ 逆操作（R132）
+
+    fn snapshot_with(rev: u64, slips: Vec<Slip>) -> StoreSnapshot {
+        StoreSnapshot {
+            content_rev: ContentRev(rev),
+            slips,
+            health: Health::default(),
+            needs_reload: false,
+            recovery: RecoveryState::Normal,
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// 逆操作的判据是 `done`，不是 `done_at` 是否存在。
+    ///
+    /// 文件里允许"已完成但没有 done_at"（`state.rs::accepts_done_without_done_at`）。
+    /// 旧实现按 `(done, done_at)` 匹配，这种状态落进"原本未完成"分支，逆操作被算成
+    /// `SetDone{false}`——取消完成再 Ctrl+Z 什么也没恢复，界面却说"已撤销"。
+    #[test]
+    fn inverse_of_unchecking_a_done_slip_without_done_at_restores_done() {
+        let at = OffsetDateTime::now_utc();
+        let mut done = slip("手工改成 [x] 但没有时间");
+        done.done = true;
+        done.done_at = None;
+
+        let inverse = inverse_batch(
+            &snapshot_with(2, vec![done.clone()]),
+            &[Mutation::Patch {
+                id: done.id,
+                patch: Patch::SetDone { done: false, at },
+            }],
+        )
+        .expect("逆操作可算");
+
+        assert_eq!(inverse.len(), 1);
+        assert!(
+            matches!(
+                &inverse[0],
+                Mutation::Patch {
+                    patch: Patch::SetDone { done: true, .. },
+                    ..
+                }
+            ),
+            "原本已完成，逆操作必须是重新完成：{inverse:?}"
+        );
+    }
+
+    /// `SetDone{false}` 会连 `archived_at` 一起清掉（state.rs §4.7）。
+    /// 归档抽屉里取消完成再撤销，必须把归档也补回来，否则条目跑回主列表。
+    #[test]
+    fn inverse_of_unchecking_an_archived_slip_restores_done_and_archive() {
+        let done_at = OffsetDateTime::now_utc();
+        let archived_at = done_at + time::Duration::minutes(5);
+        let mut archived = slip("归档抽屉里取消完成");
+        archived.done = true;
+        archived.done_at = Some(done_at);
+        archived.archived_at = Some(archived_at);
+
+        let inverse = inverse_batch(
+            &snapshot_with(3, vec![archived.clone()]),
+            &[Mutation::Patch {
+                id: archived.id,
+                patch: Patch::SetDone {
+                    done: false,
+                    at: OffsetDateTime::now_utc(),
+                },
+            }],
+        )
+        .expect("逆操作可算");
+
+        assert_eq!(
+            inverse,
+            vec![
+                Mutation::Patch {
+                    id: archived.id,
+                    patch: Patch::SetDone {
+                        done: true,
+                        at: done_at
+                    },
+                },
+                // 顺序必须"先完成后归档"：`Archive` 要求 done 为真。
+                Mutation::Patch {
+                    id: archived.id,
+                    patch: Patch::Archive { at: archived_at },
+                },
+            ]
+        );
+    }
+
+    /// 原本未完成：逆操作就是取消完成（`at` 在使用上被忽略）。
+    #[test]
+    fn inverse_of_checking_a_pending_slip_unchecks_it() {
+        let pending = slip("还没做");
+        let inverse = inverse_batch(
+            &snapshot_with(1, vec![pending.clone()]),
+            &[Mutation::Patch {
+                id: pending.id,
+                patch: Patch::SetDone {
+                    done: true,
+                    at: OffsetDateTime::now_utc(),
+                },
+            }],
+        )
+        .expect("逆操作可算");
+
+        assert!(matches!(
+            inverse.as_slice(),
+            [Mutation::Patch {
+                patch: Patch::SetDone { done: false, .. },
+                ..
+            }]
+        ));
+    }
+
+    /// 恢复失败（备份名非法 / 备份已被保留策略删掉）时文档没变，撤销历史不该丢。
+    #[tokio::test(flavor = "current_thread")]
+    async fn failed_restore_keeps_the_undo_stack() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let existing = slip("原始正文");
+        let dispatcher = build_full(
+            Arc::clone(&log),
+            Behavior::Ok,
+            Behavior::Fail(StoreError::Io(slip_store::IoKind::NotFound)),
+            Behavior::Ok,
+            vec![existing.clone()],
+            None,
+            0,
+            8,
+        );
+
+        let ack = dispatcher
+            .apply(
+                String::from("r1"),
+                vec![Mutation::Patch {
+                    id: existing.id,
+                    patch: Patch::SetText(String::from("改过的正文")),
+                }],
+            )
+            .await;
+        assert_eq!(ack.result, AckResult::Applied);
+
+        let ack = dispatcher
+            .restore_backup(String::from("r2"), String::from("nope.md"))
+            .await;
+        assert_ne!(ack.result, AckResult::Applied, "备份不存在时必须失败");
+
+        // 撤销栈没被清掉：这一步仍然可以撤销，而不是"没有可撤销的操作"。
+        let ack = dispatcher.undo(String::from("r3")).await;
+        assert_eq!(
+            ack.result,
+            AckResult::Applied,
+            "失败的整体替换不得丢掉撤销历史：{ack:?}"
+        );
+        dispatcher.shutdown().await;
+    }
+
+    /// 恢复成功 = 换了一份内容，撤销栈必须清空。
+    #[tokio::test(flavor = "current_thread")]
+    async fn successful_restore_clears_the_undo_stack() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let existing = slip("原始正文");
+        let dispatcher = build_full(
+            Arc::clone(&log),
+            Behavior::Ok,
+            Behavior::Ok,
+            Behavior::Ok,
+            vec![existing.clone()],
+            None,
+            0,
+            8,
+        );
+
+        let ack = dispatcher
+            .apply(
+                String::from("r1"),
+                vec![Mutation::Patch {
+                    id: existing.id,
+                    patch: Patch::SetText(String::from("改过的正文")),
+                }],
+            )
+            .await;
+        assert_eq!(ack.result, AckResult::Applied);
+
+        let ack = dispatcher
+            .restore_backup(String::from("r2"), String::from("inbox.md.bak-1"))
+            .await;
+        assert_eq!(ack.result, AckResult::Applied);
+
+        let ack = dispatcher.undo(String::from("r3")).await;
+        assert_eq!(ack.result, AckResult::Rejected);
+        assert_eq!(ack.error.expect("error").code, "undo");
+        dispatcher.shutdown().await;
+    }
+
+    /// purge 的冲突必须报成 `conflict`，而不是一律 `rejected`。
+    ///
+    /// 前端目前只读 `error.code`，所以这个错误被掩盖了；但任何按 `AckResult`
+    /// 分支的调用方都会走错提示路径（例如"有没有成功删掉"）。
+    #[tokio::test(flavor = "current_thread")]
+    async fn purge_conflict_is_reported_as_conflict() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let dispatcher = build_full(
+            log,
+            Behavior::Ok,
+            Behavior::Ok,
+            Behavior::Fail(StoreError::Conflict {
+                current_hash: slip_store::Hash([0; 32]),
+            }),
+            Vec::new(),
+            None,
+            0,
+            8,
+        );
+
+        let ack = dispatcher.purge(String::from("r1"), SlipId::new_v7()).await;
+        assert_eq!(ack.result, AckResult::Conflict, "{ack:?}");
+        assert_eq!(ack.error.expect("error").code, "conflict");
+        dispatcher.shutdown().await;
+    }
+
+    /// purge 的 `JoinError` 与其它命令同规则：可能 rename 已成功，只能报 unknown
+    /// 并进入 Fatal；绝不能报 `not_executed`（那等于告诉用户"没删"，而磁盘上已经没了）。
+    #[tokio::test(flavor = "current_thread")]
+    async fn purge_panic_enters_fatal_instead_of_reporting_not_executed() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let dispatcher = build_full(
+            Arc::clone(&log),
+            Behavior::Ok,
+            Behavior::Ok,
+            Behavior::Panic,
+            Vec::new(),
+            None,
+            0,
+            8,
+        );
+
+        let ack = dispatcher.purge(String::from("r1"), SlipId::new_v7()).await;
+        assert_eq!(ack.result, AckResult::Unknown, "panic 后不能声称未执行");
+        assert_eq!(ack.error.expect("error").code, "fatal");
+        assert!(dispatcher.get_snapshot().await.unwrap().runtime.is_fatal());
+
+        // Fatal 之后内容命令一律拒绝，且不再触碰故障 store。
+        let before = log.lock().unwrap().len();
+        let next = dispatcher
+            .apply(String::from("r2"), vec![Mutation::Append(slip("a"))])
+            .await;
+        assert_eq!(next.result, AckResult::Rejected);
+        assert_eq!(next.error.expect("error").code, "notExecuted");
+        assert_eq!(
+            log.lock().unwrap().len(),
+            before,
+            "Fatal 后不得再调用 store"
+        );
         dispatcher.shutdown().await;
     }
 

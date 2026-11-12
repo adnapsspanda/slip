@@ -8,6 +8,8 @@
 //!
 //! 而这两种错都**只在真机上开机/双击时才能复现**，所以判定必须能在单测里覆盖。
 
+use std::ffi::OsStr;
+
 /// 自启标记参数。
 pub const AUTOSTART_FLAG: &str = "--autostart";
 
@@ -18,12 +20,17 @@ pub const AUTOSTART_FLAG: &str = "--autostart";
 ///   而不是让判定悄悄变宽）；
 /// - 路径里恰好含 `--autostart` 的（例如 `C:\tools\--autostart\x.exe`）不算；
 /// - 大小写不同不算：参数是我们自己写进注册表的，就是这一种写法。
+///
+/// 参数类型是 `AsRef<OsStr>` 而不是 `AsRef<str>`：进程参数本来就可能是非 Unicode
+/// （`std::env::args()` 遇到这种参数会 panic）。启动参数判定没有理由要求 UTF-8，
+/// 用 `OsStr` 精确比较就不会让一个畸形参数把进程打死。
 pub fn launched_by_autostart<I, S>(args: I) -> bool
 where
     I: IntoIterator<Item = S>,
-    S: AsRef<str>,
+    S: AsRef<OsStr>,
 {
-    args.into_iter().any(|arg| arg.as_ref() == AUTOSTART_FLAG)
+    args.into_iter()
+        .any(|arg| arg.as_ref() == OsStr::new(AUTOSTART_FLAG))
 }
 
 #[cfg(test)]
@@ -66,5 +73,27 @@ mod tests {
             r"C:\tools\--autostart\x.exe",
             r"--autostart-folder",
         ]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_unicode_arguments_on_unix_do_not_panic() {
+        // `std::env::args()` 遇到非 UTF-8 参数会 panic；判定本身不该有这种前提。
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let bogus = OsString::from_vec(vec![0xff, 0xfe]);
+        assert!(!launched_by_autostart([bogus]));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn non_unicode_arguments_on_windows_do_not_panic() {
+        // Windows 侧的等价物：孤立代理项不是合法 UTF-16，`args()` 同样会 panic。
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+
+        let bogus = OsString::from_wide(&[0xD800]);
+        assert!(!launched_by_autostart([bogus]));
     }
 }

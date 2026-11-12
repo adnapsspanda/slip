@@ -218,6 +218,14 @@ fn show(app: &AppHandle, arm_auto_dismiss: bool) {
         return;
     };
     AUTO_DISMISS_ARMED.store(arm_auto_dismiss, Ordering::SeqCst);
+    // 每一次显示都从"本次还没被聚焦过"重新开始。
+    //
+    // 为什么放在显示路径而不是每个隐藏路径里：`dismiss` 与失焦收走都会复位它，
+    // 但隐藏的入口将来只会变多（关闭按钮转隐藏、托盘隐藏、系统最小化到托盘）。
+    // 只要漏一个，下一次唤出就带着上一轮遗留的 `true`：一旦 `set_focus()` 失败
+    // （Windows 前台锁定），400ms 后窗口会被自动收走，表现成"一闪就没"，
+    // 而 `focus` 的单测全绿——纯函数分不清"本次唤出的聚焦"与"上次遗留的"。
+    FOCUSED_SINCE_SUMMON.store(false, Ordering::SeqCst);
     // 先定位再显示：先显示会让人看见窗口从上一处跳过来。
     place_near_cursor(app, &window);
     let _ = window.show();

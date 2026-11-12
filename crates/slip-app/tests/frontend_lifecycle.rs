@@ -5,8 +5,11 @@
 //! `slip-shell.exe`，在 Smart App Control 会拦新产物的机器上跑不了。这里补一层
 //! **结构守卫**：函数体里少了清理语句就红，防止重构时静默删掉。
 //!
-//! 已知局限（诚实标注）：只检查语句存在，不检查它是否被条件分支包住。行为级验证
-//! 仍归端到端；本测试的职责是"清理语句不许消失"。
+//! 已知局限（诚实标注）：
+//! - 语句按行匹配，**注释行会被过滤**——把 `showArchived = false;` 注释掉必须让测试红，
+//!   否则子串匹配会把"删掉的清理"当成"还在"；
+//! - 但仍不检查语句是否被条件分支包住，也不验证运行时行为。行为级验证归端到端，
+//!   本测试的职责只是"清理语句以可执行的形式存在"。
 
 use std::fs;
 use std::path::PathBuf;
@@ -28,27 +31,48 @@ fn function_body<'a>(source: &'a str, signature: &str) -> Option<&'a str> {
     Some(&rest[..end])
 }
 
-fn assert_body_contains(function: &str, source: &str, needle: &str) {
+/// 断言 `function` 的函数体里存在一条**可执行**语句，返回其行号（函数体内 1-based）。
+///
+/// 按行匹配而不是子串匹配：`// showArchived = false;` 在 `str::contains` 下仍然通过，
+/// 这是结构守卫最容易产生的假阴性。这里跳过空行与 `trim` 后以 `//` 开头的行，
+/// 并要求整行（`trim` 后）恰好等于 `statement`。
+fn assert_body_has_statement(function: &str, source: &str, statement: &str) -> usize {
     let body = function_body(source, function)
         .unwrap_or_else(|| panic!("找不到函数 {function}：签名或闭合大括号变了，请同步本测试"));
-    assert!(
-        body.contains(needle),
-        "{function} 的函数体里缺少 `{needle}`。临时视图状态不跨唤出、整体替换内容必须清空\
-         基于旧内容的派生状态（见 AGENTS.md「状态生命周期」）。函数体：\n{body}"
+    for (index, line) in body.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with("//") {
+            continue;
+        }
+        if trimmed == statement {
+            return index + 1;
+        }
+    }
+    panic!(
+        "{function} 的函数体里缺少可执行语句 `{statement}`（注释行不算）。临时视图状态不跨\
+         唤出、整体替换内容必须清空基于旧内容的派生状态（见 AGENTS.md「状态生命周期」）。\
+         函数体：\n{body}"
     );
 }
 
 /// `summon()` = 新一次捕获会话，不继承上一轮的浏览位置。
+///
+/// AGENTS.md「状态生命周期」同一张表覆盖：`filter` / `filtering`、`showArchived`、
+/// `showBackups` / `pendingRestore`、`notice` 与 `undoTrail` 都必须在这里清。
 #[test]
 fn summon_resets_the_archived_and_backup_views() {
     let source = app_source();
     let summon = "function summon() {";
     for statement in [
+        "notice = null;",
+        "undoTrail = null;",
+        "filter = \"\";",
+        "filtering = false;",
         "showArchived = false;",
         "showBackups = false;",
         "pendingRestore = null;",
     ] {
-        assert_body_contains(summon, &source, statement);
+        assert_body_has_statement(summon, &source, statement);
     }
 }
 
@@ -56,14 +80,14 @@ fn summon_resets_the_archived_and_backup_views() {
 #[test]
 fn reload_clears_the_undo_notice() {
     let source = app_source();
-    assert_body_contains("async function handleReload() {", &source, "notice = null;");
+    assert_body_has_statement("async function handleReload() {", &source, "notice = null;");
 }
 
 /// 从备份恢复 = 换了一份内容，旧撤销提示同样必须过期。
 #[test]
 fn restore_backup_clears_the_undo_notice() {
     let source = app_source();
-    assert_body_contains(
+    assert_body_has_statement(
         "async function handleRestore(backup) {",
         &source,
         "notice = null;",
@@ -74,7 +98,7 @@ fn restore_backup_clears_the_undo_notice() {
 #[test]
 fn isolate_and_reset_clears_the_undo_notice() {
     let source = app_source();
-    assert_body_contains(
+    assert_body_has_statement(
         "async function handleIsolate() {",
         &source,
         "notice = null;",

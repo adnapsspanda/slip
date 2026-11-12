@@ -76,18 +76,27 @@ impl Presenter {
         presenter
     }
 
-    /// 接纳 store 结果。**必须无条件替换 `latest`**，不按 `content_rev` 过滤。
+    /// 接纳 store 结果。**正常情况下无条件替换 `latest`**，不按 `content_rev` 过滤。
     ///
     /// 业务错误同样携带正常快照，因此失败分支也走这里：健康状态、`needs_reload`、
     /// 诊断的变化必须被看见。
     pub fn accept(&mut self, outcome: &StoreOutcome) -> Option<&UiSnapshot> {
-        // `content_rev` 只作"不回退"断言，绝不作为丢弃新快照的理由。
-        debug_assert!(
-            outcome.snapshot.content_rev >= self.latest.content_rev,
-            "content_rev must not go backwards: {} -> {}",
-            self.latest.content_rev.0,
-            outcome.snapshot.content_rev.0
-        );
+        // `content_rev` 回退是 store 违反契约的信号。以前只有 `debug_assert!`，
+        // release 构建里它会被编译掉：一份降版本的旧快照会静默覆盖更新的内容，
+        // 而且前后端全部版本比较从此失真。这里改成**运行期**判定——丢弃这份
+        // 降版本快照、保留 `latest`，并把运行时置为 Fatal 让错误显式可见。
+        //
+        // 仍然调用 `publish()`：Fatal 只换状态、保留最后已接纳内容，但每次生成
+        // 新快照都必须递增 `ui_rev`（§6.3），否则前端会永久停在旧状态上。
+        if outcome.snapshot.content_rev < self.latest.content_rev {
+            self.runtime = RuntimeStatus::Fatal {
+                reason: format!(
+                    "content_rev went backwards: {} -> {}",
+                    self.latest.content_rev.0, outcome.snapshot.content_rev.0
+                ),
+            };
+            return self.publish();
+        }
         self.latest = outcome.snapshot.clone();
         self.publish()
     }
@@ -209,9 +218,19 @@ mod tests {
     use slip_store::{Availability, Health, StoreError, StoreSnapshot};
 
     #[test]
-    fn view_roundtrip_never_drops_the_hotkey() {
-        // 回归：`Prefs` 是整体写的，视图层少带一个字段就等于每次拖拽/折叠
-        // 都把用户配置的热键擦掉。这个测试锁的就是"不许丢"。
+    fn paper_view_set_roundtrip_only_pins_field_copy() {
+        // 原名 `view_roundtrip_never_drops_the_hotkey`（AGENTS.md 里引用的就是它）。
+        //
+        // 必须诚实标注：这条只验证 `PaperViewSet::from_prefs` → `to_prefs` 的
+        // 字段复制（本质上等价于 clone 断言），**不是**任何行为断言。生产代码里
+        // `Presenter::view()` / `PaperViewSet::to_prefs` 目前没有调用者——视图写入
+        // 通路（拖拽/折叠）早已随死代码删除。
+        //
+        // 它仍值得保留：`Prefs` 是整体写的，字段复制一旦丢 `hotkey`，将来任何
+        // 重新接上的持久化路径都会静默擦掉用户配置。
+        //
+        // 当前没有视图写入生产路径；将来若重新引入拖拽/折叠，必须让快照合成或
+        // 偏好持久化真正经过 `Presenter`，并补行为测试，只加这条字段断言不够。
         let prefs = Prefs {
             hotkey: Some(String::from("ctrl+alt+h")),
         };
@@ -219,6 +238,29 @@ mod tests {
         let view = PaperViewSet::from_prefs(&prefs);
 
         assert_eq!(view.to_prefs().hotkey, Some(String::from("ctrl+alt+h")));
+    }
+
+    #[test]
+    fn presenter_keeps_the_view_set_it_was_built_with() {
+        // 字段复制测试不经过 `Presenter`；这条证明视图集在构造（含首次 `publish`）
+        // 以及之后的 `accept` 发布中仍然存活，不会被默认视图集覆盖。
+        let mut presenter = Presenter::with_view(
+            snapshot(1, vec![slip("a", false)]),
+            PaperViewSet {
+                hotkey: Some(String::from("ctrl+alt+h")),
+            },
+        );
+        assert_eq!(
+            presenter.view().to_prefs().hotkey.as_deref(),
+            Some("ctrl+alt+h")
+        );
+
+        let _ = presenter.accept(&StoreOutcome::ok(snapshot(2, vec![slip("b", false)])));
+        assert_eq!(
+            presenter.view().to_prefs().hotkey.as_deref(),
+            Some("ctrl+alt+h"),
+            "accept 发布新快照后视图集必须原样保留"
+        );
     }
 
     fn slip(text: &str, done: bool) -> Slip {
@@ -270,6 +312,31 @@ mod tests {
         assert_eq!(current.ui_rev, second);
         assert!(current.needs_reload);
         assert!(presenter.latest().needs_reload);
+    }
+
+    #[test]
+    fn accepting_a_regressed_content_rev_drops_it_and_goes_fatal() {
+        // release 构建里旧的 `debug_assert!` 会被编译掉：store 若回退版本号，
+        // 降版本的旧快照会静默覆盖更新的内容。这条钉住运行期行为——丢弃它、
+        // 保留 `latest`、进入 Fatal，且仍然前进 `ui_rev`。
+        let mut presenter = Presenter::new(snapshot(5, vec![slip("newer", false)]));
+        let before = presenter.ui_rev();
+
+        let regressed = StoreOutcome::ok(snapshot(4, vec![slip("older", false)]));
+        let current = presenter.accept(&regressed).expect("snapshot");
+
+        assert_eq!(current.ui_rev, before + 1, "Fatal 也必须发布新 ui_rev");
+        assert_eq!(current.content_rev, 5, "降版本快照必须被丢弃");
+        assert_eq!(current.slips.len(), 1);
+        assert_eq!(current.slips[0].text, "newer");
+        assert!(presenter.is_fatal());
+        assert_eq!(presenter.latest().content_rev, ContentRev(5));
+        assert_eq!(presenter.latest().slips[0].text, "newer");
+        let reason = match presenter.runtime() {
+            RuntimeStatus::Fatal { reason } => reason.as_str(),
+            RuntimeStatus::Running => panic!("应当进入 Fatal"),
+        };
+        assert_eq!(reason, "content_rev went backwards: 5 -> 4");
     }
 
     #[test]

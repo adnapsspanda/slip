@@ -28,6 +28,94 @@ fn slip(text: &str) -> Slip {
     }
 }
 
+/// 临时 vault + 真实 store + 真实调度器。
+fn dispatcher_for(inbox: &std::path::Path) -> Dispatcher {
+    let store = Arc::new(MarkdownStore::new(inbox));
+    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    Dispatcher::spawn(store, presenter, 8)
+}
+
+/// 提交单条 patch；ACK 原样交回，由测试自己断言。
+async fn apply_patch(
+    dispatcher: &Dispatcher,
+    request_id: &str,
+    id: SlipId,
+    patch: Patch,
+) -> slip_app::Ack {
+    dispatcher
+        .apply(request_id.to_owned(), vec![Mutation::Patch { id, patch }])
+        .await
+}
+
+/// 每次成功写入都会留下 `<basename>.bak-<unix_ms>[-n]` 备份。
+/// 取字典序最大的那个（时间戳定长，同毫秒追 `-n`）。
+fn latest_backup_name(dir: &std::path::Path) -> String {
+    let mut names: Vec<String> = std::fs::read_dir(dir)
+        .expect("read vault dir")
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.contains(".bak-"))
+        .collect();
+    names.sort();
+    names.pop().expect("一次成功写入之后应当存在备份")
+}
+
+/// 从 marker 里删掉 `;done_at=<time>` 字段，其余部分保持合法。
+fn strip_done_at(line: &str) -> String {
+    let Some(start) = line.find(";done_at=") else {
+        return line.to_owned();
+    };
+    let rest = &line[start..];
+    // 从 `;done_at=` 的值之后开始找下一个分隔符；否则会立刻匹配到字段自己的前导 `;`。
+    let value_start = ";done_at=".len();
+    let end = rest[value_start..]
+        .find(';')
+        .map(|offset| offset + value_start)
+        .or_else(|| rest.find(" -->"))
+        .expect("done_at 字段应有结束位置");
+    let mut stripped = String::with_capacity(line.len());
+    stripped.push_str(&line[..start]);
+    stripped.push_str(&rest[end..]);
+    stripped
+}
+
+/// 创建 → 完成 → 归档。这是"整体替换类操作"测试共用的前置状态。
+async fn seed_archived(dispatcher: &Dispatcher, text: &str) -> Slip {
+    let created = slip(text);
+    let ack = dispatcher
+        .apply(
+            String::from("prep-append"),
+            vec![Mutation::Append(created.clone())],
+        )
+        .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    let ack = apply_patch(
+        dispatcher,
+        "prep-done",
+        created.id,
+        Patch::SetDone {
+            done: true,
+            at: OffsetDateTime::now_utc(),
+        },
+    )
+    .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    let ack = apply_patch(
+        dispatcher,
+        "prep-archive",
+        created.id,
+        Patch::Archive {
+            at: OffsetDateTime::now_utc(),
+        },
+    )
+    .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    created
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn capture_writes_through_to_disk_and_back_to_the_snapshot() {
     let dir = tempfile::tempdir().expect("temp vault");
@@ -489,6 +577,352 @@ async fn isolate_and_reset_clears_the_undo_stack() {
     let ack = dispatcher.undo(String::from("r5")).await;
     assert_eq!(ack.result, AckResult::Rejected);
     assert_eq!(ack.error.expect("error").code, "undo");
+
+    dispatcher.shutdown().await;
+}
+
+/// 恢复失败不是"内容被整体替换"，撤销历史必须原样保留。
+///
+/// `restore_backup` 失败时文件根本没动，栈里那一步仍然描述当前文档。
+/// 清掉它等于凭空吃掉用户的一次撤销；更糟的是用户会看到"恢复失败"之后
+/// Ctrl+Z 也没反应，误以为正文已经丢了。
+#[tokio::test(flavor = "current_thread")]
+async fn failed_restore_keeps_the_undo_stack() {
+    let dir = tempfile::tempdir().expect("temp vault");
+    let inbox = dir.path().join("inbox.md");
+    let dispatcher = dispatcher_for(&inbox);
+
+    let created = slip("编辑前正文");
+    let ack = dispatcher
+        .apply(String::from("r1"), vec![Mutation::Append(created.clone())])
+        .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    let ack = apply_patch(
+        &dispatcher,
+        "r2",
+        created.id,
+        Patch::SetText(String::from("编辑后正文")),
+    )
+    .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    // `parse_backup_name` 不认的名字 → NotFound；文件不动，栈也不该动。
+    let ack = dispatcher
+        .restore_backup(String::from("r3"), String::from("nope.md"))
+        .await;
+    assert_ne!(
+        ack.result,
+        AckResult::Applied,
+        "不存在的备份名不能被当作恢复成功: {ack:?}"
+    );
+
+    let ack = dispatcher.undo(String::from("r4")).await;
+    assert_eq!(
+        ack.result,
+        AckResult::Applied,
+        "失败的恢复吃掉了撤销步: {ack:?}"
+    );
+
+    let snapshot = dispatcher.get_snapshot().await.unwrap();
+    assert_eq!(snapshot.slips[0].text, "编辑前正文");
+    let raw = std::fs::read_to_string(&inbox).expect("read inbox");
+    assert!(raw.contains("编辑前正文"), "undo did not restore: {raw:?}");
+    assert!(!raw.contains("编辑后正文"), "stale text on disk: {raw:?}");
+
+    dispatcher.shutdown().await;
+}
+
+/// 恢复成功 = 内容被整体替换，撤销栈必须清空。
+///
+/// 栈里记录的是"替换前那份文档"的逆操作；恢复之后它指向的条目/正文已经不属于
+/// 当前文档，重放只会得到一条自相矛盾的错误。
+#[tokio::test(flavor = "current_thread")]
+async fn successful_restore_clears_the_undo_stack() {
+    let dir = tempfile::tempdir().expect("temp vault");
+    let inbox = dir.path().join("inbox.md");
+    let dispatcher = dispatcher_for(&inbox);
+
+    let created = slip("恢复前的原始正文");
+    let ack = dispatcher
+        .apply(String::from("r1"), vec![Mutation::Append(created.clone())])
+        .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    // 这次编辑进撤销栈。
+    let ack = apply_patch(
+        &dispatcher,
+        "r2",
+        created.id,
+        Patch::SetText(String::from("恢复前的新正文")),
+    )
+    .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    // 每次成功写入都留了备份，取最新的一份（即编辑前的原文）。
+    let name = latest_backup_name(dir.path());
+    let ack = dispatcher.restore_backup(String::from("r3"), name).await;
+    assert_eq!(ack.result, AckResult::Applied, "恢复应当成功: {ack:?}");
+
+    let ack = dispatcher.undo(String::from("r4")).await;
+    assert_eq!(ack.result, AckResult::Rejected, "{ack:?}");
+    assert_eq!(ack.error.expect("error").code, "undo");
+
+    dispatcher.shutdown().await;
+}
+
+/// purge 撞上外部修改时必须是 `conflict`，不能降级成笼统的 `rejected`。
+///
+/// 前端按 `result`/`code` 决定提示与主操作；把冲突说成"被拒绝"会让用户
+/// 永远等不到"重新载入"这个正确的下一步。
+#[tokio::test(flavor = "current_thread")]
+async fn purge_conflict_maps_to_conflict_result() {
+    let dir = tempfile::tempdir().expect("temp vault");
+    let inbox = dir.path().join("inbox.md");
+    let dispatcher = dispatcher_for(&inbox);
+
+    let created = seed_archived(&dispatcher, "归档后被外部改过的一条").await;
+
+    // 外部追加一行普通文本：内容 hash 变了，但文档依然可解析。
+    let mut raw = std::fs::read_to_string(&inbox).expect("read inbox");
+    raw.push_str("外部追加的一行普通文本\n");
+    std::fs::write(&inbox, raw).expect("external edit");
+
+    let ack = dispatcher.purge(String::from("r1"), created.id).await;
+    assert_eq!(
+        ack.result,
+        AckResult::Conflict,
+        "purge 的冲突必须映射成 Conflict: {ack:?}"
+    );
+    assert_eq!(
+        ack.error.as_ref().map(|error| error.code.as_str()),
+        Some("conflict")
+    );
+
+    dispatcher.shutdown().await;
+}
+
+/// purge 成功 = 那一行真的没了，且撤销栈里指向它的记录必须一并清空。
+///
+/// 不清的话，归档那一步的逆操作会指向一条已不存在的条目，之后每次撤销
+/// 都撞同一堵墙（与 reload / isolate 同类）。
+#[tokio::test(flavor = "current_thread")]
+async fn purge_removes_the_line_and_clears_the_undo_stack() {
+    let dir = tempfile::tempdir().expect("temp vault");
+    let inbox = dir.path().join("inbox.md");
+    let dispatcher = dispatcher_for(&inbox);
+
+    let created = seed_archived(&dispatcher, "会被彻底移除的一条").await;
+    let id = created.id.to_canonical_string();
+
+    // 此刻撤销栈里有归档那一步；purge 成功必须把它和其他旧记录一起清掉。
+    let ack = dispatcher.purge(String::from("r1"), created.id).await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    let raw = std::fs::read_to_string(&inbox).expect("read inbox");
+    assert!(!raw.contains(&id), "purge 之后磁盘上不该再有该 id: {raw:?}");
+    let snapshot = dispatcher.get_snapshot().await.unwrap();
+    assert!(
+        snapshot.slips.is_empty(),
+        "snapshot 应当少一条: {snapshot:?}"
+    );
+
+    let ack = dispatcher.undo(String::from("r2")).await;
+    assert_eq!(ack.result, AckResult::Rejected, "{ack:?}");
+    assert_eq!(ack.error.expect("error").code, "undo");
+
+    dispatcher.shutdown().await;
+}
+
+/// Noop 也是 `Applied`，但它不是一个"可撤销的步骤"。
+///
+/// 把 Noop 压进栈会让 Ctrl+Z 白白消耗一次：用户看到"已撤销"，正文却停在原处。
+#[tokio::test(flavor = "current_thread")]
+async fn noop_apply_does_not_consume_an_undo_step() {
+    let dir = tempfile::tempdir().expect("temp vault");
+    let inbox = dir.path().join("inbox.md");
+    let dispatcher = dispatcher_for(&inbox);
+
+    let created = slip("第一版正文");
+    let ack = dispatcher
+        .apply(String::from("r1"), vec![Mutation::Append(created.clone())])
+        .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    let ack = apply_patch(
+        &dispatcher,
+        "r2",
+        created.id,
+        Patch::SetText(String::from("第二版正文")),
+    )
+    .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    // 同一份正文再提交一次：成功，但 content_rev 不前进。
+    let before_noop = dispatcher.get_snapshot().await.unwrap().content_rev;
+    let ack = apply_patch(
+        &dispatcher,
+        "r3",
+        created.id,
+        Patch::SetText(String::from("第二版正文")),
+    )
+    .await;
+    assert_eq!(ack.result, AckResult::Applied, "noop 仍然是成功: {ack:?}");
+    let after_noop = dispatcher.get_snapshot().await.unwrap().content_rev;
+    assert_eq!(
+        after_noop, before_noop,
+        "重复提交同一正文应当是 Noop，content_rev 不该前进"
+    );
+
+    // 只撤一次，必须回到第一版——Noop 不该占掉这一步。
+    let ack = dispatcher.undo(String::from("r4")).await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    let snapshot = dispatcher.get_snapshot().await.unwrap();
+    assert_eq!(
+        snapshot.slips[0].text, "第一版正文",
+        "Noop 消耗了一次撤销步"
+    );
+    let raw = std::fs::read_to_string(&inbox).expect("read inbox");
+    assert!(raw.contains("第一版正文"), "undo did not restore: {raw:?}");
+    assert!(!raw.contains("第二版正文"), "stale text on disk: {raw:?}");
+
+    dispatcher.shutdown().await;
+}
+
+/// 在归档抽屉里取消完成，再撤销：完成与归档必须一起回来。
+///
+/// 只发 `SetDone { done: true }` 会把 `archived_at` 丢掉——条目回到默认列表，
+/// 用户刚在抽屉里做的操作被撤销成了"另一个状态"。
+#[tokio::test(flavor = "current_thread")]
+async fn unchecking_an_archived_slip_can_be_undone() {
+    let dir = tempfile::tempdir().expect("temp vault");
+    let inbox = dir.path().join("inbox.md");
+    let dispatcher = dispatcher_for(&inbox);
+
+    let created = seed_archived(&dispatcher, "归档抽屉里取消完成的一条").await;
+
+    // 归档抽屉里的"取消完成"：`SetDone { done: false }` 同时清掉完成时间与归档墓碑。
+    let ack = apply_patch(
+        &dispatcher,
+        "r1",
+        created.id,
+        Patch::SetDone {
+            done: false,
+            at: OffsetDateTime::now_utc(),
+        },
+    )
+    .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    let raw = std::fs::read_to_string(&inbox).expect("read inbox");
+    assert!(
+        !raw.contains(";archived_at="),
+        "取消完成应当清掉墓碑: {raw:?}"
+    );
+
+    let ack = dispatcher.undo(String::from("r2")).await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    let snapshot = dispatcher.get_snapshot().await.unwrap();
+    let slip = &snapshot.slips[0];
+    assert!(slip.done, "撤销后必须恢复完成: {slip:?}");
+    assert!(slip.archived, "撤销后必须恢复归档: {slip:?}");
+    let raw = std::fs::read_to_string(&inbox).expect("read inbox");
+    assert!(
+        raw.contains(";archived_at="),
+        "磁盘上必须重新出现 archived_at: {raw:?}"
+    );
+    assert!(raw.contains("- [x] "), "复选框必须回到已完成: {raw:?}");
+
+    dispatcher.shutdown().await;
+}
+
+/// `done = true` 但缺 `done_at` 也能被外部改出来；撤销不能把它当成"未完成"。
+///
+/// 逆操作若只看 `done_at` 是否存在，就会生成 `SetDone { done: false }`，
+/// 撤销变成了一次 Noop——用户按了 Ctrl+Z，勾选却没有回来。
+#[tokio::test(flavor = "current_thread")]
+async fn done_without_done_at_is_restored() {
+    let dir = tempfile::tempdir().expect("temp vault");
+    let inbox = dir.path().join("inbox.md");
+    let dispatcher = dispatcher_for(&inbox);
+
+    let created = slip("完成时间被手工删掉的一条");
+    let ack = dispatcher
+        .apply(String::from("r1"), vec![Mutation::Append(created.clone())])
+        .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    let ack = apply_patch(
+        &dispatcher,
+        "r2",
+        created.id,
+        Patch::SetDone {
+            done: true,
+            at: OffsetDateTime::now_utc(),
+        },
+    )
+    .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    // 手工删掉该行的 `;done_at=...` 字段，保留 marker 其余部分合法。
+    let id = created.id.to_canonical_string();
+    let raw = std::fs::read_to_string(&inbox).expect("read inbox");
+    assert!(
+        raw.contains(";done_at="),
+        "前置条件：应已写入完成时间: {raw:?}"
+    );
+    let mut rewritten = String::new();
+    for line in raw.lines() {
+        if line.contains(&id) {
+            rewritten.push_str(&strip_done_at(line));
+        } else {
+            rewritten.push_str(line);
+        }
+        rewritten.push('\n');
+    }
+    assert!(
+        !rewritten.contains(";done_at="),
+        "手工删字段失败: {rewritten:?}"
+    );
+    assert!(
+        rewritten.contains(&id) && rewritten.contains(" -->"),
+        "删字段之后 marker 仍必须合法: {rewritten:?}"
+    );
+    std::fs::write(&inbox, &rewritten).expect("rewrite inbox");
+
+    let ack = dispatcher.reload(String::from("r3")).await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+    let snapshot = dispatcher.get_snapshot().await.unwrap();
+    assert!(snapshot.slips[0].done);
+    assert_eq!(
+        snapshot.slips[0].done_at, None,
+        "前置条件：完成时间确实缺了"
+    );
+
+    // 取消完成，再撤销：done 必须回来（即使没有 done_at 可恢复）。
+    let ack = apply_patch(
+        &dispatcher,
+        "r4",
+        created.id,
+        Patch::SetDone {
+            done: false,
+            at: OffsetDateTime::now_utc(),
+        },
+    )
+    .await;
+    assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+
+    let ack = dispatcher.undo(String::from("r5")).await;
+    assert_eq!(ack.result, AckResult::Applied, "撤销没有生效: {ack:?}");
+
+    let snapshot = dispatcher.get_snapshot().await.unwrap();
+    assert!(
+        snapshot.slips[0].done,
+        "撤销必须恢复完成状态: {:?}",
+        snapshot.slips[0]
+    );
 
     dispatcher.shutdown().await;
 }

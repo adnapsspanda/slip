@@ -866,7 +866,8 @@ pub fn run() {
             // 用户看清之前就被收走，表现成"启动后一个窗口都没有"。
             // 判定规则在 slip_app::launch（可单测）：启动参数判错的两个方向代价不对称，
             // 而这只能在真机开机/双击时复现，所以必须能在单测里覆盖。
-            let launched_by_autostart = slip_app::launch::launched_by_autostart(std::env::args());
+            let launched_by_autostart =
+                slip_app::launch::launched_by_autostart(std::env::args_os());
             if !launched_by_autostart {
                 hotkey::show_on_launch(app.handle());
             }
