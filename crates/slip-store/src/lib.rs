@@ -2066,6 +2066,82 @@ mod tests {
         );
     }
 
+    // ---------- R111 写入中断的原子性 ----------
+
+    #[test]
+    fn interrupted_write_leaves_the_original_file_untouched() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md");
+        std::fs::write(&path, b"").expect("write empty");
+        let store = MarkdownStore::new(&path);
+        assert!(
+            store
+                .apply(&[Mutation::Append(slip("第一条"))])
+                .result
+                .is_ok()
+        );
+
+        let before_bytes = read(&path);
+        let before_rev = store.snapshot().content_rev;
+        let before_len = store.snapshot().slips.len();
+
+        // 让下一次原子写在"临时文件已写好、尚未替换"时失败。
+        fsops::failpoints::fail_next_write_interruption();
+        let outcome = store.apply(&[Mutation::Append(slip("第二条"))]);
+        assert!(outcome.result.is_err(), "中断必须报错，不能静默成功");
+
+        // 三条硬断言：字节没变、rev 没变、记录数没变。
+        assert_eq!(read(&path), before_bytes, "写入中断后磁盘字节必须原样不动");
+        assert_eq!(
+            store.snapshot().content_rev,
+            before_rev,
+            "未提交成功就不能推进 content_rev"
+        );
+        assert_eq!(
+            store.snapshot().slips.len(),
+            before_len,
+            "未提交成功就不能把记录加进内存视图"
+        );
+
+        // 写入失败后按设计**降级为只读**（这样界面才会亮横幅）。
+        // 所以"立刻再写一次"必须失败——这是有意的，不是 bug：
+        // 自愈不了的错误（磁盘满、只读文件）不该被当成瞬时故障反复重试。
+        assert!(
+            !store.snapshot().health.is_writable(),
+            "写入中断后应降级为只读"
+        );
+        let blocked = store.apply(&[Mutation::Append(slip("第二条"))]);
+        assert!(blocked.result.is_err(), "降级后不该继续写盘");
+
+        // 真正的恢复路径是 `reload()`：重新读盘确认文件仍然可解析、可写。
+        assert!(store.reload().result.is_ok());
+        assert!(store.snapshot().health.is_writable(), "reload 后应恢复可写");
+        let recovered = store.apply(&[Mutation::Append(slip("第二条"))]);
+        assert!(recovered.result.is_ok(), "reload 之后应能恢复写入");
+        assert_eq!(store.snapshot().slips.len(), before_len + 1);
+    }
+
+    #[test]
+    fn interrupted_purge_leaves_every_line_intact() {
+        let (store, dir, first, _second, _third) = vault_with_archived();
+        let path = dir.path().join("inbox.md");
+        let before = read(&path);
+
+        fsops::failpoints::fail_next_write_interruption();
+        let outcome = store.purge_archived(first.id);
+        assert!(outcome.result.is_err(), "中断必须报错");
+
+        assert_eq!(read(&path), before, "不可逆操作中断后必须一个字节都没变");
+        assert!(
+            store
+                .snapshot()
+                .slips
+                .iter()
+                .any(|slip| slip.id == first.id),
+            "中断后记录必须还在"
+        );
+    }
+
     #[test]
     fn empty_inbox_is_healthy_and_first_write_is_canonical() {
         let dir = tempfile::tempdir().expect("temp dir");

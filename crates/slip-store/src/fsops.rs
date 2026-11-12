@@ -93,6 +93,14 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), IoKind> {
     let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(map_io)?;
     tmp.write_all(bytes).map_err(map_io)?;
     tmp.as_file().sync_all().map_err(map_io)?;
+
+    // 故障注入点（R111）：临时文件**已经写满并 sync 过**，但还没替换过去。
+    // 这是"写到一半断电"能构造出的最接近的形态——此时原文件必须一个字节都没变。
+    #[cfg(test)]
+    if failpoints::take_write_interruption() {
+        return Err(IoKind::Other);
+    }
+
     // 提交点：这一行返回成功之后，文件已经是新内容。
     tmp.persist(path).map_err(|err| map_io(err.error))?;
     Ok(())
@@ -419,6 +427,16 @@ pub(crate) mod failpoints {
         static BACKUP_FAILURE: Cell<bool> = const { Cell::new(false) };
         static DIR_SYNC_FAILURE: Cell<bool> = const { Cell::new(false) };
         static PINNED_NOW: RefCell<Option<u64>> = const { RefCell::new(None) };
+        static WRITE_INTERRUPTION: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// 让下一次 [`super::write_atomic`] 在"临时文件已写好、尚未替换"时失败。
+    pub(crate) fn fail_next_write_interruption() {
+        WRITE_INTERRUPTION.with(|flag| flag.set(true));
+    }
+
+    pub(crate) fn take_write_interruption() -> bool {
+        WRITE_INTERRUPTION.with(|flag| flag.replace(false))
     }
 
     pub(crate) fn fail_next_backup() {
