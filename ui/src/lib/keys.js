@@ -100,15 +100,51 @@ export function tabTarget(index, total, shift) {
  * 抽成纯函数的原因：这条判定被两个入口共用（键盘 Alt+Z 与按钮点击），
  * 一旦两处判断不一致，就会出现"键盘按了没反应、点按钮却能用"的割裂。
  *
- * @param {{undo?: boolean}|null|undefined} notice
- * @returns {"undo"|"dismiss"|"none"}
+ * @param {{undo?: boolean, restore?: string}|null|undefined} notice
+ * @returns {"undo"|"restore"|"dismiss"|"none"}
  */
 export function noticeAction(notice) {
   if (!notice) {
     return "none";
   }
   // 有撤销动作就执行它；纯信息提示没有按钮，此时快捷键的语义是"收起"。
-  return notice.undo === true ? "undo" : "dismiss";
+  if (notice.undo === true) {
+    return "undo";
+  }
+  // 清空草稿后的"恢复草稿"（R98）：和撤销是两种不同的动作，不能混用一个分支——
+  // 草稿恢复不了后端的历史，撤销也变不出那串被清掉的文字。
+  if (typeof notice.restore === "string") {
+    return "restore";
+  }
+  return "dismiss";
+}
+
+/**
+ * 捕获框里这一下 `Ctrl+Backspace` 是不是"清空草稿"。
+ *
+ * 抽成纯函数的原因和 `submitIntent` 一样：组合键的边界（输入法选词、Shift/Alt 变体、
+ * macOS 用 Cmd）只有把组合全枚举出来才验得准，手点几遍是碰不到这些分支的。
+ *
+ * @param {{key?: string, ctrlKey?: boolean, metaKey?: boolean, shiftKey?: boolean, altKey?: boolean, isComposing?: boolean, keyCode?: number}} event
+ * @returns {boolean} true 表示应当清空草稿并拦下默认的"删一个词"
+ */
+export function draftClearIntent(event) {
+  if (!event || event.key !== "Backspace") {
+    return false;
+  }
+  // 输入法选词期间的 Backspace 是删候选/删拼音，不是"清空草稿"。
+  if (event.isComposing === true || event.keyCode === 229) {
+    return false;
+  }
+  if (event.ctrlKey !== true && event.metaKey !== true) {
+    return false;
+  }
+  // Shift/Alt 变体（Ctrl+Shift+Backspace、Alt+Backspace）语义是"删整行/删整词"，
+  // 用户按这些组合时意图明确，不该被我们升级成"清空一切"。
+  if (event.shiftKey === true || event.altKey === true) {
+    return false;
+  }
+  return true;
 }
 
 /**

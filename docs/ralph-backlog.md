@@ -53,6 +53,24 @@
 
 ## 完成记录
 
+- **R94–R100 前端七轮（置顶、批量、草稿、撤销排队）**：
+  - R94 置顶排序：新增 `ui/src/lib/order.js` 的 `orderSlips`（显式两趟分组，稳定前置）。
+  - R95 置顶交互：图钉按钮（并入原有低对比图标组）+ 列表项按 `P` 切换，走 `set_pinned`。
+    置顶与定稿一样**不进撤销栈**（后端 `inverse_batch` 对它返回 `None`），所以不显示撤销。
+  - R96 批量完成：「完成匹配项」只发**过滤结果里未完成**的那些（`matchPending`）——
+    已完成项不进批次，避免"说完成 5 条其实只变了 2 条"，也让撤销步更干净；为 0 时按钮不出现。
+    走 `complete_many`，单事务单撤销步。
+  - R97 批量归档：`confirmStep` + **4 秒自动还原**，武装态文案"确认归档 (N)？"，用 `confirm-danger`。
+  - R98 清空草稿：`Ctrl+Backspace`（拦掉默认的"删一个词"）+ 提示"草稿已清空"+ 单次"恢复草稿"；
+    **只在捕获框仍为空时**恢复，用户已重新打字则提示"没有覆盖"。输入法组合期不劫持。
+  - R100 撤销排队：新增 `ui/src/lib/notice.js`（`extendUndoBurst` 等，窗口 3000 ms），
+    `count>1` 时补"，还有 N 步可撤销"；撤销成功后减 1。
+    **锁定/置顶只清提示条、不清计数**（后端那几步仍可撤）；`summon/abandon/reload/isolate/restore`
+    计数整体置空——与既有"整体替换路径必须清栈"的契约一致。
+  - 断言 **171 → 205 条**全过；CSS 10.48 KB / 14 KB、JS 75.28 KB / 80 KB。
+  - 变异验证：`orderSlips` 颠倒两组 → 4 条红；notice 连击不递增 → 2 条红；两次均字节级还原。
+  - **遗留风险**：JS 只剩 4.72 KB，R114/R119 那批要先估体积再动手。
+
 - **R102A / R105 / R106 存储层三轮（方案 A）**：
   - **R102A 只读容量统计**：新增 `crates/slip-store/src/capacity.rs`，
     `archived_capacity(bytes)` / `archived_capacity_at(path)` 统计归档墓碑的**条数与字节**。

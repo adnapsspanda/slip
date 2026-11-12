@@ -1,6 +1,6 @@
 <script>
   import { stripListPrefix, cleanPastedText } from "./inline.js";
-  import { submitIntent } from "./keys.js";
+  import { submitIntent, draftClearIntent } from "./keys.js";
   import { onDestroy } from "svelte";
 
   /** 粘贴提示的自动清除定时器。 */
@@ -20,6 +20,8 @@
     onsubmit,
     onescape,
     onseeklist,
+    /** 草稿被 Ctrl+Backspace 清空时，把被清掉的原文交出去——上层要用它提供"恢复草稿"。 */
+    ondraftcleared,
   } = $props();
 
   /**
@@ -76,6 +78,23 @@
   export function clear() {
     text = "";
     draftVersion += 1;
+  }
+
+  /** 当前草稿原文。上层用它判断"恢复草稿"时会不会覆盖掉用户新打的内容。 */
+  export function getDraft() {
+    return text;
+  }
+
+  /**
+   * 直接写入草稿（R98 的"恢复草稿"）。
+   *
+   * 走 `text` + `draftVersion` 的同一条路径：草稿版本必须跟着变，否则一次正在
+   * 路上的提交会误判"草稿没改过"而清掉用户刚恢复的内容。
+   */
+  export function setDraft(next) {
+    text = typeof next === "string" ? next : "";
+    draftVersion += 1;
+    queueMicrotask(() => field?.focus());
   }
 
   export function getDraftVersion() {
@@ -142,6 +161,16 @@
     const intent = submitIntent(event);
     // 输入法组合期：回车是"确认候选词"，Shift/Ctrl 都不改变这个含义，一律放行给 IME。
     if (intent === "composing") {
+      return;
+    }
+    // 清空草稿（R98）：只有真的打了字才拦——空框上的 Ctrl+Backspace 本来也没事可做。
+    // 拦掉的是浏览器默认的"删掉前一个词"，所以必须先拿到被清掉的原文再清。
+    if (draftClearIntent(event) && text !== "") {
+      event.preventDefault();
+      const cleared = text;
+      text = "";
+      draftVersion += 1;
+      ondraftcleared?.(cleared);
       return;
     }
     if (intent !== "submit") {

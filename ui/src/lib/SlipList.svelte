@@ -22,6 +22,11 @@
     onedit,
     /** 切换锁定。 */
     onlock,
+    /**
+     * 切换置顶（R95）。置顶**不进撤销栈**，所以上层不会为它提供"撤销"——
+     * 这里只负责把意图交出去，不对结果做任何乐观假设。
+     */
+    onpin,
     /** 归档单条已完成纸条。 */
     onarchive,
     /** 往提示区送一条文案（例如锁定纸条被双击时）。 */
@@ -309,6 +314,16 @@
         event.preventDefault();
         beginEdit(slip);
         return;
+      case "p":
+      case "P":
+        /*
+         * P = 置顶（R95）。用字母键而不是再拼一个 Ctrl 组合：列表项本身就是
+         * `role="textbox"` 的只读焦点位，单键在这里不会与输入冲突。
+         * 大写也认（按住 Shift 时 `event.key` 是 "P"），否则键盘用户得先确认大小写。
+         */
+        event.preventDefault();
+        onpin?.(slip);
+        return;
       default:
         return;
     }
@@ -535,6 +550,27 @@
               </svg>
             </button>
           {/if}
+          <button
+            type="button"
+            class="slip__pin"
+            class:slip__pin--on={slip.pinned}
+            aria-pressed={slip.pinned}
+            aria-label={slip.pinned ? "取消置顶" : "置顶纸条"}
+            title={slip.pinned ? "取消置顶（P）" : "置顶到最前（P）"}
+            onclick={() => onpin?.(slip)}
+            ondblclick={(event) => event.stopPropagation()}
+          >
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path
+                d="M6 2.75h4l-.6 3.1 2.1 2.4h-7l2.1-2.4-.6-3.1zM8 8.25v5"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.35"
+                stroke-linejoin="round"
+                stroke-linecap="round"
+              />
+            </svg>
+          </button>
           <button
             type="button"
             class="slip__lock"

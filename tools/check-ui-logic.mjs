@@ -27,10 +27,19 @@ import {
   tabTarget,
   noticeAction,
   filterKeyIntent,
+  draftClearIntent,
 } from "../ui/src/lib/keys.js";
 import { extractTags } from "../ui/src/lib/tags.js";
 import { FILTER_STATES, highlightSlices, matchesFilter, parseQuery } from "../ui/src/lib/filter.js";
 import { buildInline, needsGap, splitMixRuns } from "../ui/src/lib/render.js";
+import { orderSlips } from "../ui/src/lib/order.js";
+import {
+  UNDO_BURST_WINDOW_MS,
+  dropUndoBurst,
+  extendUndoBurst,
+  undoSuffix,
+  undoNotice,
+} from "../ui/src/lib/notice.js";
 
 let failed = 0;
 const check = (label, actual, expected) => {
@@ -365,6 +374,71 @@ check(
   buildInline("买入牛奶", "").filter((p) => p.hit).length,
   0,
 );
+
+// ---- R94 置顶排序：置顶稳定浮到最前，组内顺序不变 ----
+const ids = (list) => list.map((item) => item.id);
+const mk = (id, pinned = false) => ({ id, pinned });
+check(
+  "置顶浮到最前，其余保持原序",
+  ids(orderSlips([mk("a"), mk("b", true), mk("c"), mk("d", true)])),
+  ["b", "d", "a", "c"],
+);
+check("没有置顶时顺序不变", ids(orderSlips([mk("a"), mk("b")])), ["a", "b"]);
+check("全部置顶时顺序不变", ids(orderSlips([mk("a", true), mk("b", true)])), ["a", "b"]);
+check("只置顶最后一条时它排到最前", ids(orderSlips([mk("a"), mk("b"), mk("c", true)])), ["c", "a", "b"]);
+check(
+  "置顶组内部也保持原序（不是按 id 或时间重排）",
+  ids(orderSlips([mk("z", true), mk("a"), mk("y", true)])),
+  ["z", "y", "a"],
+);
+check("缺 pinned 字段当未置顶", ids(orderSlips([{ id: "a" }, { id: "b", pinned: true }])), ["b", "a"]);
+check("空表与非数组都不炸", [orderSlips([]), orderSlips(null)], [[], []]);
+const unsortedInput = [mk("a"), mk("b", true), mk("c")];
+orderSlips(unsortedInput);
+check("排序不改写入参", ids(unsortedInput), ["a", "b", "c"]);
+
+// ---- R100 撤销连击：3 秒内连续操作要说清"还有几步可撤销" ----
+const T0 = 1_000_000;
+const burst1 = extendUndoBurst(null, T0);
+check("第一次操作 → 1 步", burst1, { count: 1, at: T0 });
+const burst2 = extendUndoBurst(burst1, T0 + 500);
+const burst3 = extendUndoBurst(burst2, T0 + 1000);
+check("3 秒内连续三次 → 计数 1、2、3", [burst1.count, burst2.count, burst3.count], [1, 2, 3]);
+check("恰好等于窗口仍算同一串", extendUndoBurst({ count: 2, at: T0 }, T0 + UNDO_BURST_WINDOW_MS).count, 3);
+check("超过窗口重新从 1 开始", extendUndoBurst({ count: 2, at: T0 }, T0 + UNDO_BURST_WINDOW_MS + 1).count, 1);
+check("时钟回拨按新一轮处理", extendUndoBurst({ count: 5, at: T0 + 5000 }, T0).count, 1);
+check("非法计数不传播", [extendUndoBurst({ count: 0, at: T0 }, T0).count, extendUndoBurst("x", T0).count], [1, 1]);
+check("撤销一步 → 计数减一", dropUndoBurst({ count: 3, at: T0 }, T0 + 10), { count: 2, at: T0 + 10 });
+check("减到 1 再撤销就清空", dropUndoBurst({ count: 1, at: T0 }, T0), null);
+check("本来就没有计数时撤销仍是空", [dropUndoBurst(null, T0), dropUndoBurst({ count: 0, at: T0 }, T0)], [null, null]);
+check("只有一步时不啰嗦", undoSuffix(1), "");
+check("多步时说明还剩几步", undoSuffix(3), "，还有 3 步可撤销");
+check("没有步骤时不加后缀", [undoSuffix(0), undoSuffix(Number.NaN)], ["", ""]);
+check("通知文案带上剩余步数", undoNotice("已完成", 3), {
+  message: "已完成，还有 3 步可撤销",
+  undo: true,
+});
+check("单步通知只有原句", undoNotice("已完成", 1), { message: "已完成", undo: true });
+// 一串三步的完整叙事：操作 → 撤销 → 再撤销 → 再撤销（最后一步之后没有撤销入口）
+const trailA = extendUndoBurst(null, T0);
+const trailB = extendUndoBurst(trailA, T0 + 400);
+const trailC = dropUndoBurst(trailB, T0 + 800);
+const trailD = dropUndoBurst(trailC, T0 + 1200);
+const trailE = dropUndoBurst(trailD, T0 + 1600);
+check("两步之后逐次回退直到没有可撤销", [trailC.count, trailE, undoSuffix(trailC.count)], [1, null, ""]);
+
+// ---- R95/R98 提示条动作与清空草稿的组合键 ----
+check("提示条带恢复草稿 → restore", noticeAction({ restore: "草稿原文" }), "restore");
+check("同时带撤销与恢复时撤销优先", noticeAction({ undo: true, restore: "草稿原文" }), "undo");
+check("纯提示 → 收起", noticeAction({ message: "已收录" }), "dismiss");
+check("Ctrl+Backspace 清空草稿", draftClearIntent({ key: "Backspace", ctrlKey: true }), true);
+check("Cmd+Backspace 等价（macOS）", draftClearIntent({ key: "Backspace", metaKey: true }), true);
+check("裸 Backspace 删一个字，不清草稿", draftClearIntent({ key: "Backspace" }), false);
+check("Ctrl+Shift+Backspace 是删整行", draftClearIntent({ key: "Backspace", ctrlKey: true, shiftKey: true }), false);
+check("Alt+Backspace 是删整词", draftClearIntent({ key: "Backspace", ctrlKey: true, altKey: true }), false);
+check("输入法组合期不清草稿", draftClearIntent({ key: "Backspace", ctrlKey: true, isComposing: true }), false);
+check("WebView2 兜底 229 不清草稿", draftClearIntent({ key: "Backspace", ctrlKey: true, keyCode: 229 }), false);
+check("别的键（Ctrl+A）不动草稿", draftClearIntent({ key: "a", ctrlKey: true }), false);
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);

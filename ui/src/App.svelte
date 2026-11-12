@@ -8,6 +8,8 @@
   } from "./lib/status.js";
   import { noticeAction, filterKeyIntent } from "./lib/keys.js";
   import { matchesFilter, parseQuery } from "./lib/filter.js";
+  import { orderSlips } from "./lib/order.js";
+  import { dropUndoBurst, extendUndoBurst, undoNotice } from "./lib/notice.js";
   import { createSerialQueue, nextToggleTarget } from "./lib/queue.js";
   import { confirmStep, CONFIRM_WINDOW_MS } from "./lib/confirm.js";
   import * as bridge from "./lib/bridge.js";
@@ -95,6 +97,14 @@
   let archivedSlips = $derived(
     (snapshot?.slips ?? []).filter((slip) => slip.archived),
   );
+  /**
+   * 未归档列表的**展示顺序**（R94）：置顶的稳定浮到最前，组内仍是创建顺序。
+   *
+   * 排序只发生在这里——`activeSlips` 保持快照原序，撤销、归档批处理、键盘导航
+   * 用的都是"当前该看到的那个顺序"，两者不能各自排一遍（否则 `itemEls[index]`
+   * 会和快照下标错位）。
+   */
+  let orderedActive = $derived(orderSlips(activeSlips));
   /** 是否在看归档抽屉。归档是墓碑不是删除，所以这一层只是换个筛选方向。 */
   let showArchived = $state(false);
   /** 备份面板是否展开。 */
@@ -110,6 +120,30 @@
    */
   let isolateArmedAt = $state(null);
   let isolateArmTimer = null;
+
+  /**
+   * 「归档已完成」的二次确认时间戳（R97）。超时由定时器自动还原成未武装态。
+   *
+   * 为什么也要拦：一次点击会把所有已完成的纸条收进归档。虽然归档可撤销，
+   * 但在过滤/搜索视图下用户根本看不出收走了多少条。
+   */
+  let archiveArmedAt = $state(null);
+  let archiveArmTimer = null;
+
+  /**
+   * 「完成匹配项」的二次确认时间戳（R96）。这一批在撤销栈里是**一步**，
+   * 所以误触的代价是"整批被划掉"，更需要拦一下。
+   */
+  let completeArmedAt = $state(null);
+  let completeArmTimer = null;
+
+  /**
+   * 撤销连击计数（R100）：`{count, at}`。
+   *
+   * 不进快照、不落盘——它是**提示区的排队模型**，只用来回答"现在还能按几下 Ctrl+Z"。
+   * 后端只有一个撤销栈，界面不能假装能跳过中间某一步（见 lib/notice.js 的说明）。
+   */
+  let undoTrail = $state(null);
 
   /**
    * 过滤关键字。**纯视图**：只影响显示，不影响快照、撤销栈与磁盘。
@@ -130,10 +164,17 @@
    */
   let parsedFilter = $derived(parseQuery(filter));
   let visible = $derived.by(() => {
-    const base = showArchived ? archivedSlips : activeSlips;
+    const base = showArchived ? archivedSlips : orderedActive;
     if (!parsedFilter.constrained) return base;
     return base.filter((slip) => matchesFilter(slip, parsedFilter));
   });
+  /**
+   * 过滤结果里**还没完成**的那些——「完成匹配项」只对这些发请求。
+   *
+   * 已完成的条目再"完成"一次是无操作；把它们塞进批次里会让用户看到
+   * "已完成 5 条"但其实只有 2 条变了，也让撤销步变得含混。
+   */
+  let matchPending = $derived(visible.filter((slip) => !slip.done));
   // 统计始终看**未归档**那一侧：归档抽屉里显示"3 条未完成"只会让人困惑。
   let pendingCount = $derived(activeSlips.filter((slip) => !slip.done).length);
   let doneSlips = $derived(activeSlips.filter((slip) => slip.done));
@@ -364,7 +405,10 @@
   function summon() {
     hint = DEFAULT_HINT;
     // 撤销提示跨过"收起再唤出"就过期了：那次的修改上下文已经不在了。
+    // **连击计数也要一起清**（R100 的既有清栈契约）：唤出之后用户看到的第一条
+    // 提示必须是干净的，不能上来就说"还有 2 步可撤销"。
     notice = null;
+    undoTrail = null;
     // 视图状态也不该跨过这一次唤出：过滤词、归档抽屉、备份面板都是**当次浏览**的临时
     // 状态。留着它们，下一次唤出会直接落在一张被筛过的列表上——看上去像"东西没了"。
     // 实测过：开着过滤收起窗口，再唤出只看到 1 条，而实际有 2 条。
@@ -381,6 +425,8 @@
     captureRef?.clear();
     hint = DEFAULT_HINT;
     notice = null;
+    // 放弃这次捕获 = 上下文结束，撤销连击计数同样作废。
+    undoTrail = null;
     dismissWindow();
   }
 
@@ -435,6 +481,21 @@
     }
   }
 
+  /**
+   * 记一条"可撤销"的通知（R100）。
+   *
+   * 所有**进了后端撤销栈**的操作都必须走这里，而不是各自 `notice = {...}`：
+   * 连击计数要逐次累加，散在五处赋值点上必然有人漏掉，漏掉的那一处就会在
+   * 连续操作时谎报"只有 1 步可撤销"。
+   *
+   * 反例（不进这里的）：锁定、置顶——后端 `inverse_batch` 对它们返回 `None`，
+   * 给它们挂撤销按钮等于给用户一个按了只会在提示区报错的按钮。
+   */
+  function markUndone(message) {
+    undoTrail = extendUndoBurst(undoTrail, Date.now());
+    notice = undoNotice(message, undoTrail.count);
+  }
+
   async function handleToggle(slip) {
     // 以"未落盘的意图"为准，而不是当前快照：连点两下时快照还没跟上。
     const targetDone = nextToggleTarget(slip.done, pendingDone[slip.id]);
@@ -447,10 +508,7 @@
       await refresh();
       if (ack.result === "applied") {
         hint = DEFAULT_HINT;
-        notice = {
-          message: targetDone ? "已完成" : "已标为未完成",
-          undo: true,
-        };
+        markUndone(targetDone ? "已完成" : "已标为未完成");
       } else {
         hint = `未更新：${formatAckError(ack)}`;
       }
@@ -479,7 +537,7 @@
       await refresh();
       if (ack.result === "applied") {
         hint = DEFAULT_HINT;
-        notice = { message: "已修改", undo: true };
+        markUndone("已修改");
         return true;
       }
       hint = `未修改：${formatAckError(ack)}`;
@@ -521,7 +579,7 @@
       await refresh();
       if (ack.result === "applied") {
         hint = DEFAULT_HINT;
-        notice = { message: "已归档", undo: true };
+        markUndone("已归档");
       } else {
         hint = `未归档：${formatAckError(ack)}`;
       }
@@ -561,7 +619,9 @@
       if (ack.result === "applied") {
         showBackups = false;
         hint = "已从备份恢复（恢复前的版本也已留档）";
+        // 恢复整份文件 = 换了一个世界：撤销栈被后端清空，本地连击计数也必须清。
         notice = null;
+        undoTrail = null;
       } else {
         hint = `恢复失败：${formatAckError(ack)}`;
       }
@@ -618,6 +678,27 @@
     }
   }
 
+  /**
+   * 「归档已完成 (N)」的两步确认入口（R97）。
+   *
+   * 未武装 → 武装并起 4 秒定时器；武装期内第二下才真的执行。
+   * 超时由定时器把状态还原成未武装（按钮文案也跟着变回去），
+   * 否则用户几分钟后手滑点一下就直接把整批收走了。
+   */
+  function handleArchiveAllClick() {
+    const step = confirmStep({ armedAt: archiveArmedAt, now: Date.now() });
+    clearTimeout(archiveArmTimer);
+    if (step === "execute") {
+      archiveArmedAt = null;
+      handleArchiveAll();
+      return;
+    }
+    archiveArmedAt = Date.now();
+    archiveArmTimer = setTimeout(() => {
+      archiveArmedAt = null;
+    }, CONFIRM_WINDOW_MS);
+  }
+
   async function handleArchiveAll() {
     const ids = doneSlips.map((slip) => slip.id);
     if (ids.length === 0) return;
@@ -626,7 +707,8 @@
       await refresh();
       if (ack.result === "applied") {
         hint = DEFAULT_HINT;
-        notice = { message: `已归档 ${ids.length} 条`, undo: true };
+        // 一整批在撤销栈里是一步：这里报的是"已归档 N 条"，撤销一次就整批回来。
+        markUndone(`已归档 ${ids.length} 条`);
       } else {
         hint = `未归档：${formatAckError(ack)}`;
       }
@@ -634,6 +716,92 @@
       hint = `archive 失败：${error}`;
       await refresh();
     }
+  }
+
+  /**
+   * 「完成匹配项 (N)」的两步确认入口（R96）。
+   *
+   * 与归档同一套时间语义（`confirmStep` + 4 秒自动还原），但目标不同：
+   * 这里动的是**过滤结果**，所以只有在真的筛出未完成项时才该出现这个按钮。
+   */
+  function handleCompleteManyClick() {
+    const step = confirmStep({ armedAt: completeArmedAt, now: Date.now() });
+    clearTimeout(completeArmTimer);
+    if (step === "execute") {
+      completeArmedAt = null;
+      handleCompleteMany();
+      return;
+    }
+    completeArmedAt = Date.now();
+    completeArmTimer = setTimeout(() => {
+      completeArmedAt = null;
+    }, CONFIRM_WINDOW_MS);
+  }
+
+  async function handleCompleteMany() {
+    const ids = matchPending.map((slip) => slip.id);
+    if (ids.length === 0) return;
+    try {
+      // 串行队列：批量完成与单条勾选共用一条发送链，避免两份快照互相覆盖。
+      const ack = await mutating.run(() =>
+        bridge.completeMany(bridge.newRequestId(), ids, true),
+      );
+      await refresh();
+      if (ack.result === "applied") {
+        hint = DEFAULT_HINT;
+        markUndone(`已完成 ${ids.length} 条`);
+      } else {
+        hint = `未完成：${formatAckError(ack)}`;
+      }
+    } catch (error) {
+      hint = `complete_many 失败：${error}`;
+      await refresh();
+    }
+  }
+
+  /**
+   * 切换置顶（R95）。
+   *
+   * **不进撤销栈**（后端 `inverse_batch` 返回 `None`），所以这里刻意不碰
+   * `markUndone`，也不留"撤销"按钮；已有的撤销提示一并收起，免得用户以为
+   * 那一步能撤销这次置顶。连击计数保留：之前那些步骤在后端仍然可撤。
+   */
+  async function handlePin(slip) {
+    const target = !slip.pinned;
+    try {
+      const ack = await bridge.setPinned(
+        bridge.newRequestId(),
+        slip.id,
+        target,
+      );
+      if (ack.result === "applied") {
+        hint = target ? "已置顶到最前" : "已取消置顶";
+        notice = null;
+      } else {
+        hint = `置顶未变：${formatAckError(ack)}`;
+      }
+    } catch (error) {
+      hint = `set_pinned 失败：${error}`;
+    }
+    await refresh();
+  }
+
+  /**
+   * 恢复被 Ctrl+Backspace 清掉的草稿（R98，单次）。
+   *
+   * 只在捕获框仍然为空时恢复：用户可能已经重新打了字，直接覆盖等于把新内容
+   * 一起吞掉——那比不恢复更糟。恢复后提示条立刻消失（一次性入口）。
+   */
+  function restoreDraft() {
+    const pending = notice?.restore;
+    notice = null;
+    if (typeof pending !== "string" || pending === "") return;
+    if ((captureRef?.getDraft?.() ?? "") !== "") {
+      hint = "草稿框里已有内容，没有覆盖";
+      return;
+    }
+    captureRef?.setDraft?.(pending);
+    hint = "草稿已恢复";
   }
 
   /**
@@ -663,8 +831,16 @@
       await refresh();
       if (ack.result === "applied") {
         hint = DEFAULT_HINT;
-        notice = { message: describeUndo(before), undo: false };
+        // 撤销成功 = 连击计数 -1（R100）：还有剩余就继续挂撤销入口，
+        // 减到 0 就只留一句"已撤销"——再挂按钮就是必然失败的按钮。
+        undoTrail = dropUndoBurst(undoTrail, Date.now());
+        notice = undoTrail
+          ? undoNotice(describeUndo(before), undoTrail.count)
+          : { message: describeUndo(before), undo: false };
       } else {
+        // 撤销被后端拒绝（通常是栈已经空了）：本地计数已经不可信，直接清掉，
+        // 不能让提示条继续声称"还有 3 步可撤销"。
+        undoTrail = null;
         hint = `撤销失败：${formatAckError(ack)}`;
       }
     } catch (error) {
@@ -718,6 +894,8 @@
       event.preventDefault();
       if (action === "undo") {
         handleUndo();
+      } else if (action === "restore") {
+        restoreDraft();
       } else {
         notice = null;
       }
@@ -768,7 +946,9 @@
           ? "已重新载入"
           : `重载失败：${formatAckError(ack)}`;
       if (ack.result === "applied") {
+        // 重新载入等同于换了一份内容：撤销栈清空，连击计数一起清（既有清栈契约）。
         notice = null;
+        undoTrail = null;
       }
     } catch (error) {
       hint = `重载失败：${error}`;
@@ -800,7 +980,9 @@
           ? "已重建空 Inbox"
           : `重建失败：${formatAckError(ack)}`;
       if (ack.result === "applied") {
+        // 隔离重建 = 内容全换，撤销栈没有意义，连击计数一并清空。
         notice = null;
+        undoTrail = null;
       }
     } catch (error) {
       hint = `重建失败：${error}`;
@@ -901,6 +1083,8 @@
       document.removeEventListener("visibilitychange", onVisibility);
       // 一次性定时器会在几秒内自灭，但组件先卸载时它就是悬空回调。
       clearTimeout(isolateArmTimer);
+      clearTimeout(archiveArmTimer);
+      clearTimeout(completeArmTimer);
     };
   });
 </script>
@@ -952,10 +1136,34 @@
         <button
           type="button"
           class="paper__archive-all"
-          onclick={handleArchiveAll}
-          title="将所有已完成的纸条归档收起"
+          class:confirm-danger={archiveArmedAt !== null}
+          onclick={handleArchiveAllClick}
+          title={archiveArmedAt !== null
+            ? "再点一次确认：把已完成的全部收进归档（可撤销）"
+            : "将所有已完成的纸条归档收起"}
         >
-          归档已完成 ({doneCount})
+          {archiveArmedAt !== null
+            ? `确认归档 (${doneCount})？`
+            : `归档已完成 (${doneCount})`}
+        </button>
+      {/if}
+      {#if filtering && matchPending.length > 0 && !blockedReason}
+        <!--
+          R96：过滤结果里还有未完成项时才出现。两步确认（4 秒自动还原），
+          这一批在后端撤销栈里是**一步**——撤销一次整批回退。
+        -->
+        <button
+          type="button"
+          class="paper__archive-all"
+          class:confirm-danger={completeArmedAt !== null}
+          onclick={handleCompleteManyClick}
+          title={completeArmedAt !== null
+            ? "再点一次确认：把匹配到的未完成项全部标为完成（可撤销）"
+            : `把当前过滤结果里的 ${matchPending.length} 条未完成项一次标记完成`}
+        >
+          {completeArmedAt !== null
+            ? `确认完成 (${matchPending.length})？`
+            : `完成匹配项 (${matchPending.length})`}
         </button>
       {/if}
       <span class="paper__meta" title={metaTitle}>{meta}</span>
@@ -1038,6 +1246,13 @@
       onsubmit={handleCapture}
       onescape={abandon}
       onseeklist={() => listRef?.focusFirst()}
+      ondraftcleared={(text) => {
+        // R98：清空草稿不是"可撤销操作"（后端没有这一步），所以走一条**本地**提示：
+        // 文案 + 一次性"恢复草稿"。连击计数不动——之前那些步骤在后端仍然可撤。
+        // 提示条就在捕获框正下方，提示区（hint）不再重复同一句话。
+        notice = { message: "草稿已清空", restore: text };
+        hint = DEFAULT_HINT;
+      }}
     />
     {#if notice}
       <div class="notice" class:notice--leaving={noticeLeaving}>
@@ -1046,6 +1261,9 @@
           <button type="button" onclick={handleUndo} disabled={undoing}>
             撤销
           </button>
+        {:else if typeof notice.restore === "string"}
+          <!-- R98：清空草稿的恢复入口，单次——恢复一次之后提示条立刻消失。 -->
+          <button type="button" onclick={restoreDraft}>恢复草稿</button>
         {/if}
       </div>
     {/if}
@@ -1117,6 +1335,7 @@
       ontoggle={handleToggle}
       onedit={handleEdit}
       onlock={handleLock}
+      onpin={handlePin}
       onarchive={handleArchive}
       onseekcapture={() => captureRef?.focus()}
       ondelink={handleOpenLink}

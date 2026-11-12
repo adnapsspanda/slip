@@ -695,8 +695,10 @@ body {
   user-select: text;
 }
 
+/* 行尾的三个图标按钮共用一套「低对比、hover 才显现」的规格（R95 的图钉并入其中）。 */
 .slip__lock,
-.slip__archive {
+.slip__archive,
+.slip__pin {
   flex: none;
   display: flex;
   align-items: center;
@@ -716,8 +718,10 @@ body {
 
 .slip:hover .slip__lock,
 .slip:hover .slip__archive,
+.slip:hover .slip__pin,
 .slip__lock:focus-visible,
-.slip__archive:focus-visible {
+.slip__archive:focus-visible,
+.slip__pin:focus-visible {
   opacity: 0.85;
   /* 只改透明度是不够的：这两颗按钮平时就是半透明，1 到 0.85 的差别肉眼看不出来。
      必须给实心焦点环，否则键盘用户等于没有焦点提示。 */
@@ -727,13 +731,23 @@ body {
 }
 
 .slip__lock:hover,
-.slip__archive:hover {
+.slip__archive:hover,
+.slip__pin:hover {
   background: var(--paper-active);
   opacity: 1;
 }
 
 .slip__lock--on {
   color: var(--ink);
+  opacity: 1;
+}
+
+/*
+ * 置顶态（R95）：用强调色而不是只改透明度。图钉常驻可见，
+ * 用户要能一眼看出顶部那几条是"被钉住的"，而不是"碰巧在前面的"。
+ */
+.slip__pin--on {
+  color: var(--accent);
   opacity: 1;
 }
 

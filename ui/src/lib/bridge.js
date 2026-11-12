@@ -15,6 +15,7 @@
  * @property {string} createdAt
  * @property {string|null} doneAt
  * @property {boolean} locked
+ * @property {boolean} pinned 置顶标志（决定未归档列表的展示顺序，见 lib/order.js）
  *
  * @typedef {object} UiSnapshot
  * @property {number} contentRev
@@ -77,6 +78,21 @@ export const edit = (requestId, id, text) =>
 /** 锁定只锁正文，勾选与归档仍由后端判断，前端不代为拦截。 @returns {Promise<Ack>} */
 export const setLocked = (requestId, id, locked) =>
   call("set_locked", { requestId, id, locked });
+
+/**
+ * 置顶（R94/R95）。**不进撤销栈**：后端 `inverse_batch` 对它返回 `None`，
+ * 所以界面不要为它显示"撤销"——那会是一个按了就报错的按钮。
+ * @returns {Promise<Ack>}
+ */
+export const setPinned = (requestId, id, pinned) =>
+  call("set_pinned", { requestId, id, pinned });
+
+/**
+ * 批量完成（R96）。一个批次在撤销栈里是**一步**，撤销一次即整批回退。
+ * @param {string[]} ids @returns {Promise<Ack>}
+ */
+export const completeMany = (requestId, ids, done) =>
+  call("complete_many", { requestId, ids, done });
 
 /** 归档一条或多条已完成的纸条。 @param {string} requestId @param {string[]} ids @returns {Promise<Ack>} */
 export const archive = (requestId, ids) => call("archive", { requestId, ids });
