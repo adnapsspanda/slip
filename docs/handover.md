@@ -12,14 +12,18 @@
 | `bun run tools/check-ui-logic.mjs` | 通过 | 前端纯逻辑，不需要浏览器 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 通过 | |
 | `cargo fmt --all --check` | 通过 | |
-| `pwsh -File tools/check-forbidden.ps1` | 通过 | 依赖、归档、锁、HTML 注入、网络出口、危险 API、CSP |
-| `pwsh -File tools/check-doc-sync.ps1` | 通过 | 文档里的 IPC 命令数与 capability 清单 |
-| `pwsh -File tools/check-ci-parity.ps1` | 零漂移 | 钩子与 CI 是否覆盖同一组关口 |
+| `pwsh -File tools/check-forbidden.ps1 -SelfTest` | 通过 | 依赖、归档、锁、HTML 注入、网络出口、危险 API、CSP；`-SelfTest` 走真实 Include 路径 |
+| `pwsh -File tools/check-doc-sync.ps1` | 通过 | IPC 命令数、capability 清单、**前端预算数字** |
+| `pwsh -File tools/check-ci-parity.ps1` | 零漂移 | 钩子与 CI 覆盖同一组关口**与同一条命令** |
 | `pwsh -File tools/check-bundle-size.ps1` | 通过 | 前端产物在预算内 |
 | `pwsh -File tools/check-ps1-syntax.ps1` | 通过 | `*.ps1` 的 BOM 与语法 |
-| `python tools/mutation-audit.py` | 通过 | 核心不变量的变异审计 |
+| `python3 tools/mutation-audit.py` | 通过 | 核心不变量的变异审计（编译失败记为无效变异） |
 
 `git commit` 的钩子会把这些里的绝大多数跑一遍（不需要手动逐条）。
+
+> **门禁只认 `pwsh` 7。** Windows PowerShell 5.1 下 `ConvertFrom-Json` 会受 BOM 影响抛异常，
+> 中文还会按 GBK 解码导致关键词匹配不上——那会给出**假的失败**与**假的通过**各一半。
+> 钩子与 CI 都显式调用 `pwsh`，本地手工验证也用同一个。
 
 ### Linux 支持现状
 
@@ -86,7 +90,8 @@ pwsh -NoProfile -File tools/package-release.ps1
    之前，当时还没有双模变量体系；R31–R41 整套深浅色 + 聚焦环 + 横幅三档 + 细滚动条净增约
    2.3 KB、压缩后 9.99 KB，控制力已经克制。死守 10 KB 只会逼出"为指标牺牲可读性"的缩写。
    14 KB 留 4 KB 缓冲，仍能挡住无节制引入样式库。**JS 预算已提额到 88 KB**（理由见
-`tools/check-bundle-size.ps1` 头部的两次裁决记录；这个数字与脚本不一致时 `check-doc-sync.ps1` 会报错）。
+   `tools/check-bundle-size.ps1` 头部的两次裁决记录；这个数字与脚本不一致时
+   `check-doc-sync.ps1` 会报错）。
 2. **`skipTaskbar`：维持"打印实测值 + 人工目视确认"，不写 Win32 样式断言。**
    现代 Chromium/WebView2/Tauri 应用摘任务栏按钮的主流做法是
    **`ITaskbarList::DeleteTab(hwnd)`**，而不是加 `WS_EX_TOOLWINDOW`——因为在 Win11 下

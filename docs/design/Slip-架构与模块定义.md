@@ -1082,7 +1082,8 @@ Capability 只有两项：`core:default` 与 `core:window:allow-start-dragging`�
 也就是说：**用户改了热键，随便拖动一张纸片，热键配置就被静默擦回默认值。**
 
 修法是让 `from_prefs` / `to_prefs` 恢复成无损往返——`PaperViewSet` 原样携带
-`hotkey` 但**从不解释它**。已加回归测试 `view_roundtrip_never_drops_the_hotkey`。
+`hotkey` 但**从不解释它**。已加回归测试 `paper_view_set_roundtrip_only_pins_field_copy`
+（原名单数形式已随改名废弃；这条只钉字段复制，不是行为断言）。
 
 教训：**当一个结构体是"整体读、整体写"的载体时，只搬运它关心的字段就是在慢慢丢数据。**
 

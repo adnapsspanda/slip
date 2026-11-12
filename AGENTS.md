@@ -96,8 +96,9 @@ CI（`.github/workflows/ci.yml`）还跑前端构建、release 构建、Linux �
    `show_on_launch`（不上膛，别的应用抢前台不该让窗口消失）。宽限 400ms，且
    **从未被聚焦过的窗口不因失焦收走**。
 4. 热键存在 `<vault>/ui-state.json` 的 `hotkey` 字段。`PaperViewSet` 必须原样携带它：
-   `Prefs` 是整体写的，视图少带一个字段 = 每次拖拽静默擦掉用户配置
-   （回归测试 `view_roundtrip_never_drops_the_hotkey`）。
+   `Prefs` 是整体写的，视图少带一个字段 = 每次拖拽静默擦掉用户配置。
+   守卫是 `paper_view_set_roundtrip_only_pins_field_copy`——注意它**只钉字段复制**，
+   不是行为断言（生产代码里视图写入通路已删除；将来重新引入拖拽/折叠时必须补行为测试）。
 
 ## 状态生命周期（这类 bug 会伪装成"功能坏了"）
 
