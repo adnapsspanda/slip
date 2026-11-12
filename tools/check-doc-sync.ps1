@@ -44,7 +44,9 @@ $actualCommands = (Select-String -Path 'src-tauri/src/*.rs' -Pattern '#\[tauri::
 $normative = ($docLines | Where-Object { $_ -notmatch '^\|\s*\d+\s*\|' }) -join "`n"
 $claims = [regex]::Matches($normative, '(\d+)\s*个\s*IPC\s*命令')
 if ($claims.Count -eq 0) {
-    Write-Output '[WARN] 文档里没有「N 个 IPC 命令」的断言，无法核对命令数'
+    # 没有断言 = 这门检查什么都没查。WARN 会让人以为"只是没写"，实际是守卫失效。
+    Write-Output '[FAIL] 文档里没有「N 个 IPC 命令」的断言，无法核对命令数'
+    $failed++
 }
 else {
     $bad = @()
@@ -73,7 +75,8 @@ for ($i = 0; $i -lt $docLines.Count; $i++) {
     if ($docLines[$i] -match 'Capability\s*(只有|是)') { $declareIndex = $i; break }
 }
 if ($declareIndex -lt 0) {
-    Write-Output '[WARN] 文档里没有 capability 的声明句，无法核对'
+    Write-Output '[FAIL] 文档里没有 capability 的声明句，无法核对'
+    $failed++
 }
 else {
     # 声明句可能跨几行（列表形式），取这一行及之后 4 行。
@@ -118,12 +121,15 @@ foreach ($marker in $staleMarkers) {
     }
 }
 
-# ---- 4. 前端预算数字：脚本、文档、钩子注释三处必须一致 ----
+# ---- 4. 前端预算数字：脚本、文档、钩子注释、脚本自身头部必须一致 ----
 #
 # 这类数字最典型的失真方式：预算从 70 KB 提到 88 KB，脚本改了，文档与钩子注释
 # 还写着旧值。读者按错的数字理解系统，而没有任何东西会报错。
+#
+# 旧实现用一条通用正则扫三个文件：tags.js 的「JS 预算」与数字分在两行，
+# 正则跨不过换行，实际只查了两个文件；脚本自己的头部（写着 70 KB）反而不在
+# 扫描列表里。现在按文件写死规则：**找不到断言也算失败**，不能"没查"当"一致"。
 $bundleScript = 'tools/check-bundle-size.ps1'
-$budgetSources = @('docs/handover.md', '.githooks/pre-commit', 'ui/src/lib/tags.js')
 if (Test-Path $bundleScript) {
     $bundleText = Read-Text $bundleScript
     $cssMatch = [regex]::Match($bundleText, '\$cssLimit\s*=\s*(\d+)\s*\*\s*1024')
@@ -135,19 +141,40 @@ if (Test-Path $bundleScript) {
     else {
         $cssKb = [int]$cssMatch.Groups[1].Value
         $jsKb = [int]$jsMatch.Groups[1].Value
-        foreach ($source in $budgetSources) {
-            if (-not (Test-Path $source)) { continue }
-            $body = Read-Text $source
-            # 只看提到 KB 预算的句子，避免把「R84 时产物 71.09 KB」这类历史数字扫进来。
-            $claims = [regex]::Matches($body, '(CSS|JS)[^。\n]{0,24}?(\d+)\s*KB')
-            foreach ($claim in $claims) {
-                $kind = $claim.Groups[1].Value
-                $claimed = [int]$claim.Groups[2].Value
-                $expected = if ($kind -eq 'CSS') { $cssKb } else { $jsKb }
-                if ($claimed -ne $expected) {
-                    Write-Output "[FAIL] $source 写「$kind $claimed KB」，脚本预算是 $kind $expected KB"
-                    $failed++
-                }
+        $budgetRules = @(
+            @{ Path = 'docs/handover.md'; Kind = 'JS'
+               Pattern = 'JS\s*预算[^。\n]{0,30}?(\d+)\s*KB' }
+            @{ Path = '.githooks/pre-commit'; Kind = 'CSS'
+               Pattern = 'CSS\s*<\s*(\d+)\s*KB' }
+            @{ Path = '.githooks/pre-commit'; Kind = 'JS'
+               Pattern = 'JS\s*<\s*(\d+)\s*KB' }
+            # 这句必须保持单行：拆行后旧的跨行正则就抓不到了。
+            @{ Path = 'ui/src/lib/tags.js'; Kind = 'JS'
+               Pattern = 'JS\s*预算[^。\n]{0,30}?(\d+)\s*KB' }
+            # 脚本自己的规范性头部；历史段落里的 70/80 不在匹配范围内。
+            @{ Path = $bundleScript; Kind = 'CSS'
+               Pattern = '预算来源[^。\n]{0,40}?CSS\s*<\s*\*{0,2}(\d+)\s*KB' }
+            @{ Path = $bundleScript; Kind = 'JS'
+               Pattern = '预算来源[^。\n]{0,40}?JS\s*<\s*\*{0,2}(\d+)\s*KB' }
+        )
+        foreach ($rule in $budgetRules) {
+            if (-not (Test-Path $rule.Path)) {
+                Write-Output "[FAIL] 预算断言引用的文件不存在：$($rule.Path)"
+                $failed++
+                continue
+            }
+            $body = Read-Text $rule.Path
+            $match = [regex]::Match($body, $rule.Pattern)
+            if (-not $match.Success) {
+                Write-Output "[FAIL] $($rule.Path) 里找不到 $($rule.Kind) 预算断言（正则：$($rule.Pattern)）"
+                $failed++
+                continue
+            }
+            $claimed = [int]$match.Groups[1].Value
+            $expected = if ($rule.Kind -eq 'CSS') { $cssKb } else { $jsKb }
+            if ($claimed -ne $expected) {
+                Write-Output "[FAIL] $($rule.Path) 写「$($rule.Kind) $claimed KB」，脚本预算是 $($rule.Kind) $expected KB"
+                $failed++
             }
         }
         if ($failed -eq 0) {

@@ -30,7 +30,7 @@ step() {
 needs_ui_build=0
 if [ ! -f ui/dist/index.html ]; then
   needs_ui_build=1
-elif [ -n "$(find ui/src ui/index.html ui/package.json ui/vite.config.js ui/vite.config.ts \
+elif [ -n "$(find ui/src ui/index.html ui/package.json ui/bun.lock ui/vite.config.js ui/vite.config.ts \
     -newer ui/dist/index.html -print -quit 2>/dev/null)" ]; then
   # 源码比产物新：必须重建。
   # 旧实现只在 dist 缺失时构建，于是"改了 src 但 dist 还在"就会拿着**旧产物**跑
@@ -39,7 +39,7 @@ elif [ -n "$(find ui/src ui/index.html ui/package.json ui/vite.config.js ui/vite
 fi
 if [ "$needs_ui_build" = "1" ]; then
   step "前端产物缺失或陈旧，先构建"
-  ( cd ui && "$BUN" install && "$BUN" run build )
+  ( cd ui && "$BUN" install --frozen-lockfile && "$BUN" run build )
 fi
 
 # 编码守卫：*.ps1 必须带 UTF-8 BOM。
@@ -106,7 +106,7 @@ fi
 # 其实根本没检查）。这条曾经骗过我一次。
 step "prettier --check（ui）"
 if [ ! -d ui/node_modules ]; then
-  ( cd ui && "$BUN" install )
+  ( cd ui && "$BUN" install --frozen-lockfile )
 fi
 ( cd ui && "$BUN" run format:check )
 

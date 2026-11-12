@@ -19,6 +19,8 @@
 #>
 param(
     [switch]$SkipBuild,
+    # 明确允许用旧前端产物打包（默认是失败，不是警告）。
+    [switch]$AllowStaleUi,
     [string]$OutDir = 'dist-release',
     # 覆盖输入二进制。**只用于在 release 构建不可用时验证打包流程本身**
     # （本机 Smart App Control 会拦 release 模式下的 proc-macro DLL）。
@@ -29,7 +31,10 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path -Parent $PSScriptRoot)
 
-$bun = 'C:\Users\spand\.bun\bin\bun.exe'
+# 不再硬编码某个用户的安装路径：先看 PATH，再回落到用户目录。
+$bun = if ($env:BUN_EXE) { $env:BUN_EXE }
+elseif (Get-Command bun -ErrorAction SilentlyContinue) { (Get-Command bun).Source }
+else { Join-Path $env:USERPROFILE '.bun\bin\bun.exe' }
 $exe = $ExePath
 if ($ExePath -ne 'target\release\slip-shell.exe') {
     Write-Output "[注意] 输入二进制被覆盖为 $ExePath —— 这不是正式发布产物，仅用于验证打包流程"
@@ -79,11 +84,21 @@ else {
 # 前端产物必须比源码新，否则打进去的是旧界面（这类错误不会有任何报错）。
 $distIndex = 'ui/dist/index.html'
 if (Test-Path $distIndex) {
-    $newer = Get-ChildItem ui/src -Recurse -File |
-        Where-Object { $_.LastWriteTime -gt (Get-Item $distIndex).LastWriteTime } |
-        Select-Object -First 1
+    $distTime = (Get-Item $distIndex).LastWriteTime
+    $sources = @(Get-ChildItem ui/src -Recurse -File)
+    foreach ($extra in @('ui/index.html', 'ui/package.json', 'ui/bun.lock', 'ui/vite.config.js', 'ui/vite.config.ts')) {
+        if (Test-Path $extra) { $sources += Get-Item $extra }
+    }
+    $newer = $sources | Where-Object { $_.LastWriteTime -gt $distTime } | Select-Object -First 1
     if ($newer) {
-        Write-Output "  [WARN] 前端源码比产物新（$($newer.Name)），先跑一次前端构建"
+        if ($AllowStaleUi) {
+            Write-Output "  [WARN] 前端源码比产物新（$($newer.Name)），按 -AllowStaleUi 继续"
+        }
+        else {
+            Write-Output "  [FAIL] 前端源码比产物新（$($newer.Name)）：先跑 cd ui; bun run build"
+            Write-Output '         确实要用旧产物打包时显式传 -AllowStaleUi。'
+            $failed++
+        }
     }
 }
 

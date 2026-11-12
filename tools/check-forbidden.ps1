@@ -22,6 +22,12 @@ Set-Location (Split-Path -Parent $PSScriptRoot)
 $failures = @()
 
 # 代码里那些"解释为什么不用某物"的注释会误报，先屏蔽注释再匹配。
+#
+# **字符串必须先于注释识别**：旧实现看到 `//` 就当注释起点，于是
+# `const u = "http://x"; el.innerHTML = userText;` 整行剩余部分被涂掉，
+# 一个 URL 就能让禁止项守卫失明。这里加最小字符串态（单引号/双引号/反引号）
+# 与反斜杠转义；`${...}` 内的代码暂按字符串处理（保守方向是"多屏蔽"，
+# 但至少不会把字符串里的注释标记当注释）。
 function Mask-Comments {
     param([string]$Text, [ref]$State)
     $out = [System.Text.StringBuilder]::new($Text.Length)
@@ -44,9 +50,33 @@ function Mask-Comments {
             $State.Value = 'code'
             continue
         }
+        $c = $Text[$i]
+        # 字符串态：只有匹配的引号能结束；反斜杠转义吞掉下一个字符。
+        if ($State.Value -eq 'sq' -or $State.Value -eq 'dq' -or $State.Value -eq 'bt') {
+            if ($c -eq '\') {
+                $out.Append($c) | Out-Null
+                if ($i + 1 -lt $len) { $out.Append($Text[$i + 1]) | Out-Null; $i += 2 }
+                else { $i++ }
+                continue
+            }
+            $closes = ($State.Value -eq 'sq' -and $c -eq "'") -or
+                ($State.Value -eq 'dq' -and $c -eq '"') -or
+                ($State.Value -eq 'bt' -and $c -eq '`')
+            if ($closes) { $State.Value = 'code'; $out.Append($c) | Out-Null; $i++; continue }
+            $out.Append($c) | Out-Null
+            $i++
+            continue
+        }
         # 逐字符比较而不是 Substring：旧实现每个字符都分配一次剩余串，
         # 是 O(n²) 且制造大量垃圾——整脚本 1.8 秒里大半耗在这。
-        $c = $Text[$i]
+        if ($c -eq "'" -or $c -eq '"' -or $c -eq '`') {
+            if ($c -eq "'") { $State.Value = 'sq' }
+            elseif ($c -eq '"') { $State.Value = 'dq' }
+            else { $State.Value = 'bt' }
+            $out.Append($c) | Out-Null
+            $i++
+            continue
+        }
         if ($c -eq '<' -and ($i + 3) -lt $len -and $Text[$i + 1] -eq '!' -and $Text[$i + 2] -eq '-' -and $Text[$i + 3] -eq '-') {
             $State.Value = 'html'; $out.Append('    ') | Out-Null; $i += 4; continue
         }
@@ -74,7 +104,10 @@ $script:fileIndex = $null
 function Get-SourceIndex {
     if ($null -ne $script:fileIndex) { return $script:fileIndex }
     $files = [System.Collections.Generic.List[string]]::new()
-    $skipDirs = @('\target\', '\node_modules\', '\.git\', '\dist\')
+    # 用**目录名**而不是带分隔符的片段：旧实现 `\target\` 匹配不到目录本身
+    # （`...\target` 末尾没有分隔符），于是 `target/` 顶层文件仍被扫描——
+    # 实测在 target/_probe.rs 写 `// archive.md` 会误报违规。
+    $skipNames = @('target', 'node_modules', '.git', 'dist')
     $stack = [System.Collections.Generic.Stack[string]]::new()
     # **必须用 ProviderPath**：在 `\\wsl.localhost\...` 这类 UNC 路径下，
     # `(Get-Location).Path` 会带上 `Microsoft.PowerShell.Core\FileSystem::` 前缀，
@@ -86,14 +119,26 @@ function Get-SourceIndex {
         try {
             foreach ($file in [System.IO.Directory]::EnumerateFiles($dir)) { $files.Add($file) }
             foreach ($child in [System.IO.Directory]::EnumerateDirectories($dir)) {
-                $hit = $false
-                foreach ($skip in $skipDirs) { if ($child.Contains($skip)) { $hit = $true; break } }
-                if (-not $hit) { $stack.Push($child) }
+                if ($skipNames -contains [System.IO.Path]::GetFileName($child)) { continue }
+                $stack.Push($child)
             }
         }
         catch {
-            continue
+            # **不要 continue**：枚举失败若被吞掉，索引为空，七个检查会全部
+            # `[通过]`——"工具坏了"和"仓库干净"在输出上完全一样。这里必须炸。
+            throw "源文件索引失败（$dir）：$($_.Exception.Message)"
         }
+    }
+    if ($files.Count -eq 0) {
+        throw "源文件索引为空：$((Get-Location).ProviderPath)（可能不在仓库根目录）"
+    }
+    # 根 Cargo.toml 是"这确实是 Slip 仓库"的最小证据；没有它就别假装扫过了。
+    $hasCargo = $false
+    foreach ($file in $files) {
+        if ([System.IO.Path]::GetFileName($file) -eq 'Cargo.toml') { $hasCargo = $true; break }
+    }
+    if (-not $hasCargo) {
+        throw "源文件索引里没有 Cargo.toml：$((Get-Location).ProviderPath)"
     }
     $script:fileIndex = $files
     return $files
@@ -173,7 +218,7 @@ function Check-Forbidden {
                 $state -ne 'code' -or $line.Contains('//') -or $line.Contains('/*') -or $line.Contains('<!--'))
             $scan = if ($needsMask) { Mask-Comments -Text $line -State $scanState } else { $line }
             if ($scan -match $Pattern) {
-                $rel = $file.Replace((Get-Location).ProviderPath + '\', '')
+                $rel = [System.IO.Path]::GetRelativePath((Get-Location).ProviderPath, $file)
                 $hits += ("{0}:{1}: {2}" -f $rel, $lineNo, $line.Trim())
             }
         }
@@ -325,8 +370,51 @@ if ($SelfTest) {
         Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
     }
 
+    # 自检 3：注释屏蔽本身。只测正则不够——一个 URL 里的 `//` 曾让整行失明。
+    Write-Output ""
+    Write-Output "== 自检 3：字符串里的 // 不能把后面的违规一起屏蔽 =="
+    $maskTmp = Join-Path ([System.IO.Path]::GetTempPath()) ("slip-mask-selftest-" + [guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $maskTmp | Out-Null
+    try {
+        $withUrl = Join-Path $maskTmp 'url.js'
+        $commented = Join-Path $maskTmp 'comment.js'
+        $blockCommented = Join-Path $maskTmp 'block.js'
+        $stringThenCode = Join-Path $maskTmp 'string.js'
+        Set-Content -LiteralPath $withUrl -Encoding utf8 -Value @(
+            'const base = "http://127.0.0.1"; el.innerHTML = userText;')
+        Set-Content -LiteralPath $commented -Encoding utf8 -Value @(
+            '// el.innerHTML = userText;')
+        Set-Content -LiteralPath $blockCommented -Encoding utf8 -Value @(
+            '/*', 'el.innerHTML = userText;', '*/')
+        Set-Content -LiteralPath $stringThenCode -Encoding utf8 -Value @(
+            'const s = "// not a comment"; el.innerHTML = userText;')
+
+        $probe = {
+            param([string]$file)
+            Check-Forbidden -Label '自检-mask' -Pattern $PATTERN_DANGEROUS `
+                -Include @('*.js') -Reason '自检' -SkipComments -Quiet -RecordFailure $false -PassThru `
+                -FileList @($file)
+        }
+        $urlHits = & $probe $withUrl
+        $commentHits = & $probe $commented
+        $blockHits = & $probe $blockCommented
+        $stringHits = & $probe $stringThenCode
+
+        if ($urlHits -eq 1) { Write-Output "  [PASS] URL 同一行的违规仍然被抓到" }
+        else { Write-Output "  [FAIL] URL 同一行的违规命中 $urlHits 处，期望 1 处——注释屏蔽又吞了代码"; $bad++ }
+        if ($commentHits -eq 0) { Write-Output "  [PASS] 行注释不误报" }
+        else { Write-Output "  [FAIL] 行注释被误报 $commentHits 处"; $bad++ }
+        if ($blockHits -eq 0) { Write-Output "  [PASS] 跨行块注释不误报" }
+        else { Write-Output "  [FAIL] 跨行块注释被误报 $blockHits 处"; $bad++ }
+        if ($stringHits -eq 1) { Write-Output "  [PASS] 字符串里的 // 不吞掉后面的代码" }
+        else { Write-Output "  [FAIL] 字符串里的 // 吞掉了后面的代码：命中 $stringHits 处，期望 1 处"; $bad++ }
+    }
+    finally {
+        Remove-Item -LiteralPath $maskTmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     if ($bad -gt 0) { exit 1 }
-    Write-Output "自检通过：模式与 Include 都能区分正负样本。"
+    Write-Output "自检通过：模式、Include 与注释屏蔽都能区分正负样本。"
     # 自检是**加验**，不能掩盖本次全仓扫描的结果。
     if ($failures.Count -gt 0) { exit 1 }
     exit 0

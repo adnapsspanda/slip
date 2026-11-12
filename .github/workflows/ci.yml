@@ -154,6 +154,11 @@ jobs:
       - name: 逻辑层测试（domain / store / app）
         run: cargo test -p slip-domain -p slip-store -p slip-app --all-targets
 
+      # 变异审计：确认核心不变量"去掉修复会红"。约 12 秒；只在 Linux job 跑，
+      # Windows 钩子不重复跑（它会改文件，留给干净 checkout 最安全）。
+      - name: 变异审计（核心不变量）
+        run: python3 tools/mutation-audit.py
+
       - name: 逻辑层 Clippy
         run: cargo clippy -p slip-domain -p slip-store -p slip-app --all-targets -- -D warnings
 

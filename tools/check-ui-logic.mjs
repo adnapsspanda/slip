@@ -58,8 +58,30 @@ import { vaultFilePath } from "../ui/src/lib/bridge.js";
 import { exactLocal, parseIso, relativeTime } from "../ui/src/lib/time.js";
 
 let failed = 0;
+
+/**
+ * 递归深比较。
+ *
+ * 为什么不用 `JSON.stringify(actual) === JSON.stringify(expected)`：两者都会把
+ * `NaN` 序列化成 `null`，于是「期望 null、实际 NaN」这种断言会假绿。纯函数的
+ * 返回值就以原始类型/数组/普通对象为主，自己比较比引一个深比较库便宜。
+ */
+function deepEqual(a, b) {
+  if (Object.is(a, b)) return true;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    return a.length === b.length && a.every((value, index) => deepEqual(value, b[index]));
+  }
+  if (a && b && typeof a === "object" && typeof b === "object") {
+    const keys = Object.keys(a);
+    if (keys.length !== Object.keys(b).length) return false;
+    return keys.every((key) => Object.hasOwn(b, key) && deepEqual(a[key], b[key]));
+  }
+  return false;
+}
+
 const check = (label, actual, expected) => {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
+  const ok = deepEqual(actual, expected);
   if (!ok) failed += 1;
   console.log(`${ok ? "[PASS]" : "[FAIL]"} ${label}` + (ok ? "" : ` — 实际 ${JSON.stringify(actual)}，期望 ${JSON.stringify(expected)}`));
 };
@@ -680,7 +702,7 @@ check("相对亮度：白 1 / 黑 0", [Math.round(relativeLuminance("#ffffff")),
   const source = await readFile(new URL(import.meta.url), "utf8");
   const lines = source.split("\n");
   const lastCheck = lines.reduce(
-    (last, line, index) => (/(^|[^.\w])check\(/.test(line) ? index : last),
+    (last, line, index) => (/(^|[^.\w])check\s*\(/.test(line) ? index : last),
     -1,
   );
   const gate = lines.findIndex((line) => line.includes("process.exit(1)") && line.includes("if"));

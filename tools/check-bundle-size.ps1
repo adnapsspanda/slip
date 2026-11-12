@@ -8,7 +8,7 @@
     为什么要用脚本而不是"记得看一眼"：这两个数字直接决定二进制里嵌入多少字节，
     而超了不会有任何报错——只会让安装包悄悄变大。做成门禁之后，超预算是硬失败。
 
-    预算来源：CSS < **14 KB**、JS < 70 KB。
+    预算来源：CSS < **14 KB**、JS < **88 KB**。
 
     CSS 预算从 10 KB 提额到 14 KB（2026-11-12 明确裁决）。理由：
       · 10 KB 的初始配额定在 **R31（系统深浅色自适应）之前**，当时只有浅色固定纸色、
@@ -43,12 +43,17 @@ if (-not (Test-Path $dist)) {
     exit 1
 }
 
-$css = Get-ChildItem $dist -Recurse -Filter '*.css' | Select-Object -First 1
-$js = Get-ChildItem $dist -Recurse -Filter '*.js' | Select-Object -First 1
-if (-not $css -or -not $js) {
+# **汇总全部产物**，不是只看第一个文件：Vite 一旦做代码分割，
+# `Select-Object -First 1` 会让第二个超预算的 chunk 完全不受约束，
+# 而 Tauri 会把整个 ui/dist 嵌进二进制。
+$cssFiles = @(Get-ChildItem $dist -Recurse -Filter '*.css')
+$jsFiles = @(Get-ChildItem $dist -Recurse -Filter '*.js')
+if ($cssFiles.Count -eq 0 -or $jsFiles.Count -eq 0) {
     Write-Output '[FAIL] 产物里缺少 css 或 js'
     exit 1
 }
+$cssBytes = [long](($cssFiles | Measure-Object -Property Length -Sum).Sum)
+$jsBytes = [long](($jsFiles | Measure-Object -Property Length -Sum).Sum)
 
 $failed = 0
 function Report([string]$Label, [long]$Actual, [long]$Limit) {
@@ -68,12 +73,12 @@ function Report([string]$Label, [long]$Actual, [long]$Limit) {
     }
 }
 
-Report 'CSS' $css.Length $cssLimit
-Report 'JS' $js.Length $jsLimit
+Report "CSS（$($cssFiles.Count) 个文件）" $cssBytes $cssLimit
+Report "JS（$($jsFiles.Count) 个文件）" $jsBytes $jsLimit
 
 # 体积之外再确认一件事：产物里不该出现运行期依赖。
 # 本项目的 package.json 只有 devDependencies，任何一条被误引进来都会让 JS 明显变大。
-$bundle = Get-Content $js.FullName -Raw
+$bundle = ($jsFiles | ForEach-Object { Get-Content $_.FullName -Raw }) -join "`n"
 $suspects = @('lodash', 'moment', 'rxjs', 'jquery', 'axios', 'marked', 'dompurify')
 $found = $suspects | Where-Object { $bundle -match [regex]::Escape($_) }
 if ($found) {

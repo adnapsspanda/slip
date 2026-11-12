@@ -171,15 +171,17 @@ def classify(code: int, out: str):
 # 逐用例的 `finally` 可能来不及跑完，仓库里就留下**改坏的代码**——
 # 这是这类工具最危险的失败形态（你以为代码是干净的）。
 # 所以除了逐用例恢复，再挂一张全局底牌。
-_ORIGINALS: dict[str, str] = {}
+# 存**字节**而不是文本：文本模式会把 CRLF 归一化成 LF，恢复后磁盘字节已经变了，
+# 而 `restored == original` 仍然为真——脚本会报告"逐字节一致"，实际整文件换行都变了。
+_ORIGINALS: dict[str, bytes] = {}
 
 
 def restore_all() -> None:
     for path, original in list(_ORIGINALS.items()):
         try:
-            current = io.open(path, encoding="utf-8").read()
+            current = Path(path).read_bytes()
             if current != original:
-                io.open(path, "w", encoding="utf-8", newline="").write(original)
+                Path(path).write_bytes(original)
                 print(f"[SAFETY] 已兜底还原 {os.path.basename(path)}")
         except OSError as error:
             print(f"[SAFETY] 还原 {path} 失败：{error}")
@@ -205,15 +207,20 @@ def main():
 
     for case in CASES:
         path = REPO / case["file"]
-        original = io.open(path, encoding="utf-8").read()
-        _ORIGINALS[str(path)] = original
-        if case["old"] not in original:
+        original_bytes = path.read_bytes()
+        _ORIGINALS[str(path)] = original_bytes
+        original = original_bytes.decode("utf-8")
+        # 锚点用 LF 写；CRLF 文件先归一化匹配，写回时再还原换行。
+        crlf = "\r\n" in original
+        matchable = original.replace("\r\n", "\n") if crlf else original
+        if case["old"] not in matchable:
             print(f"[SKIP] {case['name']}：锚点未匹配，跳过（并视为失败）")
             failures.append(case["name"] + "（锚点未匹配）")
             continue
 
-        mutated = original.replace(case["old"], case["new"], 1)
-        io.open(path, "w", encoding="utf-8", newline="").write(mutated)
+        mutated = matchable.replace(case["old"], case["new"], 1)
+        mutated_bytes = mutated.replace("\n", "\r\n").encode("utf-8") if crlf else mutated.encode("utf-8")
+        path.write_bytes(mutated_bytes)
         try:
             code, out = cargo_test(case["crate"])
             verdict = classify(code, out)
@@ -237,10 +244,10 @@ def main():
                 print(f"[FAIL] {case['name']}：变异后测试仍然全绿——这个不变量没有守卫")
                 failures.append(case["name"])
         finally:
-            io.open(path, "w", encoding="utf-8", newline="").write(original)
-            restored = io.open(path, encoding="utf-8").read()
-            if restored != original:
-                print(f"[FAIL] {case['file']} 恢复失败：内容与原文件不一致")
+            path.write_bytes(original_bytes)
+            restored = path.read_bytes()
+            if restored != original_bytes:
+                print(f"[FAIL] {case['file']} 恢复失败：磁盘字节与原文件不一致")
                 failures.append(case["name"] + "（恢复失败）")
 
     # 全部恢复后必须重新全绿
