@@ -65,24 +65,30 @@ export function nextToggleTarget(snapshotDone, intent) {
 }
 
 /**
- * 一次勾选请求结束后，那条未落盘的意图还要不要留着。
+ * 一次勾选请求结束后，那条未落盘的意图还要不要丢掉。
  *
- * 为什么需要这个判定：意图的唯一职责是让「连点两下」以意图为准反转。它一旦
- * 比快照活得更久，就会反过来骗人——上一轮失败留下的 `true` 会让用户下一次
- * 点击的目标变成 `false`，症状是「勾选要按两下才生效」。
+ * 意图的职责是让「连点」以意图为准反转；它一旦比快照活得更久，就会反过来骗人。
+ * 但删除时机不能只看"这一条请求的结果"：同一 id 可能还有排队中的点击。
+ * `remaining` 是该 id 在**这次请求之后**还剩几条在途/排队；只要还有，就必须保留
+ * 意图，否则第三次点击会从旧快照反转，终态与点击次数不符（实测过这个形状）。
  *
- * 三种情况：
- * - 后端没接受：快照不会朝目标动，留着意图等于让下一次点击基于一个不存在的状态；
- * - 快照已经等于目标：意图已经落盘，再留着会让下一次点击反转错方向；
- * - 其它：后面还有排队中的点击，意图仍是它们唯一可信的起点。
+ * - 还有排队请求 → 保留；
+ * - 没有排队了，且后端没接受 → 丢弃（下一次点击不能基于没发生过的状态）；
+ * - 没有排队了，且快照已等于目标 → 丢弃（意图已落盘）；
+ * - 没有排队了，但快照还没追上（刷新失败）→ 保留：意图等于目标，仍是下一次反转的正确起点。
  *
+ * @param {number} remaining 该 id 在这次请求之后仍在途/排队的数量
  * @param {boolean} accepted 后端是否接受（`ack.result === "applied"`）
  * @param {boolean|undefined} storedDone 最新快照里这一条的完成态
  * @param {boolean} targetDone 这次请求的目标状态
- * @returns {boolean} true = 保留意图
+ * @returns {boolean} true = 丢弃意图
  */
-export function keepPendingIntent(accepted, storedDone, targetDone) {
-  if (!accepted) return false;
-  if (storedDone === targetDone) return false;
-  return true;
+export function shouldDropPendingIntent(
+  remaining,
+  accepted,
+  storedDone,
+  targetDone,
+) {
+  if (remaining > 0) return false;
+  return !accepted || storedDone === targetDone;
 }

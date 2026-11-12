@@ -16,8 +16,8 @@ import {
 } from "../ui/src/lib/status.js";
 import {
   createSerialQueue,
-  keepPendingIntent,
   nextToggleTarget,
+  shouldDropPendingIntent,
 } from "../ui/src/lib/queue.js";
 import { confirmNext, confirmStep, CONFIRM_WINDOW_MS } from "../ui/src/lib/confirm.js";
 import {
@@ -216,11 +216,13 @@ check("连续三次点击：true → false → true（净效果切回原状态�
 
 // 意图不是永久事实：失败、快照追上、或者换了一次会话时都必须作废。
 // 留着一条"没发生过的意图"，下一回点击就会从它反转——症状是勾选要按两下才生效。
-check("后端未接受 → 意图必须删除", keepPendingIntent(false, false, true), false);
-check("快照已等于目标 → 意图已落盘，删除", keepPendingIntent(true, true, true), false);
-check("快照还没追上 → 保留意图给排队中的点击", keepPendingIntent(true, false, true), true);
+check("后端未接受、无排队 → 意图必须删除", shouldDropPendingIntent(0, false, false, true), true);
+check("快照已等于目标 → 意图已落盘，删除", shouldDropPendingIntent(0, true, true, true), true);
+check("快照还没追上 → 保留意图给下一次反转", shouldDropPendingIntent(0, true, false, true), false);
 // 失败但快照碰巧等于目标时，仍然按"未接受"删除：快照相等不能证明是这次请求的功劳。
-check("未接受优先于快照相等", keepPendingIntent(false, true, true), false);
+check("未接受优先于快照相等", shouldDropPendingIntent(0, false, true, true), true);
+// 同一 id 还有排队点击时，哪怕这一条失败也不能删：删了第三次点击会从旧快照反转。
+check("仍有排队请求 → 无论如何保留意图", shouldDropPendingIntent(1, false, true, true), false);
 
 // 串行队列：任务必须按提交顺序执行，且一次只跑一个
 const order = [];

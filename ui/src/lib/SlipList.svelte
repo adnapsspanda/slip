@@ -137,8 +137,14 @@
   let draft = $state("");
   /** 输入法组合态：选词按 Enter 或 Esc 时绝不能误提交或丢弃编辑。 */
   let composing = $state(false);
-  /** 提交进行中，防止失焦与 Enter 各发一次请求。 */
-  let committing = $state(false);
+  /**
+   * 正在进行的提交。
+   *
+   * 用 Promise 而不是布尔：布尔只能告诉后来者"有人在提交"，却给不出结果；
+   * 调用方（Tab/Enter/切目标）据此直接放行，会把还没落定的失败草稿切走。
+   * 共享同一个 Promise，后来者拿到的是真实 accepted。
+   */
+  let commitInFlight = null;
   /** Esc 取消后会立刻失焦，用这个标记让失焦不再触发提交。 */
   let cancelled = $state(false);
   /**
@@ -199,6 +205,9 @@
   }
 
   async function beginEdit(slip) {
+    // 已经在编辑这一条：双击输入框选词会冒泡到整行的 ondblclick，
+    // 若不在这里短路，下面的 `draft = slip.text` 会把用户刚打的字重置成原文。
+    if (editingId === slip.id) return;
     // 锁定只保护正文；这里要明确告诉用户为什么双击没反应，否则像是坏了。
     if (slip.locked) {
       onnotice?.("已锁定，先解锁才能修改");
@@ -235,37 +244,40 @@
    * @returns {Promise<boolean>}
    */
   async function commitEdit() {
-    // 失焦可能和 Enter 撞在一起；也承接"取消后立刻失焦"的情况。这几种都没有
-    // 这一次需要保存的东西：已取消/没会话按成功处理；已在提交中则等它自己的调用方
-    // 收尾，这里按 true 放行，免得同一次草稿被发第二遍。
     const current = session;
-    if (cancelled || committing || !current) {
+    if (cancelled || !current) {
       return true;
     }
+    // 已有提交在飞：共享同一个 Promise，而不是直接返回 true。
+    // 直接放行会让 Tab/Enter 在结果未知时切走；第一次若失败，旧草稿已无处可回。
+    if (commitInFlight) return commitInFlight;
     // 没改就不用发请求，免得平白把提示区刷成"已修改"。
     if (draft === current.original) {
       finishSession(current.id);
       return true;
     }
-    let accepted = false;
-    committing = true;
+
+    commitInFlight = (async () => {
+      let accepted = false;
+      try {
+        accepted =
+          (await onedit?.({ id: current.id, text: current.original }, draft)) ??
+          false;
+      } catch {
+        // 上层 `handleEdit` 自己会兜住错误并返回 false；这里再兜一层，
+        // 保证 `commitEdit` 永不 reject，调用方可以安全地 `void` 它。
+        accepted = false;
+      }
+      // 失败时保持编辑态与草稿：用户的输入不能丢。
+      if (accepted) finishSession(current.id);
+      return accepted;
+    })();
+
     try {
-      accepted =
-        (await onedit?.({ id: current.id, text: current.original }, draft)) ??
-        false;
-    } catch {
-      // 上层 `handleEdit` 自己会兜住错误并返回 false；这里再兜一层，
-      // 保证 `commitEdit` 永不 reject，调用方可以安全地 `void` 它。
-      accepted = false;
+      return await commitInFlight;
     } finally {
-      committing = false;
+      commitInFlight = null;
     }
-    // 失败时保持编辑态与草稿：用户的输入不能丢。
-    if (accepted) {
-      finishSession(current.id);
-      return true;
-    }
-    return false;
   }
 
   /**
@@ -520,6 +532,7 @@
             bind:value={draft}
             use:focusAndSelect
             onkeydown={handleKeydown}
+            ondblclick={(event) => event.stopPropagation()}
             onblur={() => handleBlur(slip.id)}
             oncompositionstart={() => (composing = true)}
             oncompositionend={() => (composing = false)}

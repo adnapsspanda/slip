@@ -20,8 +20,8 @@
   import { closeFadeDelay } from "./lib/motion.js";
   import {
     createSerialQueue,
-    keepPendingIntent,
     nextToggleTarget,
+    shouldDropPendingIntent,
   } from "./lib/queue.js";
   import { confirmNext, CONFIRM_WINDOW_MS } from "./lib/confirm.js";
   import * as bridge from "./lib/bridge.js";
@@ -49,7 +49,15 @@
    */
   let pendingDone = $state({});
 
-  /** 热键状态。启动即定、运行期不变，所以只在挂载时取一次。 */
+  /**
+   * 每个 slip 在途/排队的勾选请求数。
+   *
+   * 只靠 `pendingDone` 无法判断"现在删意图安不安全"：同一 id 可能还有排队点击。
+   * 计数归零时才允许丢弃意图，否则第三次点击会从旧快照反转。
+   */
+  let pendingToggleCounts = $state({});
+
+  /** 热键状态。启动时取一次；唤出/回到前台时重取（托盘换键后横幅要跟着变）。 */
   let hotkeyState = $state(null);
 
   /** 变更命令串行执行：避免并发请求互相踩，也避免"旧快照"导致的丢失更新。 */
@@ -385,15 +393,16 @@
         // 这里只补一句"该怎么办"。
         return `inbox.md 有无法处理的结构问题：${msg}。修好文件后重新载入`;
       case "io":
-        return `磁盘读写失败（${msg.replace(/^i\/o error:\s*/, "")}）`;
+        // `IoKind` 的 Display 已经是中文（文件不存在/权限不足/被占用…），
+        // 旧实现还在剥一个早已不存在的 "i/o error:" 前缀，纯属历史残留。
+        return `磁盘读写失败（${msg}）`;
       case "notDegraded":
         return "当前文件状态正常，不需要隔离";
       case "notArchived":
         return "只有已归档的纸条才能彻底删除";
       case "domain":
-        if (msg.includes("locked")) return "纸条已锁定，请先解锁再修改";
-        if (msg.includes("empty")) return "纸条内容不能为空";
-        if (msg.includes("not done")) return "只有已完成的纸条才能归档";
+        // 领域层的 Display 早已全部中文化，并且就是给用户看的句子；
+        // 这里不要再按英文子串猜含义（那三条分支早已是死代码）。
         return msg;
       default:
         return msg;
@@ -511,9 +520,21 @@
     showArchived = false;
     showBackups = false;
     pendingRestore = null;
+    // 只读预览、备份列表与二次确认武装态同样是"当次浏览"的临时状态。
+    // `armed` 尤其危险：武装彻底删除后窗口失焦收起，4 秒内再唤出，
+    // 同一行仍是武装态——下一次单击就会真的执行不可逆删除。
+    preview = null;
+    backups = [];
+    for (const key of Object.keys(armed)) armed[key] = null;
+    for (const key of Object.keys(armTimers)) {
+      clearTimeout(armTimers[key]);
+      delete armTimers[key];
+    }
     // 未落盘的勾选意图只属于当次会话：上一轮失败/迟到的意图留到下一次唤出，
     // 会让第一下点击从旧意图反转，看上去像勾选失灵。
     pendingDone = {};
+    pendingToggleCounts = {};
+    void refreshHotkeyStatus();
     captureRef?.focus();
   }
 
@@ -605,6 +626,7 @@
     // 以"未落盘的意图"为准，而不是当前快照：连点两下时快照还没跟上。
     const targetDone = nextToggleTarget(slip.done, pendingDone[slip.id]);
     pendingDone[slip.id] = targetDone;
+    pendingToggleCounts[slip.id] = (pendingToggleCounts[slip.id] ?? 0) + 1;
     let accepted = false;
     try {
       // 串行发送：后一次点击一定排在前一次之后，不会两个请求同时基于同一份旧快照。
@@ -614,8 +636,12 @@
       accepted = ack.result === "applied";
       await refresh();
       if (accepted) {
-        hint = DEFAULT_HINT;
-        markUndone(targetDone ? "已完成" : "已标为未完成");
+        if (ack.changed !== false) {
+          hint = DEFAULT_HINT;
+          markUndone(targetDone ? "已完成" : "已标为未完成");
+        } else {
+          hint = "没有变化";
+        }
       } else {
         hint = `未更新：${formatAckError(ack)}`;
       }
@@ -623,9 +649,13 @@
       hint = `complete 失败：${error}`;
       await refresh();
     } finally {
+      const remaining = (pendingToggleCounts[slip.id] ?? 1) - 1;
+      if (remaining > 0) pendingToggleCounts[slip.id] = remaining;
+      else delete pendingToggleCounts[slip.id];
       const stored = snapshot?.slips.find((item) => item.id === slip.id);
-      // 失败一定清：留着的话下一次点击会从"没发生过的状态"反转，表现为勾选要按两下。
-      if (!keepPendingIntent(accepted, stored?.done, targetDone)) {
+      if (
+        shouldDropPendingIntent(remaining, accepted, stored?.done, targetDone)
+      ) {
         delete pendingDone[slip.id];
       }
     }
@@ -639,11 +669,17 @@
    */
   async function handleEdit(slip, text) {
     try {
-      const ack = await bridge.edit(bridge.newRequestId(), slip.id, text);
+      const ack = await mutating.run(() =>
+        bridge.edit(bridge.newRequestId(), slip.id, text),
+      );
       await refresh();
       if (ack.result === "applied") {
-        hint = DEFAULT_HINT;
-        markUndone("已修改");
+        if (ack.changed !== false) {
+          hint = DEFAULT_HINT;
+          markUndone("已修改");
+        } else {
+          hint = "没有变化";
+        }
         return true;
       }
       hint = `未修改：${formatAckError(ack)}`;
@@ -661,10 +697,8 @@
    */
   async function handleLock(slip) {
     try {
-      const ack = await bridge.setLocked(
-        bridge.newRequestId(),
-        slip.id,
-        !slip.locked,
+      const ack = await mutating.run(() =>
+        bridge.setLocked(bridge.newRequestId(), slip.id, !slip.locked),
       );
       if (ack.result === "applied") {
         // 锁定不进撤销栈，清掉可能残留的旧撤销条以免误导。
@@ -681,11 +715,17 @@
   /** 归档单条已完成纸条，并提供一键撤销入口。 */
   async function handleArchive(slip) {
     try {
-      const ack = await bridge.archive(bridge.newRequestId(), [slip.id]);
+      const ack = await mutating.run(() =>
+        bridge.archive(bridge.newRequestId(), [slip.id]),
+      );
       await refresh();
       if (ack.result === "applied") {
-        hint = DEFAULT_HINT;
-        markUndone("已归档");
+        if (ack.changed !== false) {
+          hint = DEFAULT_HINT;
+          markUndone("已归档");
+        } else {
+          hint = "没有变化";
+        }
       } else {
         hint = `未归档：${formatAckError(ack)}`;
       }
@@ -731,13 +771,15 @@
     }
     pendingRestore = null;
     try {
-      const ack = await bridge.restoreBackup(
-        bridge.newRequestId(),
-        backup.name,
+      const ack = await mutating.run(() =>
+        bridge.restoreBackup(bridge.newRequestId(), backup.name),
       );
       await refresh();
       if (ack.result === "applied") {
+        // 整份文件换了一个世界：面板与归档抽屉都基于旧内容，必须退出。
         showBackups = false;
+        showArchived = false;
+        preview = null;
         hint = "已从备份恢复（恢复前的版本也已留档）";
         // 恢复整份文件 = 换了一个世界：撤销栈被后端清空，本地连击计数也必须清。
         notice = null;
@@ -757,6 +799,15 @@
 
   function formatSize(bytes) {
     return bytes >= 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${bytes} B`;
+  }
+
+  /** 重新读取热键状态。托盘换键后，窗口内的横幅要跟着变。 */
+  async function refreshHotkeyStatus() {
+    try {
+      hotkeyState = await bridge.hotkeyStatus();
+    } catch {
+      // 查询失败不吓用户：横幅不显示比显示一条假报警好。
+    }
   }
 
   /** 复制诊断到剪贴板。纯读取快照，不改任何状态。 */
@@ -782,10 +833,17 @@
   /** 把一条已归档的纸条恢复回列表。归档是墓碑不是删除，恢复只是清掉归档时间。 */
   async function handleUnarchive(slip) {
     try {
-      const ack = await bridge.unarchive(bridge.newRequestId(), slip.id);
+      const ack = await mutating.run(() =>
+        bridge.unarchive(bridge.newRequestId(), slip.id),
+      );
       await refresh();
       if (ack.result === "applied") {
-        hint = DEFAULT_HINT;
+        if (ack.changed !== false) {
+          hint = "已恢复到列表";
+          markUndone("已恢复");
+        } else {
+          hint = "没有变化";
+        }
         // 恢复掉最后一条后抽屉就空了：继续留在空列表里只会让人以为数据没了。
         // （探针实测过这个手感问题。）
         if (archivedSlips.length === 0) showArchived = false;
@@ -838,7 +896,9 @@
    */
   async function handlePurge(slip) {
     try {
-      const ack = await bridge.purgeArchived(bridge.newRequestId(), slip.id);
+      const ack = await mutating.run(() =>
+        bridge.purgeArchived(bridge.newRequestId(), slip.id),
+      );
       // 列表以后端为准：刷新快照，那条自然从抽屉里消失（不做本地乐观删除）。
       await refresh();
       if (ack.result === "applied") {
@@ -869,12 +929,18 @@
     const ids = doneSlips.map((slip) => slip.id);
     if (ids.length === 0) return;
     try {
-      const ack = await bridge.archive(bridge.newRequestId(), ids);
+      const ack = await mutating.run(() =>
+        bridge.archive(bridge.newRequestId(), ids),
+      );
       await refresh();
       if (ack.result === "applied") {
-        hint = DEFAULT_HINT;
-        // 一整批在撤销栈里是一步：这里报的是"已归档 N 条"，撤销一次就整批回来。
-        markUndone(`已归档 ${ids.length} 条`);
+        if (ack.changed !== false) {
+          hint = DEFAULT_HINT;
+          // 一整批在撤销栈里是一步：这里报的是"已归档 N 条"，撤销一次就整批回来。
+          markUndone(`已归档 ${ids.length} 条`);
+        } else {
+          hint = "没有变化";
+        }
       } else {
         hint = `未归档：${formatAckError(ack)}`;
       }
@@ -902,8 +968,12 @@
       );
       await refresh();
       if (ack.result === "applied") {
-        hint = DEFAULT_HINT;
-        markUndone(`已完成 ${ids.length} 条`);
+        if (ack.changed !== false) {
+          hint = DEFAULT_HINT;
+          markUndone(`已完成 ${ids.length} 条`);
+        } else {
+          hint = "没有变化";
+        }
       } else {
         hint = `未完成：${formatAckError(ack)}`;
       }
@@ -923,10 +993,8 @@
   async function handlePin(slip) {
     const target = !slip.pinned;
     try {
-      const ack = await bridge.setPinned(
-        bridge.newRequestId(),
-        slip.id,
-        target,
+      const ack = await mutating.run(() =>
+        bridge.setPinned(bridge.newRequestId(), slip.id, target),
       );
       if (ack.result === "applied") {
         hint = target ? "已置顶到最前" : "已取消置顶";
@@ -1099,7 +1167,9 @@
   async function handleReload() {
     hint = "重新载入中…";
     try {
-      const ack = await bridge.reload(bridge.newRequestId());
+      const ack = await mutating.run(() =>
+        bridge.reload(bridge.newRequestId()),
+      );
       hint =
         ack.result === "applied"
           ? "已重新载入"
@@ -1108,6 +1178,9 @@
         // 重新载入等同于换了一份内容：撤销栈清空，连击计数一起清（既有清栈契约）。
         notice = null;
         undoTrail = null;
+        // 归档抽屉、只读预览都基于旧内容，换内容后必须退出。
+        showArchived = false;
+        preview = null;
       }
     } catch (error) {
       hint = `重载失败：${error}`;
@@ -1123,7 +1196,9 @@
   async function handleIsolate() {
     hint = "正在隔离并重建…";
     try {
-      const ack = await bridge.isolateAndReset(bridge.newRequestId());
+      const ack = await mutating.run(() =>
+        bridge.isolateAndReset(bridge.newRequestId()),
+      );
       hint =
         ack.result === "applied"
           ? "已重建空 Inbox"
@@ -1132,6 +1207,8 @@
         // 隔离重建 = 内容全换，撤销栈没有意义，连击计数一并清空。
         notice = null;
         undoTrail = null;
+        showArchived = false;
+        preview = null;
       }
     } catch (error) {
       hint = `重建失败：${error}`;
@@ -1201,12 +1278,34 @@
    * 冒泡阶段拦的话它已经先跑了——弹窗关掉的同时窗口也收走，用户会以为界面出错。
    */
   function handleKeydownCapture(event) {
-    // 弹窗打开时 Tab 也只许留在弹窗里：焦点若跑到背后的捕获框/列表，用户会开始
-    // 操作一个被遮住的界面，而弹窗还盖在最上面。
+    // 弹窗打开时 Tab 只许在弹窗内循环：既不能让焦点跑到背后的捕获框/列表，
+    // 也不能把唯一的「关闭」按钮锁在键盘链之外（旧实现一律 preventDefault，
+    // 键盘用户永远到不了按钮，只能猜 Esc）。
     if (event.key === "Tab" && preview) {
-      event.preventDefault();
-      event.stopPropagation();
-      previewPanelEl?.focus();
+      const focusables = Array.from(
+        previewPanelEl?.querySelectorAll(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      ).filter((element) => !element.disabled);
+      if (focusables.length === 0) {
+        event.preventDefault();
+        previewPanelEl?.focus();
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement;
+      const outside = !previewPanelEl?.contains(active);
+      if (
+        event.shiftKey &&
+        (active === first || active === previewPanelEl || outside)
+      ) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || outside)) {
+        event.preventDefault();
+        first.focus();
+      }
       return;
     }
     if (event.key !== "Escape" || !preview) return;
@@ -1220,21 +1319,18 @@
     let unlisten;
 
     // 回到前台就跑一次静默刷新：休眠/长时间切走期间，磁盘上的文件可能已被别的程序改过。
-    const onFocus = () => void silentRefresh();
+    const onFocus = () => {
+      void silentRefresh();
+      void refreshHotkeyStatus();
+    };
     const onVisibility = () => {
       if (document.visibilityState === "visible") void silentRefresh();
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibility);
 
-    // 热键状态只在启动时取一次：它由注册结果决定，运行期不会变。
-    // 取不到（非 Tauri 环境 / 命令缺失）就当作"正常"，不拿一个查询失败去吓用户。
-    bridge
-      .hotkeyStatus()
-      .then((status) => {
-        if (!disposed) hotkeyState = status;
-      })
-      .catch(() => {});
+    // 启动时取一次；运行期托盘换键后靠 onFocus / summon 重取。
+    void refreshHotkeyStatus();
 
     // 事件订阅也走 bridge：组件不直接碰 `__TAURI__`。
     bridge
@@ -1323,8 +1419,10 @@
           导出
         </button>
       {/if}
-      {#if archivedSlips.length > 0}
-        <!-- 归档抽屉：归档只是墓碑，得能翻回来看，也得能恢复。 -->
+      {#if archivedSlips.length > 0 || showArchived}
+        <!-- 归档抽屉：归档只是墓碑，得能翻回来看，也得能恢复。
+             条件含 `showArchived`：整库替换后归档数可能变成 0，若仍按数量渲染，
+             「返回列表」会消失，用户被留在空抽屉里没有出口。 -->
         <button
           type="button"
           class="paper__archive-all"

@@ -110,9 +110,11 @@ CI（`.github/workflows/ci.yml`）还跑前端构建、release 构建、Linux �
 | `filter` / `filtering`、`showArchived` | `summon()` | 再唤出停在上一轮筛过的列表/归档抽屉 |
 | `showBackups` / `backups` / `pendingRestore` | `summon()`、面板关闭、恢复成功 | 残留的"确认？"恢复的是旧选择 |
 | `notice`（撤销提示） | `summon()`、`reload`、`isolate`、`restore` | 按钮还在但后端已无对应撤销 |
+| `armed`（二次确认武装态） | `summon()`、执行/超时、窗口收起 | 再唤出时一次单击执行不可逆操作（彻底删除） |
+| `preview`（损坏文件只读预览） | `summon()`、整库替换（reload/restore/isolate） | 只读弹窗跨会话残留，`Ctrl+Z`/`Ctrl+F` 被永久拦 |
 | `editingId` / `session` / `draft` | 该条目从 `slips` 消失时 | `editing` 恒真 → `Ctrl+Z` 被永久拦掉 |
 | `inFlight` / `draftVersion` | 提交结束 | 迟到的 ACK 把新草稿误判成自己的 |
-| `pendingDone`（未落盘的勾选意图） | 请求失败、快照已等于目标、`summon()` | 勾选要按两下：下一次点击从"没发生过的状态"反转 |
+| `pendingDone` / `pendingToggleCounts`（未落盘的勾选意图） | 该 id 无排队请求且失败/快照已追上、`summon()` | 勾选要按两下：下一次点击从"没发生过的状态"反转；第三次点击落到错误终态 |
 | 撤销栈 | 任何"整体替换内容"路径：`Reload`、`RestoreBackup`、`IsolateAndReset` | 逆操作指向不存在的条目，之后每次撤销都撞同一堵墙 |
 | `needs_reload` | 成功写入或成功 `reload` | 永远写不进去 |
 

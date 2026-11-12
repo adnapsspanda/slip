@@ -66,7 +66,7 @@ fn assert_body_has_statement(function: &str, source: &str, statement: &str) -> u
 /// 断言 `function` 的函数体里有**可执行代码**包含 `needle`，返回其行号（函数体内 1-based）。
 ///
 /// 与 `assert_body_has_statement` 同一套防假阴性规则：注释行不算。用于"调用必须发生"
-/// 这类断言——例如纯函数测试只能证明 `keepPendingIntent` 本身正确，证明不了
+/// 这类断言——例如纯函数测试只能证明 `shouldDropPendingIntent` 本身正确，证明不了
 /// `handleToggle` 真的调用了它；把调用注释掉必须让本测试红。
 fn assert_body_contains_code(function: &str, source: &str, needle: &str) -> usize {
     let body = function_body(source, function)
@@ -105,9 +105,19 @@ fn summon_resets_the_archived_and_backup_views() {
         // 未落盘的勾选意图只属于当次会话：上一轮失败留下的意图会让下一次唤出的
         // 第一下点击从旧状态反转（勾选要按两下）。
         "pendingDone = {};",
+        // 按 id 的在途计数也只属于当次会话。
+        "pendingToggleCounts = {};",
+        // 只读预览与备份列表不跨唤出。
+        "preview = null;",
+        "backups = [];",
+        // 二次确认武装态（含彻底删除）绝不能跨唤出复用：窗口失焦收起再唤出，
+        // 同一行仍是武装态时，下一次单击会直接执行不可逆删除。
+        "for (const key of Object.keys(armed)) armed[key] = null;",
     ] {
         assert_body_has_statement(summon, &source, statement);
     }
+    // 武装定时器也要清，否则到点会把新会话的键写回 null（无害但不干净）。
+    assert_body_contains_code(summon, &source, "clearTimeout(armTimers[key]);");
 }
 
 /// 重新载入 = 换了一份内容，挂着旧内容的撤销提示必须过期。
@@ -141,7 +151,7 @@ fn isolate_and_reset_clears_the_undo_notice() {
 
 /// 勾选失败后必须删除那条未落盘的意图。
 ///
-/// 纯函数测试（`tools/check-ui-logic.mjs` 的 `keepPendingIntent` 三条）只能证明
+/// 纯函数测试（`tools/check-ui-logic.mjs` 的 `shouldDropPendingIntent` 五条）只能证明
 /// 判定本身正确，证明不了 `handleToggle` 真的调用了它。把 `finally` 里的判定去掉，
 /// 意图就会永久残留 → 下一次点击从"没发生过的状态"反转 → 勾选要按两下。
 #[test]
@@ -150,7 +160,7 @@ fn handle_toggle_drops_the_pending_intent_through_the_pure_rule() {
     assert_body_contains_code(
         "async function handleToggle(slip) {",
         &source,
-        "keepPendingIntent(",
+        "shouldDropPendingIntent(",
     );
 }
 
@@ -201,5 +211,91 @@ fn edit_switch_waits_for_commit_success() {
         "async function beginEdit(slip) {",
         &list,
         "await commitEdit()",
+    );
+}
+
+/// 在编辑框里双击选词不能把草稿重置成原文。
+///
+/// 双击事件会从输入框冒泡到整行的 `ondblclick`；`beginEdit` 若不在"已经在编辑
+/// 这一条"时短路，就会执行 `draft = slip.text`，把用户刚打的字静默抹掉。
+#[test]
+fn editing_input_double_click_does_not_reset_the_draft() {
+    let list = slip_list_source();
+    assert_body_has_statement(
+        "async function beginEdit(slip) {",
+        &list,
+        "if (editingId === slip.id) return;",
+    );
+    assert!(
+        list.contains("ondblclick={(event) => event.stopPropagation()}"),
+        "编辑框必须阻止双击冒泡到整行：{list}"
+    );
+}
+
+/// 提交在飞时并发调用必须共享同一个 Promise，而不是直接放行。
+#[test]
+fn edit_commit_is_shared_while_in_flight() {
+    let list = slip_list_source();
+    assert_body_contains_code(
+        "async function commitEdit() {",
+        &list,
+        "if (commitInFlight) return commitInFlight;",
+    );
+}
+
+/// 整库替换（重载）必须退出归档抽屉：旧内容上的视图状态不再有意义。
+#[test]
+fn whole_file_replacement_exits_the_archived_view() {
+    let source = app_source();
+    for function in [
+        "async function handleReload() {",
+        "async function handleRestore(backup) {",
+        "async function handleIsolate() {",
+    ] {
+        assert_body_has_statement(function, &source, "showArchived = false;");
+        assert_body_has_statement(function, &source, "preview = null;");
+    }
+}
+
+/// Noop 是 Applied，但前端不能因此挂"可撤销"的提示。
+#[test]
+fn noop_does_not_pretend_to_be_undoable() {
+    let source = app_source();
+    for function in [
+        "async function handleToggle(slip) {",
+        "async function handleEdit(slip, text) {",
+        "async function handleArchive(slip) {",
+        "async function handleCompleteMany() {",
+    ] {
+        assert_body_contains_code(function, &source, "ack.changed !== false");
+    }
+}
+
+/// 所有内容变更命令必须走同一条串行队列（撤销排在已提交变更之后）。
+#[test]
+fn all_content_mutations_go_through_the_queue() {
+    let source = app_source();
+    for function in [
+        "async function handleEdit(slip, text) {",
+        "async function handleArchive(slip) {",
+        "async function handleUnarchive(slip) {",
+        "async function handlePurge(slip) {",
+        "async function handleRestore(backup) {",
+        "async function handleIsolate() {",
+        "async function handleReload() {",
+        "async function handleLock(slip) {",
+        "async function handlePin(slip) {",
+    ] {
+        assert_body_contains_code(function, &source, "mutating.run(");
+    }
+}
+
+/// 归档数变成 0 时，「返回列表」仍必须存在（否则用户被留在空抽屉里）。
+#[test]
+fn archived_empty_state_still_has_an_exit() {
+    let source = app_source();
+    assert!(
+        source.contains("{#if archivedSlips.length > 0 || showArchived}"),
+        "「返回列表」必须由 showArchived 决定，而不能只看归档条数"
     );
 }
