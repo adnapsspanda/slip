@@ -1111,6 +1111,31 @@ mod tests {
         assert_eq!(fsops::map_io(denied), IoKind::PermissionDenied);
     }
 
+    /// 非 Windows 上 32/33 是别的 errno（Linux：EPIPE / EDOM），**绝不能**被
+    /// 当成共享/锁冲突。按原生码分支若漏了平台门，这条会立刻变红。
+    #[cfg(not(windows))]
+    #[test]
+    fn native_codes_32_and_33_are_not_busy_off_windows() {
+        for code in [32, 33] {
+            let error = std::io::Error::from_raw_os_error(code);
+            assert_ne!(
+                fsops::map_io(error),
+                IoKind::Busy,
+                "raw code {code} 在非 Windows 上不是共享冲突"
+            );
+        }
+        // 具体预期：32 = EPIPE（Rust 的 `BrokenPipe`）、33 = EDOM（`Uncategorized`），
+        // 两者现有实现都归到 `Other`。写死预期，防止将来把非 Windows 的分支悄悄改成 Busy。
+        assert_eq!(
+            fsops::map_io(std::io::Error::from_raw_os_error(32)),
+            IoKind::Other
+        );
+        assert_eq!(
+            fsops::map_io(std::io::Error::from_raw_os_error(33)),
+            IoKind::Other
+        );
+    }
+
     #[test]
     fn io_kind_renders_human_readable_text() {
         // 这些文字会出现在界面的诊断区，不是日志里。

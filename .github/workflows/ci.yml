@@ -154,3 +154,68 @@ jobs:
 
       - name: 逻辑层 Clippy
         run: cargo clippy -p slip-domain -p slip-store -p slip-app --all-targets -- -D warnings
+
+  # Linux 外壳（slip-shell / src-tauri）的编译与单测（R126）。
+  #
+  # 边界：这个 job **只**验证 Linux 外壳能编译、能跑 lib 单测（presenter / 队列等
+  # 与平台无关的部分）。它**不**跑 GUI，也**不**跑端到端——真实热键、托盘、窗口定位
+  # 仍然只能由 Windows 的 `quality` job 与本机 verify-hotkey.ps1 负责。
+  #
+  # 目的不是"宣布跨平台"，而是让 Linux 侧的编译回归在 CI 里早一点变红，
+  # 而不是等到某个开发者在 WSL 里手跑才发现。
+  shell-linux:
+    name: 外壳（Linux）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri v2 在 Linux 上编译所需的系统依赖（WebKitGTK / GTK / 托盘 / SVG / 链接工具）。
+      # 注意 Ubuntu 版本差异：24.04 起用 libayatana-appindicator3-dev，
+      # 更老的镜像可能只有 libappindicator3-dev；此处只走标准 apt 命令，不写条件脚本。
+      - name: 安装 Tauri Linux 构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libssl-dev
+
+      - name: 安装 Rust 工具链
+        run: |
+          rustup toolchain install --profile minimal --component clippy --component rustfmt
+          rustup show active-toolchain
+
+      - name: 缓存 Rust 产物
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-shell-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: 安装 bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # 必须在任何 cargo 命令之前：`tauri::generate_context!` 在编译期读 `ui/dist`。
+      - name: 构建前端产物
+        working-directory: ui
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Linux 外壳 Clippy
+        run: cargo clippy -p slip-shell --all-targets --locked -- -D warnings
+
+      - name: Linux 外壳构建
+        run: cargo build -p slip-shell --locked
+
+      - name: Linux 外壳单测
+        run: cargo test -p slip-shell --lib --locked

@@ -50,6 +50,7 @@ import { contrastRatio, parseHex, relativeLuminance } from "../ui/src/lib/color.
 import { SWIPE_COMPLETE_PX, swipeIntent, swipeOffset } from "../ui/src/lib/swipe.js";
 import { CLOSE_FADE_MS, closeFadeDelay } from "../ui/src/lib/motion.js";
 import { vaultFilePath } from "../ui/src/lib/bridge.js";
+import { exactLocal, parseIso, relativeTime } from "../ui/src/lib/time.js";
 
 let failed = 0;
 const check = (label, actual, expected) => {
@@ -506,6 +507,58 @@ check("目录带尾反斜杠不会拼出双分隔符", vaultFilePath("D:\\vault\
 check("目录带尾斜杠同理", vaultFilePath("D:/vault/", "inbox.md.corrupt-2"), "D:/vault\\inbox.md.corrupt-2");
 check("目录为空时只剩文件名（后端会拒绝，先让它自己报）", vaultFilePath("", "inbox.md.corrupt-1"), "inbox.md.corrupt-1");
 check("脏入参不炸", [vaultFilePath(null, "a"), vaultFilePath("D:\\v", null)], ["a", "D:\\v\\"]);
+// Linux/macOS 绝对路径必须用正斜杠拼接：反斜杠在那里是文件名字符的一部分，
+// 拼出来的路径后端会因为"不在 vault 目录下"而拒绝，预览永远打不开。
+check(
+  "Linux 绝对路径用正斜杠拼接",
+  vaultFilePath("/home/u/Documents/Slip", "inbox.md.corrupt-1"),
+  "/home/u/Documents/Slip/inbox.md.corrupt-1",
+);
+check(
+  "Linux 目录带尾斜杠不会拼出双分隔符",
+  vaultFilePath("/home/u/Documents/Slip/", "inbox.md.corrupt-2"),
+  "/home/u/Documents/Slip/inbox.md.corrupt-2",
+);
+check(
+  "相对路径（不含盘符/反斜杠）也按正斜杠处理",
+  vaultFilePath("Slip", "inbox.md.corrupt-3"),
+  "Slip/inbox.md.corrupt-3",
+);
+check(
+  "Linux 文件名里含反斜杠时也不误判成 Windows",
+  vaultFilePath("/home/u/My\\Vault", "inbox.md.corrupt-4"),
+  "/home/u/My\\Vault/inbox.md.corrupt-4",
+);
+
+// ---- 时间解析：任意位数的小数秒都必须能解析（部分 WebKit 只吃 3 位） ----
+const ISO_3 = "2026-11-12T07:05:09.123Z";
+const ISO_6 = "2026-11-12T07:05:09.123456Z";
+const ISO_9 = "2026-11-12T07:05:09.123456789Z";
+check("3 位小数秒解析", Number.isNaN(Date.parse(ISO_3)), false);
+check("6 位小数秒也能给出相对时间", relativeTime(ISO_6, Date.parse(ISO_3) + 1000) !== "", true);
+check("9 位小数秒也能给出相对时间", relativeTime(ISO_9, Date.parse(ISO_3) + 1000) !== "", true);
+check(
+  "9 位小数秒截断到毫秒（与 3 位结果一致）",
+  relativeTime(ISO_9, Date.parse(ISO_3) + 1000),
+  relativeTime(ISO_3, Date.parse(ISO_3) + 1000),
+);
+check("9 位小数秒的精确时间不为空", exactLocal(ISO_9) !== "", true);
+
+// Node / Bun 的 Date.parse 本身就接受 9 位小数秒，所以上面的断言在本地**测不出**
+// WebKit 的差异。这里把 Date.parse 临时替换成"只吃 ≤3 位小数秒"的模拟实现，
+// 才能证明截断确实发生在解析之前——去掉 parseIso 里的 replace，这三条会立刻变红。
+const nativeParse = Date.parse;
+Date.parse = (value) =>
+  typeof value === "string" && /\.\d{4,}/.test(value) ? Number.NaN : nativeParse(value);
+try {
+  check("模拟 WebKit：9 位小数秒仍能算出相对时间", relativeTime(ISO_9, nativeParse(ISO_3) + 1000) !== "", true);
+  check("模拟 WebKit：9 位小数秒仍能给出精确时间", exactLocal(ISO_9) !== "", true);
+  check("模拟 WebKit：今日统计用的 parseIso 不会返回 NaN", Number.isNaN(parseIso(ISO_9)), false);
+} finally {
+  Date.parse = nativeParse;
+}
+check("无小数秒仍照常解析", relativeTime("2026-11-12T07:05:09Z", Date.parse(ISO_3) + 1000), "刚刚");
+check("无法解析的字符串仍是空串", relativeTime("not-a-time", Date.parse(ISO_3)), "");
 
 // ---- R119 收起淡出的延迟 ----
 check("正常情况等一次 0.12s 淡出", closeFadeDelay(false), CLOSE_FADE_MS);

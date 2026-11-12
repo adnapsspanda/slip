@@ -11,12 +11,27 @@ const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
 
 /**
+ * 解析 RFC3339 时间戳，兼容任意位数的小数秒。
+ *
+ * 后端会输出 1–9 位小数秒（`2026-11-12T07:05:09.123456789Z`），而部分 WebKit/JSC 的
+ * `Date.parse` 只可靠接受 3 位——多出来的位数会让它返回 NaN，界面上就是"时间不显示"。
+ * 这里先把小数秒截到 3 位（截断而非四舍五入：不改变原有 3 位及以内输入的行为）。
+ *
+ * @param {string} iso
+ * @returns {number} 毫秒时间戳；无法解析时为 NaN
+ */
+export function parseIso(iso) {
+  if (typeof iso !== "string") return Number.NaN;
+  return Date.parse(iso.replace(/(\.\d{3})\d+/, "$1"));
+}
+
+/**
  * @param {string} iso RFC3339 字符串
  * @param {number} [now] 毫秒时间戳，默认取当前时刻
  * @returns {string} 人话描述；无法解析时返回空串（界面据此不显示，而不是显示 "NaN"）
  */
 export function relativeTime(iso, now = Date.now()) {
-  const then = Date.parse(iso);
+  const then = parseIso(iso);
   if (Number.isNaN(then)) return "";
 
   const seconds = Math.floor((now - then) / 1000);
@@ -38,7 +53,7 @@ export function relativeTime(iso, now = Date.now()) {
 
 /** 悬浮提示用的精确本地时间。 */
 export function exactLocal(iso) {
-  const then = Date.parse(iso);
+  const then = parseIso(iso);
   if (Number.isNaN(then)) return "";
   return new Date(then).toLocaleString("zh-CN", { hour12: false });
 }

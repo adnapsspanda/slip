@@ -10,6 +10,7 @@
 
 mod diag;
 mod hotkey;
+mod platform;
 mod system;
 
 use std::path::PathBuf;
@@ -82,12 +83,9 @@ fn resolve_vault() -> PathBuf {
     if let Some(custom) = std::env::var_os("SLIP_VAULT") {
         return PathBuf::from(custom);
     }
-    let home = std::env::var_os("USERPROFILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+    let home = platform::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let documents = home.join("Documents");
-    let base = if documents.is_dir() { documents } else { home };
-    base.join("Slip")
+    platform::vault_from(&home, documents.is_dir())
 }
 
 fn rejected(request_id: &str, code: &str, message: impl Into<String>) -> Ack {
@@ -388,8 +386,8 @@ async fn export_markdown(state: tauri::State<'_, ShellState>) -> Result<String, 
     let content = system::render_plain(title, &rows);
     let path = system::write_export(&state.vault, &content)?;
     // 导出完直接定位到文件：用户下一步多半就是复制或打开它。
-    let arg = format!("/select,{}", path.display());
-    let _ = std::process::Command::new("explorer.exe").arg(arg).spawn();
+    // 定位失败只影响便利性，不该让导出本身报错，所以只忽略。
+    let _ = platform::reveal(&path);
     Ok(path.display().to_string())
 }
 

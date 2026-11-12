@@ -10,7 +10,6 @@
 //! 后，界面还在展示旧热键，等于骗人。
 
 use std::io::Write;
-use std::sync::OnceLock;
 
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -309,10 +308,7 @@ fn open_inbox(app: &AppHandle) -> Result<(), String> {
     let inbox = vault.join("inbox.md");
     let target = if inbox.exists() { inbox } else { vault };
     // 只 spawn、不 wait：菜单回调跑在 UI 线程上，等子进程退出会卡住整个托盘。
-    if let Err(error) = std::process::Command::new("explorer.exe")
-        .arg(&target)
-        .spawn()
-    {
+    if let Err(error) = crate::platform::open_path(&target) {
         return Err(format!("无法打开 {target:?}: {error}"));
     }
     Ok(())
@@ -324,9 +320,7 @@ fn open_inbox(app: &AppHandle) -> Result<(), String> {
 /// 只想看看"这里都有些什么"时打开文件反而是挡路。
 fn open_vault_dir(app: &AppHandle) -> Result<(), String> {
     let vault = app.state::<crate::ShellState>().vault.clone();
-    std::process::Command::new("explorer.exe")
-        .arg(&vault)
-        .spawn()
+    crate::platform::open_path(&vault)
         .map_err(|error| format!("无法打开 {}: {error}", vault.display()))?;
     Ok(())
 }
@@ -402,15 +396,12 @@ pub fn validate_url(url: &str) -> Result<(), String> {
 /// - **只认 http/https**：别的前缀（`file:`、`javascript:`、`ms-settings:`…）一律拒绝，
 ///   否则正文里写一个 `file:///C:/Windows/System32/...` 就等于给了个启动器；
 /// - 含空白或控制字符的直接拒——URL 里合法字符很多，但空白和控制字符不该出现在这里；
-/// - 用 `rundll32 url.dll,FileProtocolHandler`，**URL 作为单个 argv 传递**，
-///   不经过 `cmd /c start`：后者会把 `&` 当命令分隔符，那是注入。
+/// - 具体怎么开交给 `platform`（Windows 走 `rundll32 url.dll,FileProtocolHandler`，
+///   其它平台走 `xdg-open`），URL 始终作为**单个 argv** 传递，不经过 `cmd /c start`：
+///   后者会把 `&` 当命令分隔符，那是注入。
 pub fn open_url(url: &str) -> Result<(), String> {
     validate_url(url)?;
-    if let Err(error) = std::process::Command::new("rundll32.exe")
-        .arg("url.dll,FileProtocolHandler")
-        .arg(url)
-        .spawn()
-    {
+    if let Err(error) = crate::platform::open_url(url) {
         return Err(format!("无法打开链接：{error}"));
     }
     Ok(())
@@ -525,53 +516,13 @@ pub fn export_stamp(local: OffsetDateTime) -> String {
     )
 }
 
-/// 从 `reg query` 的输出里取出 `ActiveTimeBias` 的值（分钟，`UTC = 本地 + bias`）。
-///
-/// 纯函数，因为这段解析最该被测：注册表给的是十六进制 DWORD，负偏移是补码
-/// （中国时区是 `0xfffffe20`，即 −480）。算错符号会让文件名差 16 小时。
-fn parse_active_bias(raw: &str) -> Option<i32> {
-    let token = raw
-        .split_whitespace()
-        .find(|token| token.starts_with("0x") || token.starts_with("0X"))?;
-    let hex = token
-        .trim_start_matches("0x")
-        .trim_start_matches("0X")
-        .trim_end_matches(|c: char| !c.is_ascii_hexdigit());
-    let value = u32::from_str_radix(hex, 16).ok()?;
-    Some(value as i32)
-}
-
-/// 本机当前相对 UTC 的偏移（只读一次，进程内缓存）。
-///
-/// 为什么走注册表而不是 `time` 的 `now_local()`：那需要 `time/local-offset` 特性，
-/// 本仓库没有开，而开特性要改 `Cargo.toml`——那不属于外壳能单方面决定的事，
-/// 也不值得为一个文件名引入平台 FFI。`ActiveTimeBias` 是系统按**当前生效**的
-/// 时区与夏令时写下的有效偏移，正好是这里要的东西。
-fn local_offset_minutes() -> Option<i32> {
-    static CACHE: OnceLock<Option<i32>> = OnceLock::new();
-    *CACHE.get_or_init(|| {
-        let output = std::process::Command::new("reg.exe")
-            .args([
-                "query",
-                r"HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation",
-                "/v",
-                "ActiveTimeBias",
-            ])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        parse_active_bias(&String::from_utf8_lossy(&output.stdout))
-    })
-}
-
 /// 本地时区偏移；读不到就退回 UTC。
 ///
-/// 宁可文件名差一个时区，也不能因为读不到时区就导不出来。
+/// 偏移的具体来源由 `platform` 决定（Windows 读注册表 `ActiveTimeBias`，
+/// 其它平台问系统时区库）。宁可文件名差一个时区，也不能因为读不到时区就导不出来。
 fn local_offset() -> UtcOffset {
-    match local_offset_minutes() {
-        Some(bias) => UtcOffset::from_whole_seconds(-bias * 60).unwrap_or(UtcOffset::UTC),
+    match crate::platform::local_offset() {
+        Some(offset) => offset,
         None => {
             tracing::warn!("无法读取本地时区偏移，导出文件名按 UTC 生成");
             UtcOffset::UTC
@@ -633,18 +584,18 @@ fn create_export_file(
     Err(String::from("同一秒内的导出文件过多，请稍后再试"))
 }
 
-/// 在资源管理器里选中最新那个损坏文件。
+/// 在系统文件管理器里选中最新那个损坏文件；非 Windows 平台打开它所在目录。
 ///
-/// **不接收前端传来的路径**：那等于让 webview 决定 explorer 打开什么。
+/// **不接收前端传来的路径**：那等于让 webview 决定文件管理器打开什么。
 /// 需要什么由 Rust 自己从 vault 里查。
 pub fn reveal_newest_corrupt(app: &AppHandle) -> Result<(), String> {
     let vault = app.state::<crate::ShellState>().vault.clone();
     let Some(newest) = corrupt_artifacts(&vault).into_iter().next() else {
         return Ok(());
     };
-    // `/select,<path>` 必须是**一个**参数，否则 explorer 会把路径当成要独立打开的目标。
-    let arg = format!("/select,{}", newest.display());
-    if let Err(error) = std::process::Command::new("explorer.exe").arg(arg).spawn() {
+    // 「选中文件」的平台差异（Windows 的 `/select,<path>` 必须是**一个**参数）
+    // 收在 `platform::reveal` 里。
+    if let Err(error) = crate::platform::reveal(&newest) {
         return Err(format!("无法定位 {}: {error}", newest.display()));
     }
     Ok(())
@@ -653,8 +604,8 @@ pub fn reveal_newest_corrupt(app: &AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        diff_summary, export_stamp, latest_pending_text, parse_active_bias, render_plain,
-        validate_url, write_export_at,
+        diff_summary, export_stamp, latest_pending_text, render_plain, validate_url,
+        write_export_at,
     };
     use slip_app::{HealthView, RecoveryView, RuntimeStatus, SlipView, UiSnapshot};
     use time::UtcOffset;
@@ -778,25 +729,6 @@ mod tests {
     fn export_stamp_pads_single_digit_components() {
         let at = datetime!(2026-01-02 03:04:05 UTC);
         assert_eq!(export_stamp(at), "20260102-030405");
-    }
-
-    /// 负偏移（中国是 UTC+8）走补码：0xfffffe20 = −480 分钟。
-    #[test]
-    fn active_bias_parses_twos_complement_hex() {
-        let raw = "\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\TimeZoneInformation\r\n    ActiveTimeBias    REG_DWORD    0xfffffe20\r\n";
-        assert_eq!(parse_active_bias(raw), Some(-480));
-        assert_eq!(
-            parse_active_bias("    ActiveTimeBias    REG_DWORD    0x1e0"),
-            Some(480)
-        );
-    }
-
-    /// 读不到或格式变了就返回 None，交给调用方退回 UTC——绝不能猜。
-    #[test]
-    fn active_bias_returns_none_for_unexpected_output() {
-        assert_eq!(parse_active_bias(""), None);
-        assert_eq!(parse_active_bias("错误: 系统找不到指定的注册表项"), None);
-        assert_eq!(parse_active_bias("ActiveTimeBias REG_DWORD 0xzz"), None);
     }
 
     /// 临时目录：`tempfile` 不是本 crate 的依赖（铁律是不新增依赖），自己造一个够用。

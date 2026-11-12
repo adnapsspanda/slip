@@ -9,6 +9,7 @@
   import { noticeAction, filterKeyIntent } from "./lib/keys.js";
   import { matchesFilter, parseQuery } from "./lib/filter.js";
   import { orderSlips } from "./lib/order.js";
+  import { parseIso } from "./lib/time.js";
   import { dropUndoBurst, extendUndoBurst, undoNotice } from "./lib/notice.js";
   import {
     captureFailureHint,
@@ -238,7 +239,7 @@
     start.setHours(0, 0, 0, 0);
     const since = start.getTime();
     return activeSlips.filter((slip) => {
-      const at = Date.parse(slip.createdAt);
+      const at = parseIso(slip.createdAt);
       return !Number.isNaN(at) && at >= since;
     }).length;
   });
@@ -1247,7 +1248,7 @@
 />
 
 <div class="paper" class:paper--leaving={leaving}>
-  <header class="paper__bar" data-tauri-drag-region>
+  <header class="paper__bar" data-tauri-drag-region="deep">
     <span class="paper__title">Slip</span>
     <div class="paper__bar-right">
       <button

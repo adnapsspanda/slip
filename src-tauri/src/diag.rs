@@ -20,9 +20,15 @@ pub fn log_window(window: &WebviewWindow) {
         tracing::warn!("window report unavailable: outer_size failed");
         return;
     };
+    // Windows 上把原生窗口句柄记进日志，便于和外部 `EnumWindows` 对照；
+    // 其它平台没有等价的 HWND，固定记 0，字段形状保持不变。
+    #[cfg(windows)]
+    let hwnd = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
+    #[cfg(not(windows))]
+    let hwnd: isize = 0;
     tracing::debug!(
         label = window.label(),
-        hwnd = window.hwnd().map(|h| h.0 as isize).unwrap_or(0),
+        hwnd = hwnd,
         visible = window.is_visible().unwrap_or(false),
         focused = window.is_focused().unwrap_or(false),
         always_on_top = window.is_always_on_top().unwrap_or(false),

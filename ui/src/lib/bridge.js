@@ -158,6 +158,10 @@ export const corruptPreview = (path) => call("corrupt_preview", { path });
  * 但后端的 `guard_corrupt_path` 会先 `canonicalize` 父目录再与 vault 比对——
  * 多余的分隔符今天恰好还落在同一目录，哪天实现一改就变成"预览凭空打不开"。
  *
+ * 另一个坑是分隔符方向：Linux 上 `vault_path` 返回 `/home/u/Slip`，无条件补反斜杠会得到
+ * `/home/u/Slip\inbox.md.corrupt-1`——那是**另一个文件名**，后端直接拒绝。所以按目录的
+ * 形态选分隔符：有盘符（`C:`）或含反斜杠的按 Windows 处理，其余一律用正斜杠。
+ *
  * @param {string} dir vault 目录（`vault_path` 的返回值）
  * @param {string} name 文件名
  * @returns {string}
@@ -165,8 +169,13 @@ export const corruptPreview = (path) => call("corrupt_preview", { path });
 export function vaultFilePath(dir, name) {
   const base = typeof dir === "string" ? dir.replace(/[\\/]+$/, "") : "";
   const leaf = typeof name === "string" ? name : "";
-  // Windows 路径统一用反斜杠；目录为空时就只给文件名（后端会拒绝，先让它自己报）。
-  return base === "" ? leaf : `${base}\\${leaf}`;
+  // 目录为空时就只给文件名（后端会拒绝，先让它自己报）。
+  if (base === "") return leaf;
+  // POSIX 绝对路径一定以 `/` 开头；即使文件名里合法地含反斜杠，也不能当成 Windows。
+  // Windows 的输入（盘符或 UNC）反过来不会以 `/` 开头。
+  const windows =
+    !base.startsWith("/") && (/^[A-Za-z]:/.test(base) || base.includes("\\"));
+  return windows ? `${base}\\${leaf}` : `${base}/${leaf}`;
 }
 
 /**
