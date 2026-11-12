@@ -124,6 +124,36 @@ export const vaultPath = () => call("vault_path");
 export const corruptFiles = () => call("corrupt_files");
 
 /**
+ * 损坏证据文件的**只读**残存文本（前 64 KiB，非法 UTF-8 被替换成 U+FFFD）。
+ *
+ * **安全约束在后端**：只接受 vault 目录下、文件名以 `inbox.md.corrupt-` 开头的路径，
+ * 传别的路径会被拒。所以这里必须传**完整路径**（只给文件名不够），
+ * 用 `vaultFilePath(vaultDir, name)` 拼——那个拼接是纯函数，有断言覆盖。
+ * @param {string} path
+ * @returns {Promise<string>}
+ */
+export const corruptPreview = (path) => call("corrupt_preview", { path });
+
+/**
+ * 把 vault 目录与文件名拼成一个路径。
+ *
+ * 抽成纯函数是因为有一个容易写错的地方：`vault_path` 返回的目录**可能带尾分隔符**，
+ * 直接 `dir + "\\" + name` 会拼出 `D:\vault\\inbox.md.corrupt-1`。多数 API 吃得下，
+ * 但后端的 `guard_corrupt_path` 会先 `canonicalize` 父目录再与 vault 比对——
+ * 多余的分隔符今天恰好还落在同一目录，哪天实现一改就变成"预览凭空打不开"。
+ *
+ * @param {string} dir vault 目录（`vault_path` 的返回值）
+ * @param {string} name 文件名
+ * @returns {string}
+ */
+export function vaultFilePath(dir, name) {
+  const base = typeof dir === "string" ? dir.replace(/[\\/]+$/, "") : "";
+  const leaf = typeof name === "string" ? name : "";
+  // Windows 路径统一用反斜杠；目录为空时就只给文件名（后端会拒绝，先让它自己报）。
+  return base === "" ? leaf : `${base}\\${leaf}`;
+}
+
+/**
  * 在资源管理器里选中最新的损坏文件。不传参数：定位目标由 Rust 自己从 vault 里查，
  * 否则等于让 webview 决定 explorer 打开什么。
  * @returns {Promise<void>}

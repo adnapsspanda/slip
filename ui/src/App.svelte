@@ -10,6 +10,8 @@
   import { matchesFilter, parseQuery } from "./lib/filter.js";
   import { orderSlips } from "./lib/order.js";
   import { dropUndoBurst, extendUndoBurst, undoNotice } from "./lib/notice.js";
+  import { captureFailureHint, restoreCoverWarning } from "./lib/messages.js";
+  import { closeFadeDelay } from "./lib/motion.js";
   import { createSerialQueue, nextToggleTarget } from "./lib/queue.js";
   import { confirmStep, CONFIRM_WINDOW_MS } from "./lib/confirm.js";
   import * as bridge from "./lib/bridge.js";
@@ -89,6 +91,24 @@
    */
   let corrupt = $state([]);
 
+  /**
+   * vault 目录**全路径**（不只是末段名字）。R108 的损坏预览要求传"目录 + 文件名"，
+   * 后端只会放行 vault 目录下 `inbox.md.corrupt-*` 的文件。
+   */
+  let vaultDir = $state("");
+
+  /**
+   * 损坏文件的只读预览：`{ name, text, error, loading }`，`null` = 没打开。
+   *
+   * 设计上没有任何"保存/写回"入口：这是证据，不是可编辑内容。能做的事只有看和复制。
+   */
+  let preview = $state(null);
+  /** `<pre>` 元素，供"全选"用。 */
+  let previewEl = $state(null);
+
+  /** 收起窗口时的容器淡出标记（R119）。 */
+  let leaving = $state(false);
+
   // 归档判定只看 `archived`：后端 `SlipView.archived` 是唯一判据
   // （`done && archived_at.is_some()`，见 v11 §1.8），没有独立的 archivedAt 字段。
   let activeSlips = $derived(
@@ -114,28 +134,36 @@
   /** 等待二次确认的备份名——恢复会覆盖当前内容，不该一次点击就执行。 */
   let pendingRestore = $state(null);
   /**
-   * 「隔离并重建」的二次确认时间戳。`null` = 未武装。
+   * 三处"会改数据"的二次确认共用一套武装状态：隔离重建、归档已完成（R97）、
+   * 完成匹配项（R96）。`null` = 该操作未武装。
    *
-   * 为什么必须拦一下：这一下会把当前 inbox 换成空文件，手滑点错就是"当前内容没了"。
+   * 为什么合成一个对象 + 一个入口：三者的窗口语义完全相同（`confirmStep` + 4 秒
+   * 自动还原）。抄三份的下场是"改了窗口只改到两处"，而这类不一致只在手滑误触时
+   * 才暴露出来。
    */
-  let isolateArmedAt = $state(null);
-  let isolateArmTimer = null;
+  let armed = $state({ isolate: null, archive: null, complete: null });
+  /** 每个操作各一个自动还原定时器。 */
+  const armTimers = {};
 
   /**
-   * 「归档已完成」的二次确认时间戳（R97）。超时由定时器自动还原成未武装态。
+   * 二次确认闸门：第一下武装（并起 4 秒定时器），窗口内第二下返回 true 表示执行。
    *
-   * 为什么也要拦：一次点击会把所有已完成的纸条收进归档。虽然归档可撤销，
-   * 但在过滤/搜索视图下用户根本看不出收走了多少条。
+   * @param {"isolate"|"archive"|"complete"} kind
+   * @returns {boolean}
    */
-  let archiveArmedAt = $state(null);
-  let archiveArmTimer = null;
-
-  /**
-   * 「完成匹配项」的二次确认时间戳（R96）。这一批在撤销栈里是**一步**，
-   * 所以误触的代价是"整批被划掉"，更需要拦一下。
-   */
-  let completeArmedAt = $state(null);
-  let completeArmTimer = null;
+  function confirmGate(kind) {
+    const step = confirmStep({ armedAt: armed[kind], now: Date.now() });
+    clearTimeout(armTimers[kind]);
+    if (step === "execute") {
+      armed[kind] = null;
+      return true;
+    }
+    armed[kind] = Date.now();
+    armTimers[kind] = setTimeout(() => {
+      armed[kind] = null;
+    }, CONFIRM_WINDOW_MS);
+    return false;
+  }
 
   /**
    * 撤销连击计数（R100）：`{count, at}`。
@@ -393,8 +421,32 @@
    * `dismiss_window` 没有进 bridge 的契约层，只能用透传入口调用。收起是收尾
    * 动作：失败最多是窗口留在原地，不值得把错误糊到界面上打断用户。
    */
+  /**
+   * 收起窗口。
+   *
+   * 真正的显示/隐藏由 shell 的 `dismiss_window` 决定，前端只能让**容器**先淡出
+   * （R119，0.12 秒），再让窗口收起——这是"内容先淡、窗口后收"的组合，
+   * 不是原生窗口动画。`prefers-reduced-motion: reduce` 时延迟为 0（立即消失），
+   * 理由见 `lib/motion.js`：只把 CSS 时长压到 0 仍会白等 120ms。
+   *
+   * 失败最多是窗口留在原地，不值得把错误糊到界面上打断用户；但要**把透明度恢复**，
+   * 否则界面会停在全透明状态里，看起来像崩了。
+   */
   function dismissWindow() {
-    bridge.dismissWindow().catch(() => {});
+    const reduced =
+      globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ===
+      true;
+    const delay = closeFadeDelay(reduced);
+    if (delay === 0) {
+      bridge.dismissWindow().catch(() => {});
+      return;
+    }
+    leaving = true;
+    setTimeout(() => {
+      bridge.dismissWindow().catch(() => {
+        leaving = false;
+      });
+    }, delay);
   }
 
   /**
@@ -404,6 +456,8 @@
    */
   function summon() {
     hint = DEFAULT_HINT;
+    // 上一次收起可能把容器留在了淡出态（R119）：唤出必须从可见状态开始。
+    leaving = false;
     // 撤销提示跨过"收起再唤出"就过期了：那次的修改上下文已经不在了。
     // **连击计数也要一起清**（R100 的既有清栈契约）：唤出之后用户看到的第一条
     // 提示必须是干净的，不能上来就说"还有 2 步可撤销"。
@@ -450,7 +504,14 @@
         hint = "收到不匹配的应答，草稿已保留。";
       } else if (ack.result !== "applied") {
         await refresh();
-        hint = `未收录：${formatAckError(ack)}`;
+        /*
+         * R107：写入失败时要说清"草稿没丢"。
+         *
+         * 本项目的草稿**只**活在捕获框里（不做任何本地暂存，那会造出第二真源），
+         * 而失败路径**从不**置 `clearDraft`——下面这句文案就是把这件事讲出来，
+         * 否则用户会把"写不进去"理解成"内容没了"，转身去别处重打一遍。
+         */
+        hint = captureFailureHint(ack) || `未收录：${formatAckError(ack)}`;
       } else if (ack.uiRev == null) {
         hint = "已收录，但后端未返回界面版本；草稿已保留，可重试同步。";
       } else if (captureRef?.getDraftVersion?.() !== request.draftVersion) {
@@ -469,7 +530,8 @@
         }
       }
     } catch (error) {
-      hint = `capture 失败：${error}`;
+      // 异常路径同样不清草稿；文案里明说，免得用户以为内容没了。
+      hint = `capture 失败（内容还在输入框里）：${error}`;
     } finally {
       inFlight = null;
     }
@@ -589,6 +651,15 @@
     }
   }
 
+  /**
+   * 触控右滑完成（R114）。已完成的条目再右滑不该被"反完成"——
+   * 用户滑一下只是想把这条划掉，不是想把它退回待办。
+   */
+  function handleSwipeComplete(slip) {
+    if (slip.done) return;
+    handleToggle(slip);
+  }
+
   /** 打开/收起备份面板；打开时现取一遍列表。 */
   async function toggleBackups() {
     showBackups = !showBackups;
@@ -679,24 +750,10 @@
   }
 
   /**
-   * 「归档已完成 (N)」的两步确认入口（R97）。
-   *
-   * 未武装 → 武装并起 4 秒定时器；武装期内第二下才真的执行。
-   * 超时由定时器把状态还原成未武装（按钮文案也跟着变回去），
-   * 否则用户几分钟后手滑点一下就直接把整批收走了。
+   * 「归档已完成 (N)」的两步确认入口（R97）：武装逻辑见 `confirmGate`。
    */
   function handleArchiveAllClick() {
-    const step = confirmStep({ armedAt: archiveArmedAt, now: Date.now() });
-    clearTimeout(archiveArmTimer);
-    if (step === "execute") {
-      archiveArmedAt = null;
-      handleArchiveAll();
-      return;
-    }
-    archiveArmedAt = Date.now();
-    archiveArmTimer = setTimeout(() => {
-      archiveArmedAt = null;
-    }, CONFIRM_WINDOW_MS);
+    if (confirmGate("archive")) handleArchiveAll();
   }
 
   async function handleArchiveAll() {
@@ -719,23 +776,11 @@
   }
 
   /**
-   * 「完成匹配项 (N)」的两步确认入口（R96）。
-   *
-   * 与归档同一套时间语义（`confirmStep` + 4 秒自动还原），但目标不同：
-   * 这里动的是**过滤结果**，所以只有在真的筛出未完成项时才该出现这个按钮。
+   * 「完成匹配项 (N)」的两步确认入口（R96）：与归档同一套时间语义，但目标是
+   * **过滤结果**，所以只有真的筛出未完成项时才该出现这个按钮。
    */
   function handleCompleteManyClick() {
-    const step = confirmStep({ armedAt: completeArmedAt, now: Date.now() });
-    clearTimeout(completeArmTimer);
-    if (step === "execute") {
-      completeArmedAt = null;
-      handleCompleteMany();
-      return;
-    }
-    completeArmedAt = Date.now();
-    completeArmTimer = setTimeout(() => {
-      completeArmedAt = null;
-    }, CONFIRM_WINDOW_MS);
+    if (confirmGate("complete")) handleCompleteMany();
   }
 
   async function handleCompleteMany() {
@@ -956,19 +1001,9 @@
     await refresh();
   }
 
-  /** 二次确认的入口：第一下武装，第二下（4 秒内）才真的执行。 */
+  /** 「隔离并重建」的两步确认入口（与另外两处共用 `confirmGate`）。 */
   function handleIsolateClick() {
-    const step = confirmStep({ armedAt: isolateArmedAt, now: Date.now() });
-    clearTimeout(isolateArmTimer);
-    if (step === "execute") {
-      isolateArmedAt = null;
-      handleIsolate();
-      return;
-    }
-    isolateArmedAt = Date.now();
-    isolateArmTimer = setTimeout(() => {
-      isolateArmedAt = null;
-    }, CONFIRM_WINDOW_MS);
+    if (confirmGate("isolate")) handleIsolate();
   }
 
   async function handleIsolate() {
@@ -1016,6 +1051,42 @@
     } catch (error) {
       hint = `打不开链接：${error}`;
     }
+  }
+
+  /**
+   * 打开损坏文件的**只读**预览（R108）。
+   *
+   * 路径必须拼成"vault 目录 + 文件名"：后端的 `guard_corrupt_path` 会校验父目录
+   * 就是 vault，且文件名以 `inbox.md.corrupt-` 开头。只给文件名会被拒。
+   * 读失败也留在弹窗里报告（而不是把弹窗关掉）——用户点进来是因为想知道"还剩什么"，
+   * 关掉只会让他更迷惑。
+   */
+  async function openCorruptPreview(name) {
+    let text;
+    try {
+      text = await bridge.corruptPreview(bridge.vaultFilePath(vaultDir, name));
+    } catch (error) {
+      // 读失败也留在弹窗里报告，而不是把弹窗关掉——用户点进来就是想看"还剩什么"。
+      text = `打不开：${error}`;
+    }
+    preview = { name, text };
+    // 内容一到就全选：这个弹窗唯一的用途就是"看清并拷走"，全选省掉一次手动拖选。
+    // webview 没有剪贴板权限，所以走系统选区 + Ctrl+C。
+    await tick();
+    if (previewEl) globalThis.getSelection?.()?.selectAllChildren(previewEl);
+  }
+
+  /**
+   * 弹窗开着时，Escape 必须只关弹窗。
+   *
+   * 用**捕获阶段**拦：捕获框自己也有 Escape（放弃这次输入并收窗口），
+   * 冒泡阶段拦的话它已经先跑了——弹窗关掉的同时窗口也收走，用户会以为界面出错。
+   */
+  function handleKeydownCapture(event) {
+    if (event.key !== "Escape" || !preview) return;
+    event.preventDefault();
+    event.stopPropagation();
+    preview = null;
   }
 
   onMount(() => {
@@ -1068,9 +1139,13 @@
         return;
       }
       try {
-        vaultLabel = (await bridge.vaultPath()).split(/[\\/]/).pop() ?? "";
+        const full = await bridge.vaultPath();
+        vaultLabel = full.split(/[\\/]/).pop() ?? "";
+        // 全路径另存一份：R108 的预览要把它和文件名拼起来给后端做目录校验。
+        vaultDir = full;
       } catch {
         vaultLabel = "";
+        vaultDir = "";
       }
       await refresh();
       captureRef?.focus();
@@ -1082,16 +1157,17 @@
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibility);
       // 一次性定时器会在几秒内自灭，但组件先卸载时它就是悬空回调。
-      clearTimeout(isolateArmTimer);
-      clearTimeout(archiveArmTimer);
-      clearTimeout(completeArmTimer);
+      for (const timer of Object.values(armTimers)) clearTimeout(timer);
     };
   });
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window
+  onkeydown={handleKeydown}
+  onkeydowncapture={handleKeydownCapture}
+/>
 
-<div class="paper">
+<div class="paper" class:paper--leaving={leaving}>
   <header class="paper__bar" data-tauri-drag-region>
     <span class="paper__title">Slip</span>
     <div class="paper__bar-right">
@@ -1136,13 +1212,13 @@
         <button
           type="button"
           class="paper__archive-all"
-          class:confirm-danger={archiveArmedAt !== null}
+          class:confirm-danger={armed.archive !== null}
           onclick={handleArchiveAllClick}
-          title={archiveArmedAt !== null
+          title={armed.archive !== null
             ? "再点一次确认：把已完成的全部收进归档（可撤销）"
             : "将所有已完成的纸条归档收起"}
         >
-          {archiveArmedAt !== null
+          {armed.archive !== null
             ? `确认归档 (${doneCount})？`
             : `归档已完成 (${doneCount})`}
         </button>
@@ -1155,13 +1231,13 @@
         <button
           type="button"
           class="paper__archive-all"
-          class:confirm-danger={completeArmedAt !== null}
+          class:confirm-danger={armed.complete !== null}
           onclick={handleCompleteManyClick}
-          title={completeArmedAt !== null
+          title={armed.complete !== null
             ? "再点一次确认：把匹配到的未完成项全部标为完成（可撤销）"
             : `把当前过滤结果里的 ${matchPending.length} 条未完成项一次标记完成`}
         >
-          {completeArmedAt !== null
+          {armed.complete !== null
             ? `确认完成 (${matchPending.length})？`
             : `完成匹配项 (${matchPending.length})`}
         </button>
@@ -1176,6 +1252,18 @@
           onclick={handleRevealCorrupt}
         >
           定位
+        </button>
+        <!--
+          R108：看一眼残存内容。**只读**——能看能复制，没有任何写回入口。
+          默认预览最新的那个（`corrupt` 由后端按新的在前给出）。
+        -->
+        <button
+          type="button"
+          class="paper__link"
+          title="只读查看最新损坏文件的残存内容（不会写回）"
+          onclick={() => openCorruptPreview(corrupt[0])}
+        >
+          残存内容
         </button>
       {/if}
     </div>
@@ -1225,12 +1313,12 @@
               <button type="button" onclick={handleReload}>重新载入</button>
               <button
                 type="button"
-                class:confirm-danger={isolateArmedAt !== null}
-                title={isolateArmedAt !== null
+                class:confirm-danger={armed.isolate !== null}
+                title={armed.isolate !== null
                   ? "再点一次确认：当前内容会被清空重建"
                   : "把当前文件隔离保存，并重建一个空 Inbox"}
                 onclick={handleIsolateClick}
-                >{isolateArmedAt !== null ? "确认重建？" : "隔离并重建"}</button
+                >{armed.isolate !== null ? "确认重建？" : "隔离并重建"}</button
               >
             {:else if snapshot?.needsReload}
               <button type="button" onclick={handleReload}>重新载入</button>
@@ -1304,6 +1392,16 @@
               {#if backup.preview}<span class="slip__hint"
                   >{backup.preview}</span
                 >{/if}
+              {#if pendingRestore === backup.name}
+                <!--
+                  R109：二次确认里把代价说清楚——覆盖的是"当前 N 条未完成项"。
+                  N 由快照现算（未归档且未完成）；拿不到时由纯函数给出"无法统计"，
+                  不编数字。
+                -->
+                <span class="slip__hint slip__hint--warn"
+                  >{restoreCoverWarning(pendingCount)}</span
+                >
+              {/if}
             </span>
             <button
               type="button"
@@ -1313,7 +1411,7 @@
                 ? "确认恢复"
                 : "恢复这个备份"}
               title={pendingRestore === backup.name
-                ? "再点一次确认覆盖当前内容"
+                ? `再点一次确认：${restoreCoverWarning(pendingCount)}`
                 : "用这个备份覆盖当前内容"}
               onclick={() => handleRestore(backup)}
             >
@@ -1339,8 +1437,39 @@
       onarchive={handleArchive}
       onseekcapture={() => captureRef?.focus()}
       ondelink={handleOpenLink}
+      onswipecomplete={handleSwipeComplete}
       onnotice={(message) => (hint = message)}
       bind:editing={listEditing}
     />
+  {/if}
+
+  {#if preview}
+    <!--
+      R108：损坏文件的**只读**残存预览。
+
+      刻意没有输入框、没有保存按钮：这是证据，不是可编辑内容。能做的只有看和复制
+      （正文可选中，打开时已全选，Ctrl+C 即可拷走）。
+      "不会写回"必须写在标题上——否则用户会以为改这里能救回数据。
+    -->
+    <div
+      class="preview"
+      role="dialog"
+      aria-modal="true"
+      aria-label="损坏文件的残存内容（只读）"
+    >
+      <div class="preview__panel">
+        <div class="preview__bar">
+          <span class="preview__title"
+            >{preview.name} · 残存内容（只读）· 不会写回 inbox.md · 已全选</span
+          >
+          <button
+            type="button"
+            class="paper__archive-all"
+            onclick={() => (preview = null)}>关闭</button
+          >
+        </div>
+        <pre class="preview__body" bind:this={previewEl}>{preview.text}</pre>
+      </div>
+    </div>
   {/if}
 </div>

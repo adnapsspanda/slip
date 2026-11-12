@@ -485,6 +485,18 @@ body {
   font-size: 13.5px;
   line-height: 1.45;
   user-select: text;
+  /*
+   * R114：横向手势留给"右滑完成"，纵向留给列表滚动。
+   * `pan-y` 让浏览器只在竖向接管，横向的 touchmove 才会派发给我们。
+   */
+  touch-action: pan-y;
+  /* 松手回弹：只动 transform，GPU 合成，滚动列表时不掉帧。 */
+  transition: transform 0.18s ease;
+}
+
+/* 手指按着的时候不要过渡，否则跟手会有"橡皮筋"的延迟感。 */
+.slip--swiping {
+  transition: none;
 }
 
 .slip:hover {
@@ -844,6 +856,86 @@ body {
   color: var(--confirm-text);
   font-size: 11px;
   font-weight: 600;
+}
+
+/* 恢复备份的覆盖提示（R109）：和普通摘要区分开——它在说"代价"，不是在说"这一份里有什么"。 */
+.slip__hint--warn {
+  color: var(--confirm-text);
+  font-weight: 600;
+}
+
+/*
+ * 收起前的容器淡出（R119）。
+ *
+ * 时长必须与 `src/lib/motion.js` 的 `CLOSE_FADE_MS` 一致：那个数字决定"何时让 shell
+ * 收窗口"，这里决定"多快淡完"。两处不一致的后果是"先收后淡"（画面一闪）或
+ * "淡完了窗口还在"（看着像卡住）。
+ */
+.paper--leaving {
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+/*
+ * 损坏文件的只读预览（R108）。
+ *
+ * 铺满容器的遮罩 + 居中的面板；面板本身 `user-select: text`，
+ * 因为这里唯一的用途就是"看清 + 拷走残存内容"。
+ */
+.preview {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgb(0 0 0 / 38%);
+  z-index: 10;
+}
+
+.preview__panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-height: 100%;
+  padding: 12px;
+  border: 1px solid var(--paper-edge);
+  border-radius: 10px;
+  background: var(--paper);
+  box-shadow: var(--paper-shadow);
+  user-select: text;
+}
+
+.preview__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.preview__title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.preview__body {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--paper-edge);
+  border-radius: 6px;
+  background: var(--paper-card);
+  color: var(--ink);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  /* 残存内容里可能有超长无空格串（乱码/路径）：换行而不是横向溢出面板。 */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 /*

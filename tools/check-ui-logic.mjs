@@ -40,6 +40,10 @@ import {
   undoSuffix,
   undoNotice,
 } from "../ui/src/lib/notice.js";
+import { captureFailureHint, restoreCoverWarning } from "../ui/src/lib/messages.js";
+import { SWIPE_COMPLETE_PX, swipeIntent, swipeOffset } from "../ui/src/lib/swipe.js";
+import { CLOSE_FADE_MS, closeFadeDelay } from "../ui/src/lib/motion.js";
+import { vaultFilePath } from "../ui/src/lib/bridge.js";
 
 let failed = 0;
 const check = (label, actual, expected) => {
@@ -439,6 +443,68 @@ check("Alt+Backspace 是删整词", draftClearIntent({ key: "Backspace", ctrlKey
 check("输入法组合期不清草稿", draftClearIntent({ key: "Backspace", ctrlKey: true, isComposing: true }), false);
 check("WebView2 兜底 229 不清草稿", draftClearIntent({ key: "Backspace", ctrlKey: true, keyCode: 229 }), false);
 check("别的键（Ctrl+A）不动草稿", draftClearIntent({ key: "a", ctrlKey: true }), false);
+
+// ---- R107 磁盘被占用：必须说清"内容还在输入框里" ----
+// 本项目不做任何本地暂存（那会造出第二真源），所以写入失败时**草稿仍在捕获框里**；
+// 这条文案就是把这件事讲出来，否则用户会把"写不进去"理解成"内容没了"。
+const ioHint = captureFailureHint({ result: "rejected", error: { code: "io", message: "文件被占用" } });
+check("io 失败要提磁盘被占用", ioHint.includes("磁盘被占用"), true);
+check("io 失败要说清内容还在输入框里", ioHint.includes("输入框"), true);
+check("io 失败带上后端细节", ioHint.includes("文件被占用"), true);
+check(
+  "busy 失败同样提示草稿还在",
+  captureFailureHint({ result: "rejected", error: { code: "busy" } }).includes("输入框"),
+  true,
+);
+check(
+  "其它错误不抢话（交给 formatAckError）",
+  captureFailureHint({ result: "rejected", error: { code: "conflict" } }),
+  "",
+);
+check("没有 ack 时不崩", [captureFailureHint(null), captureFailureHint(undefined)], ["", ""]);
+
+// ---- R109 恢复备份的覆盖提示：报真实数字，拿不到就说"无法统计" ----
+check("有 N 条未完成就报 N", restoreCoverWarning(3), "恢复后将覆盖当前 3 条未完成项");
+check("一条也要报", restoreCoverWarning(1), "恢复后将覆盖当前 1 条未完成项");
+check("零条如实说零", restoreCoverWarning(0), "恢复后将覆盖当前 0 条未完成项");
+check(
+  "拿不到数字时明说无法统计（不编 0）",
+  [restoreCoverWarning(null), restoreCoverWarning(undefined), restoreCoverWarning(Number.NaN)],
+  [
+    "恢复后将覆盖当前内容（无法统计未完成条数）",
+    "恢复后将覆盖当前内容（无法统计未完成条数）",
+    "恢复后将覆盖当前内容（无法统计未完成条数）",
+  ],
+);
+check(
+  "负数按脏数据处理",
+  restoreCoverWarning(-1),
+  "恢复后将覆盖当前内容（无法统计未完成条数）",
+);
+
+// ---- R114 触控右滑完成的判定 ----
+check("阈值：刚好 80px 算完成", swipeIntent({ dx: SWIPE_COMPLETE_PX, dy: 0 }), "complete");
+check("阈值：79px 还不够", swipeIntent({ dx: SWIPE_COMPLETE_PX - 1, dy: 0 }), "none");
+check("左滑不触发（没有反向功能）", swipeIntent({ dx: -200, dy: 0 }), "none");
+check("竖向为主算滚动，不算完成", swipeIntent({ dx: 200, dy: 200 }), "none");
+check("斜着滑但竖向更大 → 不算", swipeIntent({ dx: 90, dy: 120 }), "none");
+check("斜着滑但横向更大 → 算", swipeIntent({ dx: 120, dy: 60 }), "complete");
+check("非法数字不触发", [swipeIntent({ dx: Number.NaN, dy: 0 }), swipeIntent({})], ["none", "none"]);
+check("跟手位移只跟右滑", [swipeOffset(50), swipeOffset(-50), swipeOffset(Number.NaN)], [50, 0, 0]);
+check("跟手位移夹上限（不跑出容器）", swipeOffset(500), 120);
+check("自定义上限", swipeOffset(90, 60), 60);
+
+// ---- R108 预览路径拼接（后端只放行 vault 目录下的证据文件） ----
+check("目录 + 文件名", vaultFilePath("D:\\vault", "inbox.md.corrupt-1"), "D:\\vault\\inbox.md.corrupt-1");
+check("目录带尾反斜杠不会拼出双分隔符", vaultFilePath("D:\\vault\\", "inbox.md.corrupt-1"), "D:\\vault\\inbox.md.corrupt-1");
+check("目录带尾斜杠同理", vaultFilePath("D:/vault/", "inbox.md.corrupt-2"), "D:/vault\\inbox.md.corrupt-2");
+check("目录为空时只剩文件名（后端会拒绝，先让它自己报）", vaultFilePath("", "inbox.md.corrupt-1"), "inbox.md.corrupt-1");
+check("脏入参不炸", [vaultFilePath(null, "a"), vaultFilePath("D:\\v", null)], ["a", "D:\\v\\"]);
+
+// ---- R119 收起淡出的延迟 ----
+check("正常情况等一次 0.12s 淡出", closeFadeDelay(false), CLOSE_FADE_MS);
+check("未声明 reduce 时按正常处理", closeFadeDelay(undefined), CLOSE_FADE_MS);
+check("要求减少动效时立即消失（延迟为 0）", closeFadeDelay(true), 0);
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);

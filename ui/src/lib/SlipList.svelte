@@ -5,6 +5,7 @@
   import { buildInline } from "./render.js";
   import { parseQuery } from "./filter.js";
   import { extractTags } from "./tags.js";
+  import { swipeIntent, swipeOffset } from "./swipe.js";
 
   /**
    * 纸片列表。
@@ -35,6 +36,11 @@
     onseekcapture,
     /** 点正文里的链接：交给上层用系统浏览器打开。 */
     ondelink,
+    /**
+     * 触控右滑过阈值（R114）。只有触摸/笔会走到这里——鼠标没有 touch 事件，
+     * 所以拖拽与双击编辑完全不受影响。
+     */
+    onswipecomplete,
     /** 列表为空是因为过滤没匹配到，而不是真的没有内容。 */
     filtering = false,
     /**
@@ -60,6 +66,64 @@
    * 整个列表，逐行解析等于把同一份输入重复解析 N 遍。
    */
   let parsedFilter = $derived(parseQuery(query));
+
+  /**
+   * 触控滑动状态：`{ id, x, y, decided, dx }`，`null` = 没有手势进行中。
+   *
+   * 为什么要 `decided`：手指刚落下时方向还没定。必须等位移超过一个小的容差、
+   * 并确认横向分量更大，才能把这个手势判给"右滑完成"——否则手指稍微抖一下，
+   * 一次想滚动列表的滑动就会被当成"完成"。
+   */
+  let swipe = $state(null);
+
+  /** 方向判定容差（像素）。小于它时既不算横也不算竖。 */
+  const SWIPE_SLOP = 12;
+
+  function touchStart(event, slip) {
+    if (event.touches.length !== 1) {
+      // 多指（缩放/双指滚动）不该被理解成滑动。
+      swipe = null;
+      return;
+    }
+    const touch = event.touches[0];
+    swipe = {
+      id: slip.id,
+      x: touch.clientX,
+      y: touch.clientY,
+      decided: false,
+      dx: 0,
+    };
+  }
+
+  function touchMove(event, slip) {
+    const start = swipe;
+    if (!start || start.id !== slip.id || event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    if (!start.decided) {
+      if (Math.abs(dx) < SWIPE_SLOP && Math.abs(dy) < SWIPE_SLOP) return;
+      // 竖向优先：这一下是滚动，彻底放弃手势，列表照常跟随手指。
+      if (Math.abs(dy) >= Math.abs(dx)) {
+        swipe = null;
+        return;
+      }
+      start.decided = true;
+    }
+    // 已经判为横向：拦下浏览器可能的横向平移，并且只让右滑跟手（`swipeOffset` 夹上限）。
+    event.preventDefault();
+    start.dx = swipeOffset(dx);
+  }
+
+  function touchEnd(slip) {
+    const start = swipe;
+    // 先清状态：无论这一下触发不触发，行都要回弹到原位（CSS 过渡负责平滑）。
+    swipe = null;
+    if (!start || start.id !== slip.id || !start.decided) return;
+    if (swipeIntent({ dx: start.dx, dy: 0 }) === "complete") {
+      onswipecomplete?.(slip);
+    }
+  }
 
   let editingId = $state(null);
   /** 编辑框里的初值/当前值；提交失败时靠它把用户输入原样留着。 */
@@ -387,6 +451,14 @@
       <li
         class:slip--done={slip.done}
         class="slip"
+        class:slip--swiping={swipe?.id === slip.id}
+        style:transform={swipe?.id === slip.id
+          ? `translateX(${swipe.dx}px)`
+          : null}
+        ontouchstart={(event) => touchStart(event, slip)}
+        ontouchmove={(event) => touchMove(event, slip)}
+        ontouchend={() => touchEnd(slip)}
+        ontouchcancel={() => (swipe = null)}
         ondblclick={() => {
           // 双击整行都能进编辑——原来只有点在文字上才有效，行内空白处点不动。
           // 复选框与操作按钮各自阻断冒泡（在按钮上双击的语义是"点了两下按钮"）。
