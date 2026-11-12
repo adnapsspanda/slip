@@ -48,6 +48,7 @@ import {
 import {
   captureFailureHint,
   capacitySummary,
+  describeDiff,
   purgeNotice,
   restoreCoverWarning,
 } from "../ui/src/lib/messages.js";
@@ -624,6 +625,12 @@ check("彻底删除的提示明确不可逆", purged.message.includes("无法恢
 check("彻底删除的提示说明已留备份", purged.message.includes("备份"), true);
 check("彻底删除不挂撤销按钮（否则是死按钮）", purged.undo, false);
 check("彻底删除的提示可以被 Alt+Z 收起（纯信息）", noticeAction(purged), "dismiss");
+
+// 外部差异：损坏记录不能被报成"消失"。
+check("差异：三类变化都报", describeDiff({ added: 1, removed: 2, changed: 3, problems: 0 }), "新增 1、消失 2、改动 3");
+check("差异：有解析问题时只报问题，不报条数", describeDiff({ added: 1, removed: 2, changed: 3, problems: 2 }), "有 2 行无法解析");
+check("差异：全零返回空串", describeDiff({ added: 0, removed: 0, changed: 0, problems: 0 }), "");
+check("差异：没有数据返回空串", describeDiff(null), "");
 
 // 二次确认的状态迁移：武装 → 窗口内执行 → 超时自动还原（R104 复用的闸门）
 check("第一下武装并记下时间", confirmNext(null, 1000), { armedAt: 1000, execute: false });

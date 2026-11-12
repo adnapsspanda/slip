@@ -557,6 +557,17 @@ pub fn apply(document: &Document, mutations: &[Mutation]) -> Result<(Document, b
     }
 
     if changed {
+        // 整批的**净结果**等于原记录时（例如先置顶再取消置顶），它不是真正的变更。
+        // 继续按 Changed 返回会让候选行带着"重写过"的字节进入回读闭包，而
+        // `verify_roundtrip` 看到预期记录 == 原记录，会把这一行当未修改行做字节比较，
+        // 于是对自己忠实渲染出的字节报 `UnmodifiedLineChanged`。
+        // 当前 UI 每条命令只发一个 mutation，这条路不可达；但批内往返是合理的未来用法。
+        if doc.records == document.records && doc.lines.len() == document.lines.len() {
+            changed = false;
+        }
+    }
+
+    if changed {
         // §4.1：Noop 不重写 BOM；真正提交时统一输出无 BOM。
         doc.bom = false;
     }
@@ -1316,6 +1327,67 @@ mod tests {
             verify_roundtrip(&doc, &candidate, &expected),
             Err(RoundtripError::DuplicateId)
         );
+    }
+
+    /// 非 UTF-8 的**非候选行**必须逐字节保留。
+    ///
+    /// `parse` 对不以 `- [` 开头的行只做切片，不当它是记录候选；这类行可能是
+    /// 用户手写的乱码/二进制片段，任何"顺手重新序列化"都会毁掉它。
+    #[test]
+    fn non_utf8_other_lines_round_trip() {
+        let mut bytes = b"plain \xff line\n".to_vec();
+        bytes.extend_from_slice(record_line("正文").as_bytes());
+        let doc = parse_ok(&bytes);
+        assert_eq!(render(&doc), bytes, "解析/渲染必须逐字节往返");
+
+        let id = SlipId::parse_strict(ID).unwrap();
+        let (next, changed) = apply(
+            &doc,
+            &[Mutation::Patch {
+                id,
+                patch: Patch::SetText("新正文".to_owned()),
+            }],
+        )
+        .expect("patch");
+        assert!(changed);
+
+        let rendered = render(&next);
+        assert!(
+            rendered.starts_with(b"plain \xff line\n"),
+            "非 UTF-8 普通行被改写：{:?}",
+            rendered
+        );
+        let expected: Vec<Slip> = next
+            .records
+            .iter()
+            .map(|record| record.slip.clone())
+            .collect();
+        verify_roundtrip(&doc, &rendered, &expected).expect("普通行必须原样保留");
+    }
+
+    /// 批内改后又改回：净结果等于原记录，不能报 Changed。
+    #[test]
+    fn a_batch_that_returns_to_the_original_is_a_noop() {
+        let doc = parse_ok(record_line("正文").as_bytes());
+        let id = SlipId::parse_strict(ID).unwrap();
+
+        let (next, changed) = apply(
+            &doc,
+            &[
+                Mutation::Patch {
+                    id,
+                    patch: Patch::SetPinned(true),
+                },
+                Mutation::Patch {
+                    id,
+                    patch: Patch::SetPinned(false),
+                },
+            ],
+        )
+        .expect("batch");
+
+        assert!(!changed, "净结果等于原记录时不该报 Changed");
+        assert_eq!(render(&next), render(&doc), "净 Noop 的字节必须等于原文");
     }
 
     /// 被 patch 的行也必须守住未知键。

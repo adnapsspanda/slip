@@ -14,6 +14,7 @@
   import {
     captureFailureHint,
     capacitySummary,
+    describeDiff,
     purgeNotice,
     restoreCoverWarning,
   } from "./lib/messages.js";
@@ -315,17 +316,6 @@
       cancelled = true;
     };
   });
-
-  /** 把差异条数说成人话；三项都为 0 时返回空串（那就没什么好说的）。 */
-  function describeDiff(diff) {
-    return [
-      diff.added > 0 ? `新增 ${diff.added}` : "",
-      diff.removed > 0 ? `消失 ${diff.removed}` : "",
-      diff.changed > 0 ? `改动 ${diff.changed}` : "",
-    ]
-      .filter(Boolean)
-      .join("、");
-  }
 
   let banner = $derived.by(() => {
     if (!snapshot) {

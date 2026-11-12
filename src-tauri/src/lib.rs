@@ -418,7 +418,9 @@ async fn external_diff(state: tauri::State<'_, ShellState>) -> Result<system::Di
         .await
         .map_err(|error| format!("读取 inbox 被中断：{error}"))?
         .map_err(|kind| format!("读取 inbox 失败：{kind}"))?;
+    let problems = peeks.problems;
     let disk: Vec<(String, String, bool)> = peeks
+        .slips
         .into_iter()
         .map(|slip| (slip.id.to_canonical_string(), slip.text, slip.done))
         .collect();
@@ -428,7 +430,9 @@ async fn external_diff(state: tauri::State<'_, ShellState>) -> Result<system::Di
         .iter()
         .map(|slip| (slip.id.clone(), slip.text.clone(), slip.done))
         .collect();
-    Ok(system::diff_summary(&current, &disk))
+    let mut summary = system::diff_summary(&current, &disk);
+    summary.problems = problems;
+    Ok(summary)
 }
 
 /// 列出 vault 里的备份（新的在前）。只给名字、大小与时间，不给完整路径。
@@ -449,6 +453,9 @@ async fn backup_list(state: tauri::State<'_, ShellState>) -> Result<Vec<BackupRo
             .map_err(|error| format!("读取备份列表被中断：{error}"))?;
     Ok(list
         .into_iter()
+        // vault 里可能有用户自己的 `notes.bak-1`；只展示当前 inbox 的备份，
+        // 与 `read_backup` 的前缀校验保持同一口径。
+        .filter(|info| info.name.starts_with("inbox.md.bak-"))
         .map(|info| BackupRow {
             name: info.name,
             size: info.size,

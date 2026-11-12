@@ -210,15 +210,26 @@ impl StoreOutcome {
 /// **不碰任何状态机**：不读 store 的内存文档、不改 `content_rev`、不写盘。
 /// 用途是"看看磁盘现在是什么样"——例如判断外部修改到底改了多少条。
 /// 语法有问题的行会被跳过（与正常载入同一口径），这里不负责报告它们。
-pub fn peek_slips(path: &std::path::Path) -> Result<Vec<Slip>, IoKind> {
+#[derive(Debug, Clone, PartialEq)]
+pub struct PeekedSlips {
+    pub slips: Vec<Slip>,
+    /// 磁盘上解析不出来的行数。调用方必须区分"真的少了"与"改坏了"：
+    /// 只看 `slips` 会把一条损坏记录报成"消失"，用户会以为数据被删了。
+    pub problems: usize,
+}
+
+pub fn peek_slips(path: &std::path::Path) -> Result<PeekedSlips, IoKind> {
     let bytes = fsops::read_bytes(path)?;
     let parsed = doc::parse(&bytes);
-    Ok(parsed
-        .document
-        .records
-        .iter()
-        .map(|record| record.slip.clone())
-        .collect())
+    Ok(PeekedSlips {
+        slips: parsed
+            .document
+            .records
+            .iter()
+            .map(|record| record.slip.clone())
+            .collect(),
+        problems: parsed.problems.len(),
+    })
 }
 
 pub trait Store: Send + Sync {
@@ -2206,6 +2217,28 @@ mod tests {
         assert_eq!(outcome.result, Err(StoreError::BackupInvalid));
         assert_eq!(read(&path), before_bytes, "重复 ID 的备份不得覆盖当前文件");
         assert_eq!(outcome.snapshot.slips[0].text, "完好的内容");
+    }
+
+    /// `peek_slips` 必须把"磁盘上有坏行"报出来。
+    ///
+    /// 只看 `slips` 会把损坏记录算成"消失"：用户看到"消失 1 条"，
+    /// 以为数据被删了，实际只是被外部编辑器改坏了一行。
+    #[test]
+    fn peek_slips_reports_parse_problems() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md");
+        let good_id = SlipId::new_v7().to_canonical_string();
+        let text = format!(
+            "- [ ] 好的 <!-- slip:v1;id={good_id};created=2026-11-10T11:49:14+08:00 -->\n\
+             - [ ] 坏的 <!-- slip:v1;id=not-a-uuid;created=2026-11-10T11:49:14+08:00 -->\n"
+        );
+        std::fs::write(&path, text.as_bytes()).expect("write inbox");
+
+        let peeked = peek_slips(&path).expect("read peek");
+
+        assert_eq!(peeked.slips.len(), 1, "只有一条可解析记录");
+        assert_eq!(peeked.slips[0].text, "好的");
+        assert!(peeked.problems > 0, "坏行必须计入 problems，而不是静默消失");
     }
 
     /// 一次回读闭包失败留下的诊断，不能跟着成功提交一起活到下一次启动。

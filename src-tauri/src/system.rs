@@ -491,6 +491,8 @@ pub struct DiffSummary {
     pub removed: usize,
     /// 两边都有但正文或完成态变了的条数。
     pub changed: usize,
+    /// 磁盘上解析不出来的行数。>0 时上面的条数不可信（损坏记录会被算成"消失"）。
+    pub problems: usize,
 }
 
 /// 比较"界面现在显示的"与"磁盘现在的"，给出条数级差异。

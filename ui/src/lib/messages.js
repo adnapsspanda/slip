@@ -68,6 +68,29 @@ export function capacitySummary(capacity) {
 }
 
 /**
+ * 把外部差异说成人话；三项都为 0 时返回空串（那就没什么好说的）。
+ *
+ * `problems > 0` 时**不报条数**：损坏的记录解析不出来，会被算成"消失"，
+ * 用户会以为数据被删了。这时只说"有几行无法解析"，引导他去修文件。
+ *
+ * @param {{added?: number, removed?: number, changed?: number, problems?: number}|null|undefined} diff
+ * @returns {string}
+ */
+export function describeDiff(diff) {
+  if (!diff) return "";
+  if (Number.isFinite(diff.problems) && diff.problems > 0) {
+    return `有 ${diff.problems} 行无法解析`;
+  }
+  return [
+    diff.added > 0 ? `新增 ${diff.added}` : "",
+    diff.removed > 0 ? `消失 ${diff.removed}` : "",
+    diff.changed > 0 ? `改动 ${diff.changed}` : "",
+  ]
+    .filter(Boolean)
+    .join("、");
+}
+
+/**
  * 彻底删除之后的提示（R104）。
  *
  * **绝不能挂撤销**：`purge_archived` 成功后后端已经把撤销栈清空（删除不可逆），

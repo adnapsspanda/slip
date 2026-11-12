@@ -360,8 +360,22 @@ pub fn list_backups(dir: &Path) -> Vec<BackupInfo> {
 /// 单独抽出来是为了让调用方在**碰当前文件之前**先校验候选内容：先备份、后校验
 /// 等于给一个注定被拒绝的恢复白烧一代备份，且 inbox 缺失时连备份都做不了。
 pub fn read_backup(inbox: &Path, name: &str) -> Result<Vec<u8>, IoKind> {
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
+    // 单段普通文件名：`/`、`\`、`..`、盘符（`C:`）与 NTFS ADS 全部拒绝。
+    // 旧实现只查前三个，Windows 上 `C:inbox.md.bak-1` 会让 `PathBuf::join`
+    // 整体替换基路径，读到的是 C: 当前目录下的文件。
+    if name.contains('/') || name.contains('\\') || name.contains("..") || name.contains(':') {
         return Err(IoKind::PermissionDenied);
+    }
+    let components: Vec<_> = Path::new(name).components().collect();
+    if components.len() != 1 || !matches!(components[0], std::path::Component::Normal(_)) {
+        return Err(IoKind::PermissionDenied);
+    }
+    // 必须属于**当前** inbox：`other.bak-1` 不是这个文件的备份，不能拿来覆盖它。
+    let Some(inbox_name) = inbox.file_name().and_then(|name| name.to_str()) else {
+        return Err(IoKind::Other);
+    };
+    if !name.starts_with(&format!("{inbox_name}.bak-")) {
+        return Err(IoKind::NotFound);
     }
     if parse_backup_name(name).is_none() {
         return Err(IoKind::NotFound);
@@ -1020,6 +1034,28 @@ mod tests {
         assert!(
             restore_backup(&inbox, "inbox.md.bak-1-2-3").is_err(),
             "结构不合规的名字不能被恢复"
+        );
+    }
+
+    #[test]
+    fn read_backup_rejects_names_that_are_not_for_this_inbox() {
+        let dir = temp_dir();
+        let inbox = dir.path().join("inbox.md");
+        write_file(&inbox, b"current");
+        for name in [
+            "other.bak-1700000000000",        // 不是这个 inbox 的备份
+            "C:inbox.md.bak-1700000000000",   // Windows 盘符前缀
+            "inbox.md.bak-1700000000000:ads", // NTFS 备用数据流
+            "inbox.md.bak-1700000000000-1-2", // 多余段
+        ] {
+            assert!(
+                read_backup(&inbox, name).is_err(),
+                "不该接受的备份名：{name}"
+            );
+        }
+        assert!(
+            read_backup(&inbox, "inbox.md.bak-1700000000000").is_err(),
+            "格式合法但文件不存在：应返回 Err"
         );
     }
 
