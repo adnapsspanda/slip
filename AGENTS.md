@@ -405,8 +405,12 @@ git config core.hooksPath .githooks
 工具链由 `rust-toolchain.toml` 钉死（1.99.1 + clippy + rustfmt）。**不要随手升级**：
 同一份代码在更新的 rustc 上会因为新 lint 而"突然失败"，而失败原因与你的改动无关。
 
-CI 只跑 Windows：这个应用依赖 Win32 托盘、全局热键与 WebView2，在 Linux 上连编译都过不去，
-假装跨平台只会给出假的绿灯。E2E 也**不**在 CI 里——它需要交互式桌面会话和真实光标。
+CI 的**门禁主体**只跑 Windows：外壳依赖 Win32 托盘、全局热键与 WebView2，在 Linux 上连编译都
+过不去，假装整个应用跨平台只会给出假的绿灯。E2E 也**不**在 CI 里——它需要交互式桌面会话和真实光标。
+
+但**三个逻辑 crate（domain / store / app）确实与平台无关**（`slip-domain` 零 I/O、`slip-app` 无 GUI
+依赖），所以 CI 里额外有一个 `逻辑层（Linux）` job 跑它们的测试与 clippy。这不是装样子：它会在
+"有人把 Win32 调用写进 store"的第一时间变红。两边的边界必须一直清楚——**外壳 Windows，逻辑跨平台**。
 
 ### 干净克隆的硬顺序
 

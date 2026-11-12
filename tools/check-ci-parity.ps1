@@ -68,7 +68,16 @@ Write-Output "钩子关口（$($hookGates.Count)）：$($hookGates -join '、')"
 Write-Output "CI  关口（$($ciGates.Count)）：$($ciGates -join '、')"
 
 # 允许单边存在的步骤：CI 独有的构建/打包，钩子独有的"通过"提示。
-$ciOnly = @('Release 构建', '安装 bun', '缓存 Rust 产物')
+# CI 独有的步骤。`逻辑层（Linux）` 那几条是**同一个 job 之外**的第二个信号：
+# 钩子跑在开发机上（Windows），Linux 侧只能在 CI 里跑——这不是漂移，是分工。
+$ciOnly = @(
+    'Release 构建',
+    '安装 bun',
+    '缓存 Rust 产物',
+    '安装 Rust 工具链',
+    '逻辑层测试（domain / store / app）',
+    '逻辑层 Clippy'
+)
 $hookOnly = @()
 
 $missingInCi = @($hookGates | Where-Object { $ciGates -notcontains $_ -and $hookOnly -notcontains $_ })

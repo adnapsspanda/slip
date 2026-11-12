@@ -53,6 +53,19 @@
 
 ## 完成记录
 
+- **R125 CI 增加 Linux 逻辑层 job（本轮，先改政策再动 workflow）**：
+  - 政策原文是"CI 只跑 Windows，假装跨平台只会给假的绿灯"——它对外壳**完全正确**
+    （`slip-shell` 依赖 Win32 托盘/热键/WebView2，Linux 编不过）。所以这一轮**不推翻它，而是说清边界**：
+    **外壳只跑 Windows，三个逻辑 crate 确实跨平台**。
+  - 依据不是猜测：`slip-domain` 零 I/O、`slip-app` 无 GUI 依赖，而且每轮的 WSL 实测一直是
+    282 项全绿——Linux 侧的证据早就存在，只是没进 CI。
+  - 新增 `logic-linux` job（ubuntu-latest）：`cargo test -p slip-domain -p slip-store -p slip-app
+    --all-targets` + 对应 clippy。**明确不构建 slip-shell、不跑 E2E**。
+    价值：有人把 Win32 调用写进 store 时，这条 job 会第一时间变红。
+  - 门禁对等脚本的 `$ciOnly` 白名单加了三条（安装 Rust 工具链 / 逻辑层测试 / 逻辑层 Clippy），
+    并在注释里写明"这不是漂移，是分工"。复跑：**10 vs 10，零漂移**。
+  - YAML 结构校验通过（2 个 job，步骤数正常）。
+
 - **R111 写入中断的原子性（本轮）**：新增 failpoint `fail_next_write_interruption()`——
   在 `write_atomic` 里"临时文件已写满并 sync 过、但还没 `persist` 替换"的位置失败。
   这是"写到一半断电"能构造出的最接近形态。

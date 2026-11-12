@@ -18,8 +18,13 @@ env:
 jobs:
   quality:
     name: 质量门禁
-    # 只跑 Windows：这个应用依赖 Win32 托盘、全局热键与 WebView2，
-    # 在 Linux 上连编译都过不去。假装跨平台反而会给出假的绿灯。
+    # 外壳（slip-shell / src-tauri）只跑 Windows：它依赖 Win32 托盘、全局热键与 WebView2，
+    # 在 Linux 上连编译都过不去。**假装整个应用跨平台会给出假的绿灯**——所以这里不假装。
+    #
+    # 但三个逻辑 crate（domain / store / app）确实没有平台依赖：它们零 I/O 或只用标准文件系统，
+    # 不碰任何 Win32 API。把它们放到 Linux 上跑不是"装样子"，是**真的多一组证据**——
+    # 每轮的 WSL 实测（282 项）一直就是这么做的，这里只是把它搬进 CI。
+    # 见下方 `logic-linux` job。
     runs-on: windows-latest
     timeout-minutes: 30
 
@@ -114,3 +119,38 @@ jobs:
       # 端到端验收（真实热键 / 托盘 / 窗口定位）**不在 CI 里**：
       # 它需要一个交互式桌面会话和一个真实光标，runner 上跑不了。
       # 那部分只能在本机用 `pwsh -File tools/verify-hotkey.ps1` 兜。
+
+  # 三个**纯逻辑**crate 的 Linux 验证（R125）。
+  #
+  # 明确边界：这个 job **不**构建 slip-shell，也不跑端到端。它证明的是
+  # "领域/存储/app 三层与平台无关"——这正是它们的设计约束（`slip-domain` 零 I/O、
+  # `slip-app` 无 GUI 依赖）。外壳那层仍由上面的 Windows job 负责。
+  #
+  # 为什么值得常驻：这条 job 会在"有人不小心把 Win32 调用写进 store"的第一时间变红。
+  logic-linux:
+    name: 逻辑层（Linux）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 Rust 工具链
+        run: |
+          rustup toolchain install --profile minimal --component clippy --component rustfmt
+          rustup show active-toolchain
+
+      - name: 缓存 Rust 产物
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-${{ hashFiles('**/Cargo.lock', 'rust-toolchain.toml') }}
+
+      - name: 逻辑层测试（domain / store / app）
+        run: cargo test -p slip-domain -p slip-store -p slip-app --all-targets
+
+      - name: 逻辑层 Clippy
+        run: cargo clippy -p slip-domain -p slip-store -p slip-app --all-targets -- -D warnings
