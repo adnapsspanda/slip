@@ -198,15 +198,16 @@
     node.select();
   }
 
-  function beginEdit(slip) {
+  async function beginEdit(slip) {
     // 锁定只保护正文；这里要明确告诉用户为什么双击没反应，否则像是坏了。
     if (slip.locked) {
       onnotice?.("已锁定，先解锁才能修改");
       return;
     }
     // 切到另一条之前，先把上一条**按它自己的会话**提交掉，否则改动会丢。
+    // 必须等提交结果：失败时留在当前这条，不能让用户刚打的字被新目标顶掉。
     if (session && session.id !== slip.id) {
-      void commitEdit();
+      if (!(await commitEdit())) return;
     }
     editingId = slip.id;
     draft = slip.text;
@@ -224,27 +225,47 @@
     session = null;
   }
 
+  /**
+   * 提交当前编辑。
+   *
+   * 返回是否"可以离开这次编辑"：没改、已取消、后端接受 → true；后端拒绝或请求
+   * 抛错 → false。调用方（Tab 切下一条、Enter 交还焦点、beginEdit 切目标）都靠
+   * 这个返回值决定要不要继续，否则失败时又会切走并覆盖草稿。
+   *
+   * @returns {Promise<boolean>}
+   */
   async function commitEdit() {
-    // 失焦可能和 Enter 撞在一起；也承接"取消后立刻失焦"的情况。
+    // 失焦可能和 Enter 撞在一起；也承接"取消后立刻失焦"的情况。这几种都没有
+    // 这一次需要保存的东西：已取消/没会话按成功处理；已在提交中则等它自己的调用方
+    // 收尾，这里按 true 放行，免得同一次草稿被发第二遍。
     const current = session;
     if (cancelled || committing || !current) {
-      return;
+      return true;
     }
     // 没改就不用发请求，免得平白把提示区刷成"已修改"。
     if (draft === current.original) {
       finishSession(current.id);
-      return;
+      return true;
     }
+    let accepted = false;
     committing = true;
-    const accepted = await onedit?.(
-      { id: current.id, text: current.original },
-      draft,
-    );
-    committing = false;
+    try {
+      accepted =
+        (await onedit?.({ id: current.id, text: current.original }, draft)) ??
+        false;
+    } catch {
+      // 上层 `handleEdit` 自己会兜住错误并返回 false；这里再兜一层，
+      // 保证 `commitEdit` 永不 reject，调用方可以安全地 `void` 它。
+      accepted = false;
+    } finally {
+      committing = false;
+    }
     // 失败时保持编辑态与草稿：用户的输入不能丢。
     if (accepted) {
       finishSession(current.id);
+      return true;
     }
+    return false;
   }
 
   /**
@@ -263,7 +284,7 @@
     }
   }
 
-  function handleKeydown(event) {
+  async function handleKeydown(event) {
     // 与捕获框同口径：输入法选词期间的 Enter / Esc 归输入法自己消费。
     if (composing || event.isComposing || event.keyCode === 229) {
       return;
@@ -277,13 +298,14 @@
       }
       const id = editingId;
       // 键盘进入编辑、键盘提交，那么焦点也该由键盘交还——失焦提交不走这里，
-      // 免得把用户刚点去的输入框抢回来。
-      commitEdit().then(() => refocusRow(id));
+      // 免得把用户刚点去的输入框抢回来。失败时**不**交还焦点：编辑框还在原地，
+      // 焦点跳回行上等于把用户从还没保存的草稿边赶走。
+      if (await commitEdit()) await refocusRow(id);
     } else if (event.key === "Escape") {
       event.preventDefault();
       const id = editingId;
       cancelEdit();
-      refocusRow(id);
+      await refocusRow(id);
     } else if (event.key === "Tab") {
       /*
        * 编辑态里的 Tab 不该把焦点甩到浏览器别处：它的含义是「保存这条，接着改下一条」。
@@ -299,10 +321,14 @@
       }
       if (target === null) {
         // 已在首/末条：提交后把焦点还给当前行，不跳到不存在的位置。
-        commitEdit().then(() => refocusRow(id));
+        if (await commitEdit()) await refocusRow(id);
         return;
       }
-      commitEdit().then(() => beginEdit(slips[target]));
+      // 先等提交结果再切目标：提交失败时留在这一条，草稿不会被下一条顶掉。
+      // （`beginEdit` 自己也会提交一次，但那时 `session` 已是新目标——
+      // 顺序反了就会把同一份草稿发两遍。）
+      if (!(await commitEdit())) return;
+      await beginEdit(slips[target]);
     }
   }
 
@@ -326,7 +352,7 @@
       cancelEdit();
       return;
     }
-    commitEdit();
+    void commitEdit();
   }
 
   /** 编辑结束后把焦点放回那一行，键盘流才不至于断在半空。 */
@@ -383,7 +409,7 @@
         return;
       case "Enter":
         event.preventDefault();
-        beginEdit(slip);
+        void beginEdit(slip);
         return;
       case "p":
       case "P":
@@ -473,7 +499,7 @@
           // **锁定判断交给 beginEdit**：那里会给"已锁定，先解锁才能修改"的提示。
           // 我一开始在这里 `if (slip.locked) return;` 短路，结果把提示一起跳过了——
           // 端到端断言"锁定后双击给出原因"当场抓到（R46 引入的回归）。
-          beginEdit(slip);
+          void beginEdit(slip);
         }}
       >
         <button

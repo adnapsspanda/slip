@@ -63,3 +63,26 @@ export function nextToggleTarget(snapshotDone, intent) {
   }
   return !snapshotDone;
 }
+
+/**
+ * 一次勾选请求结束后，那条未落盘的意图还要不要留着。
+ *
+ * 为什么需要这个判定：意图的唯一职责是让「连点两下」以意图为准反转。它一旦
+ * 比快照活得更久，就会反过来骗人——上一轮失败留下的 `true` 会让用户下一次
+ * 点击的目标变成 `false`，症状是「勾选要按两下才生效」。
+ *
+ * 三种情况：
+ * - 后端没接受：快照不会朝目标动，留着意图等于让下一次点击基于一个不存在的状态；
+ * - 快照已经等于目标：意图已经落盘，再留着会让下一次点击反转错方向；
+ * - 其它：后面还有排队中的点击，意图仍是它们唯一可信的起点。
+ *
+ * @param {boolean} accepted 后端是否接受（`ack.result === "applied"`）
+ * @param {boolean|undefined} storedDone 最新快照里这一条的完成态
+ * @param {boolean} targetDone 这次请求的目标状态
+ * @returns {boolean} true = 保留意图
+ */
+export function keepPendingIntent(accepted, storedDone, targetDone) {
+  if (!accepted) return false;
+  if (storedDone === targetDone) return false;
+  return true;
+}

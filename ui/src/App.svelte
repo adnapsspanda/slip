@@ -18,7 +18,11 @@
     restoreCoverWarning,
   } from "./lib/messages.js";
   import { closeFadeDelay } from "./lib/motion.js";
-  import { createSerialQueue, nextToggleTarget } from "./lib/queue.js";
+  import {
+    createSerialQueue,
+    keepPendingIntent,
+    nextToggleTarget,
+  } from "./lib/queue.js";
   import { confirmNext, CONFIRM_WINDOW_MS } from "./lib/confirm.js";
   import * as bridge from "./lib/bridge.js";
   import Capture from "./lib/Capture.svelte";
@@ -111,6 +115,8 @@
   let preview = $state(null);
   /** `<pre>` 元素，供"全选"用。 */
   let previewEl = $state(null);
+  /** 弹窗面板本身：打开时接住焦点，让 Tab 链不跑到弹窗背后的控件上。 */
+  let previewPanelEl = $state(null);
 
   /** 收起窗口时的容器淡出标记（R119）。 */
   let leaving = $state(false);
@@ -137,6 +143,14 @@
   let showBackups = $state(false);
   /** 备份列表；只在打开面板时取一次。 */
   let backups = $state([]);
+  /**
+   * 备份列表请求的代数。
+   *
+   * 每次开/合面板都自增；响应回来时只有代数仍是最新、且面板还开着才允许落盘。
+   * 否则「快速开→关→开」时旧响应会覆盖新结果，面板关掉后失败还会把 hint 改成
+   * 一句没人看得懂的"读取备份失败"。
+   */
+  let backupsToken = 0;
   /**
    * 归档抽屉的容量摘要（R104）。`vault_capacity` 是只读统计，本地算不出来（要读盘）。
    * 读不到就保持 null → `capacityLine` 为空串 → 整行不显示，绝不用 0 冒充。
@@ -354,6 +368,10 @@
         return "磁盘上的文件已被修改，请先点上方「重新载入」";
       case "readOnly":
         return "文件无法解析，当前处于只读保护状态";
+      case "invalidBackup":
+        // 关键信息是"当前文件没动"：用户会以为恢复失败等于数据更糟了，
+        // 其实只是这一份备份本身坏了，选另一代即可。
+        return "这份备份内容无法解析，未恢复；当前 inbox.md 未被改动，可换一代备份";
       case "busy":
         return "操作过于频繁，请稍后再试";
       case "notExecuted":
@@ -491,6 +509,9 @@
     showArchived = false;
     showBackups = false;
     pendingRestore = null;
+    // 未落盘的勾选意图只属于当次会话：上一轮失败/迟到的意图留到下一次唤出，
+    // 会让第一下点击从旧意图反转，看上去像勾选失灵。
+    pendingDone = {};
     captureRef?.focus();
   }
 
@@ -582,13 +603,15 @@
     // 以"未落盘的意图"为准，而不是当前快照：连点两下时快照还没跟上。
     const targetDone = nextToggleTarget(slip.done, pendingDone[slip.id]);
     pendingDone[slip.id] = targetDone;
+    let accepted = false;
     try {
       // 串行发送：后一次点击一定排在前一次之后，不会两个请求同时基于同一份旧快照。
       const ack = await mutating.run(() =>
         bridge.complete(bridge.newRequestId(), slip.id, targetDone),
       );
+      accepted = ack.result === "applied";
       await refresh();
-      if (ack.result === "applied") {
+      if (accepted) {
         hint = DEFAULT_HINT;
         markUndone(targetDone ? "已完成" : "已标为未完成");
       } else {
@@ -598,10 +621,9 @@
       hint = `complete 失败：${error}`;
       await refresh();
     } finally {
-      // 快照已经等于意图就清掉记录；还不等（说明后面还有排队中的点击）就留着，
-      // 下一次反转仍然以它为准。
       const stored = snapshot?.slips.find((item) => item.id === slip.id);
-      if (stored && stored.done === targetDone) {
+      // 失败一定清：留着的话下一次点击会从"没发生过的状态"反转，表现为勾选要按两下。
+      if (!keepPendingIntent(accepted, stored?.done, targetDone)) {
         delete pendingDone[slip.id];
       }
     }
@@ -682,14 +704,19 @@
 
   /** 打开/收起备份面板；打开时现取一遍列表。 */
   async function toggleBackups() {
+    // 先记下本次请求的代数：关闭面板或再次打开都会让旧响应作废。
+    const token = ++backupsToken;
     showBackups = !showBackups;
     pendingRestore = null;
     if (showBackups) {
       try {
-        backups = await bridge.backupList();
+        const list = await bridge.backupList();
+        if (token === backupsToken && showBackups) backups = list;
       } catch (error) {
-        backups = [];
-        hint = `读取备份失败：${error}`;
+        if (token === backupsToken && showBackups) {
+          backups = [];
+          hint = `读取备份失败：${error}`;
+        }
       }
     }
   }
@@ -952,7 +979,9 @@
       ]),
     );
     try {
-      const ack = await bridge.undo(bridge.newRequestId());
+      // 撤销必须走同一条串行队列：勾选/归档还在飞时直接发 undo，后端会先撤销上一条
+      // 已提交的变更，用户看到的是"撤错了"。队列保证撤销排在已提交的变更之后。
+      const ack = await mutating.run(() => bridge.undo(bridge.newRequestId()));
       await refresh();
       if (ack.result === "applied") {
         hint = DEFAULT_HINT;
@@ -1004,6 +1033,9 @@
    * - `Ctrl+Shift+D`：切换 §9.7 窗口验收调试面板。
    */
   function handleKeydown(event) {
+    // 损坏预览是只读证据：弹窗开着时窗口级快捷键（Ctrl+Z / Ctrl+F / Alt+Z）一律让路，
+    // 否则用户在"看证据"时会真的改掉后端内容，或在弹窗背后打开过滤框。
+    if (preview) return;
     const lowered = event.key.toLowerCase();
     // Alt+Z：精准响应当前提示条上那个按钮（有撤销就撤销，纯提示就收起）。
     // 之所以还要 Alt 组合：Ctrl+Z 是"撤销"的通用语义，而提示条有时只是通知，没有可撤销的。
@@ -1150,9 +1182,13 @@
       text = `打不开：${error}`;
     }
     preview = { name, text };
-    // 内容一到就全选：这个弹窗唯一的用途就是"看清并拷走"，全选省掉一次手动拖选。
-    // webview 没有剪贴板权限，所以走系统选区 + Ctrl+C。
+    // 内容一到就聚焦面板并全选：这个弹窗唯一的用途就是"看清并拷走"，全选省掉一次
+    // 手动拖选。webview 没有剪贴板权限，所以走系统选区 + Ctrl+C。
+    //
+    // 焦点必须留在弹窗里：面板有 `tabindex="-1"`，聚焦它之后 Tab 链以弹窗为起点，
+    // 而不是继续在弹窗背后的捕获框/列表上走。
     await tick();
+    previewPanelEl?.focus();
     if (previewEl) globalThis.getSelection?.()?.selectAllChildren(previewEl);
   }
 
@@ -1163,6 +1199,14 @@
    * 冒泡阶段拦的话它已经先跑了——弹窗关掉的同时窗口也收走，用户会以为界面出错。
    */
   function handleKeydownCapture(event) {
+    // 弹窗打开时 Tab 也只许留在弹窗里：焦点若跑到背后的捕获框/列表，用户会开始
+    // 操作一个被遮住的界面，而弹窗还盖在最上面。
+    if (event.key === "Tab" && preview) {
+      event.preventDefault();
+      event.stopPropagation();
+      previewPanelEl?.focus();
+      return;
+    }
     if (event.key !== "Escape" || !preview) return;
     event.preventDefault();
     event.stopPropagation();
@@ -1547,7 +1591,7 @@
       aria-modal="true"
       aria-label="损坏文件的残存内容（只读）"
     >
-      <div class="preview__panel">
+      <div class="preview__panel" tabindex="-1" bind:this={previewPanelEl}>
         <div class="preview__bar">
           <span class="preview__title"
             >{preview.name} · 残存内容（只读）· 不会写回 inbox.md · 已全选</span
