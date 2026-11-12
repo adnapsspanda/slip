@@ -634,4 +634,4 @@ vault 内的符号链接/硬链接可让「只读证据」读到 vault 外的文
 - `PaperViewSet` 死抽象清理：**已完成（批次 H）**——删除类型、`with_view`/`view` 与两条只测字段复制的测试；`Presenter::new` 直接构造，外壳不再从偏好拼视图。
 - 三处展示优先级统一为 `resolveUiState`：当前三份实现一致，属于可读性优化。
 - `peek_slips` 的解析问题没有传给 `external_diff`：外部改坏一条时仍可能显示「消失 N 条」。
-- R-134（ACK/shutdown 超时上界）仍在 `docs/ralph-backlog.md`。
+- R-134（ACK/shutdown 超时上界）：**已完成（批次 J）**——submit 5s、shutdown 10s；hung consumer 测试覆盖。

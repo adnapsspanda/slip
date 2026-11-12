@@ -12,6 +12,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::time::Duration;
 
 use slip_domain::{Mutation, Patch, SlipId};
 use slip_store::{Store, StoreError, StoreOutcome, StoreSnapshot};
@@ -21,6 +22,25 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::presenter::Presenter;
 use crate::{Ack, AckError, AckResult, QueryError, RuntimeStatus, UiSnapshot};
+
+/// 单条命令等待应答的上界。
+///
+/// 没有上界时，消费者一旦卡在不可取消的磁盘 I/O 上，前端就永远等下去：
+/// 捕获框会一直显示"上一条还在收录"，用户只能重启。超时后返回 `unknown/timeout`，
+/// 前端**只重新拉快照确认，不重试 mutation**——命令可能已经执行。
+#[cfg(not(test))]
+const ACK_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const ACK_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// `shutdown()` 等待队列排空/应答的上界。
+///
+/// 退出不应该无限期挂着；超时后记一条 warn 并放行。原子替换已经保证主文件不会
+/// 半写，最坏只是"本次退出时正在执行的那一步结果未知"。
+#[cfg(not(test))]
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(50);
 
 /// 入队结果。`Full` 与 `Closed` 都表示**尚未执行**。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,9 +150,9 @@ impl Dispatcher {
                 return rejected(request_id, "notExecuted", "dispatcher is shut down");
             }
         }
-        match rx.await {
-            Ok(ack) => ack,
-            Err(_) => Ack {
+        match tokio::time::timeout(ACK_TIMEOUT, rx).await {
+            Ok(Ok(ack)) => ack,
+            Ok(Err(_)) => Ack {
                 request_id,
                 result: AckResult::Unknown,
                 ui_rev: None,
@@ -140,6 +160,16 @@ impl Dispatcher {
                 error: Some(AckError {
                     code: String::from("dropped"),
                     message: String::from("后台消费者已退出，未收到应答"),
+                }),
+            },
+            Err(_) => Ack {
+                request_id,
+                result: AckResult::Unknown,
+                ui_rev: None,
+                changed: false,
+                error: Some(AckError {
+                    code: String::from("timeout"),
+                    message: String::from("后台处理超时，结果未知；请重新载入确认"),
                 }),
             },
         }
@@ -223,8 +253,21 @@ impl Dispatcher {
 
     pub async fn shutdown(&self) {
         let (tx, rx) = oneshot::channel();
-        if self.tx.send(Command::Shutdown { reply: tx }).await.is_ok() {
-            let _ = rx.await;
+        match tokio::time::timeout(
+            SHUTDOWN_TIMEOUT,
+            self.tx.send(Command::Shutdown { reply: tx }),
+        )
+        .await
+        {
+            Ok(Ok(())) => {
+                if tokio::time::timeout(SHUTDOWN_TIMEOUT, rx).await.is_err() {
+                    tracing::warn!("shutdown: 消费者在超时内没有应答");
+                }
+            }
+            Ok(Err(_)) => {
+                // 消费者已经退出；没有要排空的东西。
+            }
+            Err(_) => tracing::warn!("shutdown: 队列在超时内仍满，放弃等待"),
         }
     }
 }
@@ -816,6 +859,8 @@ mod tests {
         Ok,
         Fail(StoreError),
         Panic,
+        /// 卡住 store 调用（模拟不可取消的磁盘 I/O）。
+        Hang,
     }
 
     impl MockStore {
@@ -845,6 +890,14 @@ mod tests {
             if behavior == Behavior::Panic {
                 panic!("simulated panic inside the store task ({event})");
             }
+            if behavior == Behavior::Hang {
+                if let Some(gate) = &self.gate
+                    && let Ok(rx) = gate.lock()
+                {
+                    let _ = rx.recv();
+                }
+                return StoreOutcome::ok(self.snapshot(*self.rev.lock().unwrap()));
+            }
             // 先放开 `rev` 锁再 `record`：`record` 可能阻塞在测试的 gate 上。
             let current = {
                 let mut rev = self.rev.lock().unwrap();
@@ -856,7 +909,7 @@ mod tests {
             match behavior {
                 Behavior::Ok => StoreOutcome::ok(snapshot),
                 Behavior::Fail(error) => StoreOutcome::failed(snapshot, error),
-                Behavior::Panic => unreachable!(),
+                Behavior::Panic | Behavior::Hang => unreachable!(),
             }
         }
     }
@@ -1530,6 +1583,29 @@ mod tests {
         let b = second.await.unwrap();
         assert_eq!(a.result, AckResult::Applied);
         assert_eq!(b.result, AckResult::Applied);
+        dispatcher.shutdown().await;
+    }
+
+    /// 消费者卡住时，submit 必须有上界，而不是永远挂着。
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_hung_consumer_times_out_instead_of_waiting_forever() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let (release, gate) = std::sync::mpsc::channel();
+        let dispatcher = build(log, Behavior::Hang, Some(Mutex::new(gate)), 0, 8);
+
+        // 外层再兜一个 2s：如果 submit 自己的上界被删掉，测试会**变红**而不是挂死。
+        let ack = tokio::time::timeout(
+            Duration::from_secs(2),
+            dispatcher.apply(String::from("r1"), vec![Mutation::Append(slip("a"))]),
+        )
+        .await
+        .expect("submit 必须自己超时，而不是永远挂着");
+
+        assert_eq!(ack.result, AckResult::Unknown);
+        assert_eq!(ack.error.unwrap().code, "timeout");
+
+        // 放行卡住的 store，再优雅关闭；否则 runtime 会等一个永远不结束的任务。
+        release.send(()).expect("release hung store");
         dispatcher.shutdown().await;
     }
 

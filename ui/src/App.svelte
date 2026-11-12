@@ -378,6 +378,8 @@
         return "后台未执行该操作，请重试";
       case "dropped":
         return "后台任务已退出，未收到应答；请重启 Slip";
+      case "timeout":
+        return "后台处理超时，结果未知；请先重新载入确认，不要直接重试";
       case "fatal":
         return "运行时状态异常，请重启 Slip";
       case "undo":
