@@ -3,6 +3,7 @@
 //! 这是**唯一**允许写 `inbox.md` 与 `ui-state.json` 的 crate（v11 I1）。
 //! 不依赖 `tauri`：`cargo tree -p slip-store` 不得出现 `tauri`。
 
+pub mod capacity;
 pub mod doc;
 pub mod fsops;
 pub mod prefs;
@@ -274,6 +275,15 @@ pub fn retry_delay(attempt: usize) -> std::time::Duration {
 /// 保留的备份代数（v11 §4.5）。
 const BACKUP_KEEP: usize = 5;
 
+/// 当前 unix 毫秒。单独抽出来是为了让 `prune_backups` 保持可测的纯函数形态
+/// （它只接收 `now_ms`，不自己去读时钟）。
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
 /// `doc::parse` 在 `Store` 侧的样子：要么给出整份文档，要么给出阻断原因。
 type ParseFn = fn(&[u8]) -> Result<doc::Parsed, BlockingError>;
 /// 候选构造：在文档副本上应用一批 mutation，第二个返回值表示是否真的改变。
@@ -375,7 +385,7 @@ impl MarkdownStore {
         let path = path.into();
         let mut state = startup_state(path);
         // §4.5：启动时清理一次备份。
-        if fsops::prune_backups(fsops::parent_dir(&state.path), BACKUP_KEEP).is_err() {
+        if fsops::prune_backups(fsops::parent_dir(&state.path), BACKUP_KEEP, now_ms()).is_err() {
             state.health.warnings.insert(Warning::BackupFailed);
         }
         Self {
@@ -546,8 +556,8 @@ impl Store for MarkdownStore {
 
         // 5. 备份（失败只记警告，不阻断）→ 原子替换（提交点）。
         let backup_ok = fsops::backup(&state.path).is_ok();
-        let prune_ok =
-            backup_ok && fsops::prune_backups(fsops::parent_dir(&state.path), BACKUP_KEEP).is_ok();
+        let prune_ok = backup_ok
+            && fsops::prune_backups(fsops::parent_dir(&state.path), BACKUP_KEEP, now_ms()).is_ok();
         if backup_ok && prune_ok {
             state.health.warnings.remove(&Warning::BackupFailed);
         } else {

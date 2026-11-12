@@ -10,7 +10,7 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
-use std::io::{ErrorKind, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 
 use crate::{Hash, IoKind};
@@ -316,7 +316,7 @@ pub fn restore_backup(inbox: &Path, name: &str) -> Result<(), IoKind> {
 
 /// 只识别 `*.bak-<unix_ms>[-n]` 形式的文件；按 (时间戳, 序号) 排序，
 /// 不按文件名做字典序比较（`-10` 与 `-2` 的字典序是错的）。
-pub fn prune_backups(dir: &Path, keep: usize) -> Result<(), IoKind> {
+pub fn prune_backups(dir: &Path, keep: usize, now_ms: u64) -> Result<(), IoKind> {
     let entries = fs::read_dir(dir).map_err(map_io)?;
     let mut backups: Vec<(u64, u32, PathBuf)> = Vec::new();
     for entry in entries {
@@ -335,14 +335,46 @@ pub fn prune_backups(dir: &Path, keep: usize) -> Result<(), IoKind> {
     }
 
     backups.sort_by_key(|(stamp, n, _)| (*stamp, *n));
-    let stale = backups.len() - keep;
-    for (_, _, path) in backups.into_iter().take(stale) {
-        match fs::remove_file(&path) {
-            Ok(()) => {}
+
+    // 保留策略（R105）：最近 `keep` 代 **加上** 至少一代"更早那天的最后一份"。
+    //
+    // 为什么需要后半句：只按代数保留时，一天内连点五次就会把前一天的备份全部挤掉——
+    // 而"昨天还是好的、今天才发现坏了"恰恰是最常见的损坏发现方式。
+    //
+    // 分成"天"用的是 **UTC 天**（`stamp / 86_400_000`）：备份名里是 unix 毫秒，
+    // 而时区会变（夏令时、出差改时区），按 UTC 分桶得到的边界是稳定的。
+    // 代价是最坏情况下多留一代，符合"宁可多留、不要误删"的取向。
+    const DAY_MS: u64 = 86_400_000;
+    let today = now_ms / DAY_MS;
+
+    let mut keep_paths: Vec<PathBuf> = Vec::new();
+    // 1) 最近 keep 代
+    for (_, _, path) in backups.iter().rev().take(keep) {
+        keep_paths.push(path.clone());
+    }
+    // 2) 更早那天的最后一份（若还没在保留集里）
+    let older_day_newest = backups
+        .iter()
+        .rev()
+        .find(|(stamp, _, _)| *stamp / DAY_MS < today)
+        .map(|(_, _, path)| path)
+        .filter(|path| !keep_paths.iter().any(|kept| kept == *path));
+    if let Some(path) = older_day_newest {
+        keep_paths.push(path.clone());
+    }
+
+    let mut removed = 0usize;
+    for (_, _, path) in &backups {
+        if keep_paths.iter().any(|kept| kept == path) {
+            continue;
+        }
+        match fs::remove_file(path) {
+            Ok(()) => removed += 1,
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(map_io(error)),
         }
     }
+    let _ = removed;
     Ok(())
 }
 
@@ -413,6 +445,34 @@ pub(crate) mod failpoints {
     pub(crate) fn take_pinned_now_millis() -> Option<u64> {
         PINNED_NOW.with(|slot| slot.borrow_mut().take())
     }
+}
+
+// ---------- 损坏文件预览 ----------
+
+/// 损坏文件预览的最大长度：64 KiB。
+///
+/// 取值理由：一条纸条正文上限 2 KB，64 KiB 够看到几十行上下文；同时能挡住
+/// "20 MB 的损坏文件把界面卡住"这种极端情况。截断按**字节**做，再由
+/// `from_utf8_lossy` 把断在中间的多字节序列变成替换字符——预览本来就不是解析，
+/// 允许这种损失。
+pub const CORRUPT_PREVIEW_LIMIT: usize = 64 * 1024;
+
+/// **只读**读取损坏文件的前 `CORRUPT_PREVIEW_LIMIT` 字节，转成可显示文本。
+///
+/// 允许 lossy：目的是让用户在弹窗里看见还剩下什么，而不是把它解析成文档。
+/// 非法 UTF-8 会被替换成 U+FFFD 而不是报错——报错会让用户看不到任何内容，
+/// 那恰好是这一轮要解决的问题。
+///
+/// **绝不**用来写回任何文件：`slip-store` 只通过常规写路径（临时文件 + rename）
+/// 改 `inbox.md`，这个函数连写句柄都不打开。
+pub fn read_corrupt_preview(path: &Path) -> Result<String, IoKind> {
+    let file = fs::File::open(path).map_err(map_io)?;
+    let mut buffer = Vec::with_capacity(8 * 1024);
+    // `take` 保证不会把一个超大文件整个读进内存。
+    file.take(CORRUPT_PREVIEW_LIMIT as u64)
+        .read_to_end(&mut buffer)
+        .map_err(map_io)?;
+    Ok(String::from_utf8_lossy(&buffer).into_owned())
 }
 
 #[cfg(test)]
@@ -538,7 +598,8 @@ mod tests {
         write_file(&dir.path().join("inbox.md.bak-7-2"), b"x");
         write_file(&dir.path().join("unrelated.txt"), b"x");
 
-        prune_backups(dir.path(), 5).unwrap();
+        // now_ms 取一个远大于这些 stamp 的值：它们都属于更早那天。
+        prune_backups(dir.path(), 5, 10_000_000_000).unwrap();
 
         let mut remaining: Vec<String> = fs::read_dir(dir.path())
             .unwrap()
@@ -558,12 +619,132 @@ mod tests {
         );
     }
 
+    /// R105：一天内连点五次，不能把昨天那一代挤掉。
+    #[test]
+    fn prune_backups_keeps_one_from_an_earlier_day() {
+        const DAY: u64 = 86_400_000;
+        let now = 100 * DAY;
+        let dir = temp_dir();
+
+        write_file(
+            &dir.path().join(format!("inbox.md.bak-{}", 99 * DAY + 5)),
+            b"y",
+        );
+        for i in 0..5u64 {
+            write_file(&dir.path().join(format!("inbox.md.bak-{}", now + i)), b"x");
+        }
+
+        prune_backups(dir.path(), 5, now).unwrap();
+
+        assert!(
+            dir.path()
+                .join(format!("inbox.md.bak-{}", 99 * DAY + 5))
+                .exists(),
+            "昨天那一代被挤掉了——这正是 R105 要修的问题"
+        );
+    }
+
+    /// 跨天时，被淘汰的只能是更早那天里除最后一份之外的。
+    #[test]
+    fn prune_backups_keeps_only_the_last_one_of_older_days() {
+        const DAY: u64 = 86_400_000;
+        let now = 100 * DAY;
+        let dir = temp_dir();
+
+        for (day, n) in [(98u64, 2u64), (99, 2), (100, 2)] {
+            for i in 0..n {
+                write_file(
+                    &dir.path().join(format!("inbox.md.bak-{}", day * DAY + i)),
+                    b"x",
+                );
+            }
+        }
+
+        prune_backups(dir.path(), 2, now).unwrap();
+
+        let mut remaining: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        remaining.sort();
+        assert_eq!(
+            remaining,
+            vec![
+                format!("inbox.md.bak-{}", 99 * DAY + 1),
+                format!("inbox.md.bak-{}", 100 * DAY),
+                format!("inbox.md.bak-{}", 100 * DAY + 1),
+            ]
+        );
+    }
+
+    /// 同一天内不该因为保底逻辑而多留。
+    #[test]
+    fn prune_backups_does_not_duplicate_the_fallback() {
+        const DAY: u64 = 86_400_000;
+        let now = 100 * DAY;
+        let dir = temp_dir();
+        for i in 0..3u64 {
+            write_file(&dir.path().join(format!("inbox.md.bak-{}", now + i)), b"x");
+        }
+        prune_backups(dir.path(), 2, now).unwrap();
+        let count = fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(count, 2, "同一天里保留 keep 代即可，不该多留");
+    }
+
     #[test]
     fn prune_backups_is_a_noop_when_under_limit() {
         let dir = temp_dir();
         write_file(&dir.path().join("inbox.md.bak-1"), b"x");
-        assert_eq!(prune_backups(dir.path(), 5), Ok(()));
+        assert_eq!(prune_backups(dir.path(), 5, 10_000_000_000), Ok(()));
         assert!(dir.path().join("inbox.md.bak-1").exists());
+    }
+
+    // ---------- 损坏文件预览（R106） ----------
+
+    #[test]
+    fn corrupt_preview_reads_plain_text() {
+        let dir = temp_dir();
+        let path = dir.path().join("inbox.md.corrupt-1");
+        write_file(&path, "还能看见的文字\n第二行\n".as_bytes());
+        let text = read_corrupt_preview(&path).unwrap();
+        assert_eq!(text, "还能看见的文字\n第二行\n");
+    }
+
+    #[test]
+    fn corrupt_preview_replaces_invalid_bytes_instead_of_failing() {
+        // 这条是这一轮的核心：非法 UTF-8 必须让用户**看见内容**，而不是报错。
+        let dir = temp_dir();
+        let path = dir.path().join("inbox.md.corrupt-2");
+        write_file(&path, &[0xE4, 0xBD, 0xA0, 0xFF, 0xFE, 0x0A]); // "你" + 两个非法字节 + 换行
+        let text = read_corrupt_preview(&path).unwrap();
+        assert!(text.starts_with('你'), "合法前缀该原样保留：{text:?}");
+        assert!(
+            text.contains('\u{FFFD}'),
+            "非法字节该变成替换字符：{text:?}"
+        );
+    }
+
+    #[test]
+    fn corrupt_preview_truncates_long_files() {
+        let dir = temp_dir();
+        let path = dir.path().join("inbox.md.corrupt-3");
+        let big = vec![b'a'; CORRUPT_PREVIEW_LIMIT * 2 + 17];
+        write_file(&path, &big);
+        let text = read_corrupt_preview(&path).unwrap();
+        assert_eq!(
+            text.len(),
+            CORRUPT_PREVIEW_LIMIT,
+            "预览必须按上限截断，否则大文件会把界面卡住"
+        );
+    }
+
+    #[test]
+    fn corrupt_preview_reports_not_found() {
+        let dir = temp_dir();
+        assert_eq!(
+            read_corrupt_preview(&dir.path().join("inbox.md.corrupt-nope")),
+            Err(IoKind::NotFound)
+        );
     }
 
     // ---------- 隔离 ----------

@@ -584,6 +584,71 @@ async fn isolate_and_reset(
     Ok(state.dispatcher.isolate_and_reset(request_id).await)
 }
 
+/// 归档墓碑的容量统计（R102A）。**只读**——不删任何东西。
+///
+/// 原矩阵设想的是"整文件 compact 物理清除墓碑"，那与"未修改行逐字节保留"和
+/// "禁止全文重序列化"两条不变量同时冲突，已被否决。这里只回答"能清理多少"，
+/// 具体的删除由用户在归档抽屉里**逐条**决定。
+#[tauri::command]
+fn vault_capacity(state: tauri::State<'_, ShellState>) -> Result<CapacityView, String> {
+    let path = state.vault.join("inbox.md");
+    let capacity =
+        slip_store::capacity::archived_capacity_at(&path).map_err(|error| error.to_string())?;
+    Ok(CapacityView {
+        archived: capacity.archived,
+        archived_bytes: capacity.archived_bytes,
+        total_records: capacity.total_records,
+        total_bytes: capacity.total_bytes,
+        ratio: capacity.archived_ratio(),
+    })
+}
+
+/// 容量统计的 IPC 形状。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CapacityView {
+    archived: usize,
+    archived_bytes: u64,
+    total_records: usize,
+    total_bytes: u64,
+    ratio: f64,
+}
+
+/// 读取损坏证据文件的前 64 KiB，供只读预览（R106）。
+///
+/// **安全约束**：只允许读 **vault 目录里**、文件名以 `inbox.md.corrupt-` 开头的文件。
+/// 不加这两道检查的话，这个命令就是一个可以读任意文件的洞——参数是前端传进来的字符串。
+fn guard_corrupt_path(vault: &std::path::Path, raw: &str) -> Result<std::path::PathBuf, String> {
+    let candidate = std::path::Path::new(raw);
+    let name = candidate
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "路径没有文件名".to_owned())?;
+    if !name.starts_with("inbox.md.corrupt-") {
+        return Err("只能预览 inbox.md.corrupt-* 证据文件".to_owned());
+    }
+    // 规范化后再比对父目录：挡掉 `..` 穿越与符号链接指向仓库外的情形。
+    let parent = candidate
+        .parent()
+        .ok_or_else(|| "路径没有父目录".to_owned())?;
+    let parent = parent
+        .canonicalize()
+        .map_err(|_| "父目录不存在".to_owned())?;
+    let vault = vault
+        .canonicalize()
+        .map_err(|_| "vault 目录不可用".to_owned())?;
+    if parent != vault {
+        return Err("只能预览 vault 目录下的文件".to_owned());
+    }
+    Ok(candidate.to_path_buf())
+}
+
+#[tauri::command]
+fn corrupt_preview(state: tauri::State<'_, ShellState>, path: String) -> Result<String, String> {
+    let path = guard_corrupt_path(&state.vault, &path)?;
+    slip_store::fsops::read_corrupt_preview(&path).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn vault_path(state: tauri::State<'_, ShellState>) -> String {
     state.vault.to_string_lossy().into_owned()
@@ -650,6 +715,8 @@ pub fn run() {
             reload,
             isolate_and_reset,
             vault_path,
+            vault_capacity,
+            corrupt_preview,
             corrupt_files,
             reveal_corrupt,
             open_url,

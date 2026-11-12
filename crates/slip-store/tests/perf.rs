@@ -42,6 +42,20 @@ const STARTUP_1000_LIMIT_MS: f64 = 50.0;
 /// O(n²)，或在热路径里加了一次额外全量扫描，它会立刻红。
 const STARTUP_10000_LIMIT_MS: f64 = 100.0;
 
+/// 50,000 行的启动解析上限：debug **1000 ms**、release **150 ms**（2026-11-12 裁决）。
+///
+/// 为什么比线性外推宽松：10,000 行实测 debug 约 74.5 ms，线性外推 50,000 行约 373 ms，
+/// 若把门限设成 400 ms 就只剩 7% 余量——机器一抖动就假红。**随机红灯的测试比没有测试更糟**：
+/// 人会开始习惯性忽略它。release 侧实测约 31 ms，150 ms 给约 5 倍余量。
+const STARTUP_50000_LIMIT_MS_DEBUG: f64 = 1_000.0;
+const STARTUP_50000_LIMIT_MS_RELEASE: f64 = 150.0;
+
+/// 50,000 行时的文件体积上限：6 MiB（实测约 5.5 MB）。
+///
+/// 注意这与 `SIZE_LIMIT_BYTES`（10,000 行的 4 MiB）是**两条独立的线**：
+/// 10,000 行的体积门限不该因为 50,000 行的存在而放宽。
+const SIZE_50000_LIMIT_BYTES: u64 = 6 * 1024 * 1024;
+
 /// 单条写入 p50 上限：30 ms。
 ///
 /// 实测（debug 构建、1000 条文件）约 14–15 ms，主要花在整份文件重写 + 备份 +
@@ -472,4 +486,56 @@ fn file_size_for_10000_records() {
         "平均每条 {per_record:.1} 字节，落在 [{AVG_RECORD_MIN_BYTES}, {AVG_RECORD_MAX_BYTES}] 之外"
     );
     pass("文件体积满足门限");
+}
+
+/// 50,000 行：大规模文件仍要能解析，且体积与耗时不失控（R122）。
+///
+/// 门限按**构建配置**分开：debug 1000 ms、release 150 ms。理由见常量的注释——
+/// 不要为了"看起来更快"把 debug 门限压到线性外推值，那会造出随机红灯。
+///
+/// 与文件里其它性能测试一致：`#[ignore]`，必须显式运行。
+#[ignore]
+#[test]
+fn startup_parse_survives_50k_lines() {
+    let _guard = serial();
+    println!("\n[5] 50,000 行启动解析（R122）");
+
+    const COUNT: usize = 50_000;
+    let dir = vault();
+    let path = dir.path().join("inbox.md");
+    let bytes = write_inbox(&path, &seed_lines(COUNT));
+    println!("    文件体积：{:.2} MB", bytes as f64 / (1024.0 * 1024.0));
+
+    assert!(
+        bytes < SIZE_50000_LIMIT_BYTES,
+        "50,000 行文件 {bytes} 字节，超过 {} 字节上限",
+        SIZE_50000_LIMIT_BYTES
+    );
+
+    // 与既有测试同口径：new() 含读盘与解析，snapshot() 含把记录发布给调用方。
+    let t_new = Instant::now();
+    let store = MarkdownStore::new(&path);
+    let new_ms = t_new.elapsed().as_secs_f64() * 1_000.0;
+    let t_snap = Instant::now();
+    let snapshot = store.snapshot();
+    let snap_ms = t_snap.elapsed().as_secs_f64() * 1_000.0;
+    let total_ms = new_ms + snap_ms;
+
+    assert!(
+        snapshot.health.is_writable(),
+        "50,000 行种子被判为不可写：{:?}",
+        snapshot.diagnostics
+    );
+    assert_eq!(snapshot.slips.len(), COUNT, "条数不对，解析可能中断");
+
+    let limit = if cfg!(debug_assertions) {
+        STARTUP_50000_LIMIT_MS_DEBUG
+    } else {
+        STARTUP_50000_LIMIT_MS_RELEASE
+    };
+    println!("    解析耗时：{total_ms:.1} ms（门限 {limit:.0} ms）");
+    assert!(
+        total_ms < limit,
+        "50,000 行解析 {total_ms:.1} ms 超过门限 {limit:.0} ms"
+    );
 }

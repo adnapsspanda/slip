@@ -885,7 +885,7 @@ M0 验收子集：§9.1 第 1、6 条；§9.2 中"文本往返""原字节保留"
 | `slip-store` · 验收 | 真实临时目录 + 真实文件：格式闭包、时钟回拨、元数据可见性、冲突不落字节、恢复、陈旧视图、提交点 | 12 |
 | `slip-app` | `Presenter`（合成 + `ui_rev` 全事件递增）、`Dispatcher`（单队列单消费者、`spawn_blocking`、错误映射、`Fatal`、`Full`/`Closed`/`Shutdown` drain） | 20 |
 | `slip-app` · 流水线 | 真实磁盘 + 真实 store + 真实 dispatcher：捕获落盘并回读、重启后读回、多行拆条、领域拒绝不碰文件 | 4 |
-| `src-tauri` + `ui` | 窗口外壳、**23 个 IPC 命令**、Svelte 5 前端（捕获框、列表、勾选、过滤、归档抽屉、备份面板、横幅与提示条） | — |
+| `src-tauri` + `ui` | 窗口外壳、**25 个 IPC 命令**、Svelte 5 前端（捕获框、列表、勾选、过滤、归档抽屉、备份面板、横幅与提示条） | — |
 
 **合计 241 个测试通过**（WSL 实测；另有 4 项性能测试按 `#[ignore]` 单独跑）；`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo fmt --all --check` 均干净。仓库无任何 `todo!()` / `unimplemented!()`。
 
