@@ -229,24 +229,27 @@ slip/
 ### 2.3 前端 bridge、首订阅与通知补偿
 
 ```ts
-export async function subscribeSnapshot(fn: (s: UiSnapshot) => void): Promise<() => void>;
+// 只列契约主干；完整清单见 ui/src/lib/bridge.js。
 export async function getSnapshot(): Promise<UiSnapshot>;
-export async function capture(text: string, requestId: string, draftVersion: number): Promise<Ack>;
-export async function complete(id: string): Promise<Ack>;
-export async function reloadVault(): Promise<Ack>;
-export async function isolateAndReset(): Promise<Ack>;
+export async function capture(requestId: string, text: string): Promise<Ack>;
+export async function complete(requestId: string, id: string, done: boolean): Promise<Ack>;
+export async function completeMany(requestId: string, ids: string[], done: boolean): Promise<Ack>;
+export async function edit(requestId: string, id: string, text: string): Promise<Ack>;
+export async function setLocked(requestId: string, id: string, locked: boolean): Promise<Ack>;
+export async function setPinned(requestId: string, id: string, pinned: boolean): Promise<Ack>;
+export async function archive(requestId: string, ids: string[]): Promise<Ack>;
+export async function unarchive(requestId: string, id: string): Promise<Ack>;
+export async function undo(requestId: string): Promise<Ack>;
+export async function reload(requestId: string): Promise<Ack>;
+export async function restoreBackup(requestId: string, name: string): Promise<Ack>;
+export async function isolateAndReset(requestId: string): Promise<Ack>;
+export async function purgeArchived(requestId: string, id: string): Promise<Ack>;
+export async function subscribeSummon(fn: () => void): Promise<() => void>;
 ```
 
-```ts
-let last: UiSnapshot | undefined;
-const accept = (s: UiSnapshot) => {
-  if (!last || s.ui_rev > last.ui_rev) { last = s; render(s); }
-};
-const unlisten = await subscribeSnapshot(accept);   // ① 订阅必须等待实际建立
-accept(await getSnapshot());                        // ② 再取首个全量
-```
-
-事件与查询共用 `accept`，旧查询结果不能覆盖新事件。
+**当前没有快照推送**：外壳的 `Dispatcher::spawn` 用 `NoopSink`，前端在每次命令后
+`getSnapshot()` 全量拉取，并用 `ui_rev` 单调比较接纳。将来若接入推送，仍必须遵循
+"旧查询结果不能覆盖新事件"这一条。
 
 **通知补偿**：最终 ACK 携带本次处理生成的 `ui_rev`。前端若尚未接纳该版本，则补一次 `getSnapshot`，经同一个 `accept` 接纳。补偿**只读快照，绝不重试 mutation**。补偿失败时保留当前界面与草稿，显示可再次同步的提示——**此时输入不得清空**（§6.5）。
 
@@ -328,6 +331,8 @@ pub trait Store: Send + Sync {
 pub enum StoreError {
     Conflict { current_hash: Hash }, NeedsReload, ReadOnly,
     Domain(DomainError), Blocking(BlockingError), Io(IoKind), NotDegraded,
+    BackupInvalid,   // 备份本身无法解析；当前 inbox.md 一个字节都没动
+    NotArchived,     // 目标存在但不是有效归档（done && archived_at）
 }
 ```
 
@@ -575,14 +580,17 @@ pub enum RuntimeStatus { Running, Fatal { reason: String } }
 
 ```rust
 enum Command {
-    Capture { request_id: RequestId, raw: String, draft_version: u64, ack: oneshot::Sender<Ack> },
-    Complete { request_id: RequestId, id: SlipId, ack: oneshot::Sender<Ack> },
-    Reload { request_id: RequestId, ack: oneshot::Sender<Ack> },
-    IsolateAndReset { request_id: RequestId, ack: oneshot::Sender<Ack> },
+    Apply { request_id: String, mutations: Vec<Mutation>, reply: oneshot::Sender<Ack> },
+    Undo { request_id: String, reply: oneshot::Sender<Ack> },
+    RestoreBackup { request_id: String, name: String, reply: oneshot::Sender<Ack> },
+    Reload { request_id: String, reply: oneshot::Sender<Ack> },
+    IsolateAndReset { request_id: String, reply: oneshot::Sender<Ack> },
+    PurgeArchived { request_id: String, id: SlipId, reply: oneshot::Sender<Ack> },
     GetSnapshot { reply: oneshot::Sender<Result<UiSnapshot, QueryError>> },  // 可承载查询错误
     Shutdown { reply: oneshot::Sender<()> },
 }
 // 修订 15：ViewEvent 四变体与 FlushPrefs 已整体删除。
+// 捕获/勾选/编辑/归档等都在外壳层组装成 Apply，复用同一条写入与撤销路径。
 ```
 
 app 只有一个消费者拥有 `presenter`。所有同步磁盘调用均 `spawn_blocking` 并等待结果；正常 store 结果依次执行"调用 → accept → 尝试发布 → 应答"，**不能把发布另开一个乱序任务**。
@@ -663,6 +671,7 @@ type Ack = {
   requestId: string;
   result: "applied" | "rejected" | "conflict" | "needsReload" | "unknown";
   ui_rev?: number;   // 已生成可信 UI 状态时提供；传输失败可能没有
+  changed: boolean;  // 是否真的推进 content_rev；Noop 也是 applied，但 changed=false
   error?: { code: string; message: string };
 };
 ```
@@ -679,8 +688,12 @@ type Ack = {
 | `Blocking` | `rejected` | `blocking` |
 | `Io` | `rejected` | `io` |
 | `NotDegraded` | `rejected` | `notDegraded` |
+| `BackupInvalid` | `rejected` | `invalidBackup` |
+| `NotArchived` | `rejected` | `notArchived` |
+| 撤销栈为空 | `rejected` | `undo` |
 | 队列 `Full` | `rejected` | `busy` |
 | 队列 `Closed` / Fatal | `rejected` | `notExecuted` |
+| 应答通道被丢弃 | `unknown` | `dropped` |
 | `JoinError`/panic | `unknown` | `fatal` |
 
 `requestId` 由前端传入（capture）或由 bridge 生成（其他命令）；仅关联应答，**不去重、不落盘**。`draftVersion` 是输入每次编辑的计数，留在请求关联信息中，不进入领域内容。
@@ -959,15 +972,13 @@ M0 验收子集：§9.1 第 1、6 条；§9.2 中"文本往返""原字节保留"
 
 | crate | 内容 | 测试 |
 |---|---|---|
-| `slip-domain` | `normalize_text`、`validate_slip`/`validate_time` 格式闭包、`apply_patch` 状态转换、`split_drafts` 拆条、`SlipId` 严格解析 | 51 |
-| `slip-store` · `doc` | `parse`/`render`/`apply`/`verify_roundtrip`；3 种终止符、BOM、转义、未知 kv 保序、`extra=a;b` 唯一结果 `BadKeyValue` | 37（含在 80 内） |
-| `slip-store` · 事务 | `MarkdownStore`：锁覆盖全事务、候选校验、BLAKE3 hash、备份、`sync_all`、提交点、`Conflict`、两态 health、恢复矩阵 A/B + `Isolated` 死锁出口、偏好原子替换 | 80 |
-| `slip-store` · 验收 | 真实临时目录 + 真实文件：格式闭包、时钟回拨、元数据可见性、冲突不落字节、恢复、陈旧视图、提交点 | 12 |
-| `slip-app` | `Presenter`（合成 + `ui_rev` 全事件递增）、`Dispatcher`（单队列单消费者、`spawn_blocking`、错误映射、`Fatal`、`Full`/`Closed`/`Shutdown` drain） | 20 |
-| `slip-app` · 流水线 | 真实磁盘 + 真实 store + 真实 dispatcher：捕获落盘并回读、重启后读回、多行拆条、领域拒绝不碰文件 | 4 |
+| `slip-domain` | 文本规范化、状态转换、拆条、`SlipId` 严格解析、前端契约 | 80 |
+| `slip-store` | 解析/渲染/局部替换、事务层、恢复矩阵、真实文件验收、格式闭包 | 163 |
+| `slip-app` | Presenter / Dispatcher / 队列 / 前端生命周期结构守卫 / 流水线 | 85 |
+| `slip-shell` | 窗口外壳、热键三态、guard、启动降级等 lib 单测 | 40 |
 | `src-tauri` + `ui` | 窗口外壳、**26 个 IPC 命令**、Svelte 5 前端（捕获框、列表、勾选、过滤、归档抽屉、备份面板、横幅与提示条） | — |
 
-**合计 241 个测试通过**（WSL 实测；另有 4 项性能测试按 `#[ignore]` 单独跑）；`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo fmt --all --check` 均干净。仓库无任何 `todo!()` / `unimplemented!()`。
+**合计 368 个测试通过**（逻辑层 328 + 外壳 40，WSL 实测；另有 7 项性能测试按 `#[ignore]` 单独跑）；`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo fmt --all --check` 均干净。仓库无任何 `todo!()` / `unimplemented!()`。
 
 M0 验收子集（§9.1 第 1、6 条；§9.2 的文本往返、原字节保留、追加、文法、事务、提交点、冲突）**已由 `crates/slip-store/tests/acceptance.rs` 覆盖**，且刻意不使用 mock——验证的就是"磁盘上到底发生了什么"。
 

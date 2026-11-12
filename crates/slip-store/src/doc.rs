@@ -176,7 +176,9 @@ pub fn parse(bytes: &[u8]) -> Parsed {
         let content_end = i;
         let raw_end = i + term_len;
         let line_no = lines.len() + 1;
-        let mut line = build_parsed_line(
+        // `build_parsed_line` 已经把整行（含终止符）复制进 `Line::raw`；
+        // 这里再 `copy_from_slice` 一遍是纯冗余（50k 行多复制约 5MB）。
+        let line = build_parsed_line(
             &body[start..raw_end],
             content_end - start,
             terminator,
@@ -184,7 +186,6 @@ pub fn parse(bytes: &[u8]) -> Parsed {
             &mut records,
             &mut problems,
         );
-        line.raw.copy_from_slice(&body[start..raw_end]);
         if preferred_terminator.is_none() {
             preferred_terminator = Some(terminator);
         }
@@ -196,7 +197,7 @@ pub fn parse(bytes: &[u8]) -> Parsed {
 
     if start < body.len() {
         let line_no = lines.len() + 1;
-        let mut line = build_parsed_line(
+        let line = build_parsed_line(
             &body[start..],
             body.len() - start,
             Terminator::None,
@@ -204,7 +205,6 @@ pub fn parse(bytes: &[u8]) -> Parsed {
             &mut records,
             &mut problems,
         );
-        line.raw.copy_from_slice(&body[start..]);
         lines.push(line);
     }
 

@@ -139,7 +139,7 @@ impl Dispatcher {
                 changed: false,
                 error: Some(AckError {
                     code: String::from("dropped"),
-                    message: String::from("consumer dropped the reply"),
+                    message: String::from("后台消费者已退出，未收到应答"),
                 }),
             },
         }

@@ -384,6 +384,8 @@
         return "操作过于频繁，请稍后再试";
       case "notExecuted":
         return "后台未执行该操作，请重试";
+      case "dropped":
+        return "后台任务已退出，未收到应答；请重启 Slip";
       case "fatal":
         return "运行时状态异常，请重启 Slip";
       case "undo":

@@ -9,7 +9,7 @@
 cargo test -p slip-store --test perf --locked -- --ignored --nocapture
 ```
 
-这 4 项**默认不跑**（`#[ignore]`），因为它们会把临时目录写满、耗时以秒计。
+这些项（store 6 + app 1）**默认不跑**（`#[ignore]`），因为它们会把临时目录写满、耗时以秒计。
 门禁只跑功能测试，性能靠这条命令单独看。
 
 ## release 基线（2026-11-12，WSL / Arch，`--release`）
@@ -18,13 +18,13 @@ cargo test -p slip-store --test perf --locked -- --ignored --nocapture
 
 | 项 | 1000 行 | 10000 行 |
 |---|---|---|
-| `new()` | 0.50 ms | **6.10 ms** |
+| `new()` | 0.48 ms | **5.62 ms** |
 | `snapshot()` | 0.03 ms | 0.27 ms |
-| 合计 | 0.53 ms | **6.37 ms** |
+| 合计 | 0.51 ms | **5.89 ms** |
 
-文件体积：10,000 行 = **1074 KB**（上限 4 MiB）。勾选延迟：p50 9.06 ms / p95 10.04 ms / max 10.93 ms。
+文件体积：10,000 行 = **1074 KB**（上限 4 MiB）。勾选（1000 行，release）：p50 0.73 ms / p95 1.10 ms / max 1.65 ms。
 
-**结论：6.37 ms 对 100 ms，有约 16 倍余量。**
+**结论：5.89 ms 对 100 ms，有约 17 倍余量。**
 
 ### 门限为什么从 2000 ms 收紧到 100 ms
 
@@ -37,6 +37,17 @@ cargo test -p slip-store --test perf --locked -- --ignored --nocapture
 
 **这条断言确实会红**（验证过）：把门限临时压到 1 ms，测试立刻失败并打印
 "10000 行启动解析耗时 5.48 ms，超过门限 1 ms；解析路径很可能退化成了非线性"。
+
+## 2026-11-12 release 补充测量
+
+| 项 | 规模 | 结果 |
+|---|---|---|
+| 单条追加 | 10,000 行之上连续 20 次 | p50 **7.67 ms** / p95 8.29 ms / max 10.14 ms |
+| 快照序列化 | 10,000 条 `UiSnapshot` | **2,214,501 字节（2.11 MiB）**，release 序列化 1.36 ms |
+
+快照是每次命令后前端 `getSnapshot` 的固定成本；Bun 侧 `JSON.parse` 约 4.3 ms（审查实测），
+还没算 IPC 与 10k DOM 更新。1,000 条以内可忽略；10,000 条如果要进一步优化，先加端到端测量，
+再考虑增量快照——不要在没有数字的情况下改协议。
 
 ## 实测结果
 
@@ -56,7 +67,7 @@ cargo test -p slip-store --test perf --locked -- --ignored --nocapture
 
 门限同上 → **通过**
 
-### 启动解析（文件已存在时构造 store 并取快照）
+### 启动解析（2026-11-11 debug，历史数据）
 
 | 行数 | 字节 | new() | snapshot | 合计 | 门限 |
 |---|---|---|---|---|---|

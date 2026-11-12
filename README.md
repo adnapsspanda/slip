@@ -134,7 +134,7 @@ cargo build -p slip-shell
 - 想手写新增一条，得带上 `<!-- slip:v1;id=<uuid>;created=<RFC3339> -->`。
   这是当前版本的已知不便，见下方限制。
 
-偏好（顺序、折叠、热键）存在同目录的 `ui-state.json`。**删了丢了不影响 `inbox.md`
+偏好（当前只有热键）存在同目录的 `ui-state.json`。**删了丢了不影响 `inbox.md`
 里的任何内容**——但自定义的热键会随之丢失、回到默认的 `ctrl+alt+space`。文件损坏时
 按同一语义处理：回默认值，不阻塞内容读取。
 

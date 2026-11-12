@@ -609,3 +609,29 @@ vault 内的符号链接/硬链接可让「只读证据」读到 vault 外的文
 
 **尚未验证**（环境限制，必须人工）：外壳的托盘/热键真实行为、透明窗口与窗口定位、
 端到端 `verify-hotkey.ps1`。本机是 WSL，没有交互式 Windows 桌面会话。
+
+### 11.6 第二轮优化（A–E）：门禁残余假绿与 P1/P2 修复
+
+本轮由主代理执行（派出的 3 个子代理因中转 API 402 中断，未留下改动）。批次与证据：
+
+| 批次 | 修复 | 关键证据 |
+|---|---|---|
+| A 门禁 | `Mask-Comments` 识别字符串/转义，URL 里的 `//` 不再吞掉同行业务代码；索引枚举失败/为空/缺 `Cargo.toml` 直接失败；`skipDirs` 按目录名（`target/` 顶层不再被扫）；`check-ci-parity` 覆盖 13 个关口、拒绝 `\|\| true`/`continue-on-error`、增加必需关口全集；预算断言覆盖 `tags.js` 与脚本自身头部；体积门禁汇总全部 chunk；变异审计字节恢复并接入 Linux CI；`check-ui-logic` 深比较；`build.rs` 产物新鲜度 | URL 探针从「全部通过」变「[禁止]」；`target/_probe.rs` 不再误报；删 bundle 命令/加 `\|\| true`/两侧同删关口三类破坏均 exit 1；tags.js 与脚本头部改 70 均 exit 1；10k 快照 2.11 MiB |
+| B 存储 | `restore_backup` 用预检 `Accepted` 直接 `accept`，提交点后不再 reload；purge/apply 先 prune 再 backup；purge 重算换行元数据；未知 ID→`NeedsReload`、新增 `NotArchived`；`write_atomic` 对 `Busy` 退避重试；`Ack.changed` 暴露 Noop | 7 条新测试；prune 顺序、换行重算、错误变体、Busy 重试、Noop 各自变异均红 |
+| C 前端 | 双击输入框不重置草稿；`commitEdit` 共享在途 Promise；`summon()` 清 `armed`/`preview`/`backups`/`pendingToggleCounts`；归档空态仍有出口；第三击按 id 计数；Noop 不挂撤销；所有内容变更走串行队列；热键横幅在 focus/summon 重取；预览 Tab 焦点环 | 6 条变异均红；生命周期断言 15 条 |
+| D 外壳 | 关窗 `prevent_close + hide`；热键候选 备选→旧键→默认；`show` 与 `capture` 语义分开；`external_diff`/`export_markdown`/`corrupt_*` 下放阻塞线程；guard 先词法判断；子进程 `wait()` 回收；显式 `tokio/time` | 候选顺序变异红；40 条外壳 lib 测试 |
+| E 契约/性能 | 设计文档 Command/StoreError/ACK/bridge 更新；`dropped` 中文 + 前端 case；删除 parse 每行二次拷贝；新增 10k 追加与快照序列化基准；README/handover/backlog/测试计数同步 | 10k 追加 p50 7.67 ms；快照 2.11 MiB / 1.36 ms（release） |
+
+最终实测：逻辑层 **328 passed**、外壳 **40 passed**、clippy/fmt 干净、前端 85 KB / 88 KB、
+六条 PowerShell 门禁 exit 0、变异审计 **11/11** 变红。
+
+**仍未验证**（环境限制）：托盘/热键真实行为、Alt+F4 收窗、透明窗口与定位、端到端
+`verify-hotkey.ps1`。这些需要交互式 Windows 桌面，本机是 WSL。
+
+**明确未做**（记录为欠账，不是遗忘）：
+- `capabilities/default.json` 收窄为 `core:event` + `start-dragging`：逻辑上可行，但无 GUI
+  验证，改错会让应用启动后无法交互；留待真机确认。
+- `PaperViewSet` 死抽象清理：涉及 presenter 与外壳构造，收益低于风险，留待下次改 presenter。
+- 三处展示优先级统一为 `resolveUiState`：当前三份实现一致，属于可读性优化。
+- `peek_slips` 的解析问题没有传给 `external_diff`：外部改坏一条时仍可能显示「消失 N 条」。
+- R-134（ACK/shutdown 超时上界）仍在 `docs/ralph-backlog.md`。

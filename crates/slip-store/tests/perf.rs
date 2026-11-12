@@ -377,6 +377,41 @@ fn append_latency_on_1000_line_inbox() {
 /// （同一个方向连点两次会被判为 Noop，不写盘，测出来的就不是写延迟了）。
 #[test]
 #[ignore = "性能测量，需要 --ignored --nocapture"]
+fn append_latency_on_10000_line_inbox() {
+    let _guard = serial();
+    banner();
+    let dir = vault();
+    let path = dir.path().join("inbox.md");
+    write_inbox(&path, &seed_lines(10_000));
+
+    let store = MarkdownStore::new(&path);
+    assert_eq!(store.snapshot().slips.len(), 10_000, "种子文件必须可解析");
+
+    let mut samples = Vec::with_capacity(20);
+    for index in 0..20 {
+        let slip = new_slip(&format!("追加 {index:03}"));
+        let start = Instant::now();
+        let outcome = store.apply(&[Mutation::Append(slip)]);
+        push_micros(&mut samples, start.elapsed());
+        assert!(
+            outcome.is_applied(),
+            "第 {index} 次 append 未提交：{:?}",
+            outcome.result
+        );
+    }
+
+    let (p50, p95, max) = report_latency(
+        "[2b] 单条追加：10000 条之上连续 20 次 apply(Append)",
+        samples,
+    );
+    // 10k 每次要重写约 1.1 MB + 备份 + fsync；门限只抓灾难性退化。
+    assert!(p50 < 200_000.0, "10k 追加 p50 超过 200ms：{p50}µs");
+    assert!(p95 < 500_000.0, "10k 追加 p95 超过 500ms：{p95}µs");
+    assert!(max < 2_000_000.0, "10k 追加 max 超过 2s：{max}µs");
+}
+
+#[test]
+#[ignore = "性能测量，需要 --ignored --nocapture"]
 fn toggle_done_latency_on_1000_line_inbox() {
     let _guard = serial();
     banner();
