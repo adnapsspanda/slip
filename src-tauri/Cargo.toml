@@ -31,3 +31,7 @@ tauri-plugin-single-instance = "2"
 [features]
 # 默认不带 devtools；需要时用 `--features devtools`。
 devtools = ["tauri/devtools"]
+
+[dev-dependencies]
+# 外壳的启动/偏好测试要真实临时目录（与 slip-store 一致）；lock 里已有，不新增依赖。
+tempfile.workspace = true

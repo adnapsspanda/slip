@@ -147,12 +147,28 @@ pub fn sync_dir(dir: &Path) -> Result<(), IoKind> {
 ///
 /// 重名递增 `-2`/`-3`，以 `create_new` 语义创建，**绝不覆盖**已有备份。
 pub fn backup(path: &Path) -> Result<PathBuf, IoKind> {
+    // 故障注入先于读盘：语义是"这次备份失败"，不该因为源文件恰好不存在
+    // 就退化成 NotFound（那样注入点会被悄悄消费却不生效）。
     #[cfg(test)]
     if failpoints::take_backup_failure() {
         return Err(IoKind::Other);
     }
 
     let bytes = read_bytes(path)?;
+    backup_bytes(path, &bytes)
+}
+
+/// 用调用方**已经读到**的字节生成备份，不再读一次盘。
+///
+/// 存在两个入口是有意的：常规写入在冲突检测时已经读过整份文件，恢复路径则需要
+/// 备份"我此刻读到的 current"。若这里再读一次，两者之间文件被外部改动，备份内容
+/// 就会与调用方据以决策的内容不一致。
+pub fn backup_bytes(path: &Path, bytes: &[u8]) -> Result<PathBuf, IoKind> {
+    #[cfg(test)]
+    if failpoints::take_backup_failure() {
+        return Err(IoKind::Other);
+    }
+
     let dir = parent_dir(path);
     let base = path.file_name().ok_or(IoKind::Other)?;
     let stamp = now_millis();
@@ -165,7 +181,7 @@ pub fn backup(path: &Path) -> Result<PathBuf, IoKind> {
             .open(&candidate)
         {
             Ok(mut file) => {
-                if let Err(error) = file.write_all(&bytes) {
+                if let Err(error) = file.write_all(bytes) {
                     drop(file);
                     // 半成品不算证据，清掉；清不掉也不影响主流程。
                     let _ = fs::remove_file(&candidate);
@@ -309,12 +325,15 @@ pub fn list_backups(dir: &Path) -> Vec<BackupInfo> {
     found
 }
 
-/// 用指定备份覆盖 `inbox`。
+/// 读出指定备份的字节，**不做任何写入**。
 ///
 /// **只接受本目录下真实存在的备份名**：名字里的 `/`、`\`、`..` 一律拒绝，
 /// 且必须能被 [`parse_backup_name`] 认出来——否则这就是一个"用任意路径覆盖 inbox"
 /// 的接口。
-pub fn restore_backup(inbox: &Path, name: &str) -> Result<(), IoKind> {
+///
+/// 单独抽出来是为了让调用方在**碰当前文件之前**先校验候选内容：先备份、后校验
+/// 等于给一个注定被拒绝的恢复白烧一代备份，且 inbox 缺失时连备份都做不了。
+pub fn read_backup(inbox: &Path, name: &str) -> Result<Vec<u8>, IoKind> {
     if name.contains('/') || name.contains('\\') || name.contains("..") {
         return Err(IoKind::PermissionDenied);
     }
@@ -322,7 +341,14 @@ pub fn restore_backup(inbox: &Path, name: &str) -> Result<(), IoKind> {
         return Err(IoKind::NotFound);
     }
     let source = parent_dir(inbox).join(name);
-    let bytes = read_bytes(&source)?;
+    read_bytes(&source)
+}
+
+/// 用指定备份覆盖 `inbox`。
+///
+/// 名字规则与读取一致，见 [`read_backup`]。
+pub fn restore_backup(inbox: &Path, name: &str) -> Result<(), IoKind> {
+    let bytes = read_backup(inbox, name)?;
     write_atomic(inbox, &bytes)
 }
 

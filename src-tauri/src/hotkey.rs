@@ -100,13 +100,47 @@ fn bind(handle: &AppHandle, shortcut: Shortcut) -> Result<(), String> {
 /// 选 `Win+Alt+S`：`S` 取自 Slip，且 Win+Alt 组合极少被普通应用注册。
 pub const FALLBACK_SHORTCUT: &str = "super+alt+s";
 
-/// 把当前热键换成 [`FALLBACK_SHORTCUT`]，成功返回新键文本。
+/// 一次"换备选键"尝试的三种结局。
+///
+/// 为什么不是 `Result<String, String>`：失败与"没换成但旧键还在"是两件不同的事。
+/// 用 `Err` 表达后者会让调用方分不清"该不该把界面上的热键置空"，
+/// 于是出现"提示说失败、界面仍显示旧键可用"——这正是要修的骗人状态。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FallbackOutcome {
+    /// 备选键注册成功；携带真正生效的键文本。
+    Switched(String),
+    /// 备选键注册失败，但旧键已重新注册；携带旧键文本。
+    RestoredOld(String),
+    /// 备选键与旧键都注册失败：此刻**没有**任何全局热键。
+    NoneRegistered,
+}
+
+/// 这次尝试之后，托管状态里应当写的键。
+///
+/// 纯函数，三态到"有没有热键"的映射只能在这里定义一次：
+/// 调用方直接拿返回值写状态，没有机会"只更新成功分支、失败分支留着旧值"。
+/// `None` 表示必须置空——界面宁可显示"未注册"，也不能显示一个按不响的键。
+pub fn next_hotkey(outcome: &FallbackOutcome, current: &str) -> Option<String> {
+    match outcome {
+        FallbackOutcome::Switched(key) => Some(key.clone()),
+        // 旧键被重新注册，状态与切换前一致。
+        FallbackOutcome::RestoredOld(_) => Some(current.to_owned()),
+        FallbackOutcome::NoneRegistered => None,
+    }
+}
+
+/// 把当前热键换成 [`FALLBACK_SHORTCUT`]。
 ///
 /// 三条纪律：
 /// - **先解析再注销**：新键写错时旧键还没被动过，不会出现"换失败且原来也没了"；
-/// - 失败**尽力恢复**旧键，恢复也失败就如实报错，不假称成功；
-/// - **不写偏好**：这是"本次运行先能按"，配置真源仍由用户在别处决定。
-pub fn switch_to_fallback(handle: &AppHandle, current: &str) -> Result<String, String> {
+/// - 失败**尽力恢复**旧键；恢复也失败就返回 [`FallbackOutcome::NoneRegistered`]，
+///   不假称成功、也不假装旧键还在；
+/// - **不在这里写偏好**：落盘是外壳的职责（`system::persist_hotkey`），
+///   且只有 [`FallbackOutcome::Switched`] 才写——本模块不认识 vault 路径。
+///
+/// 解析备选键或注销旧键失败仍是 `Err`：前者没动过注册，后者连"重来"的起点都没有，
+/// 两者都不该被当成一次有效的切换尝试。
+pub fn switch_to_fallback(handle: &AppHandle, current: &str) -> Result<FallbackOutcome, String> {
     let fallback: Shortcut = FALLBACK_SHORTCUT
         .parse()
         .map_err(|error| format!("备选热键无法解析：{error}"))?;
@@ -118,21 +152,21 @@ pub fn switch_to_fallback(handle: &AppHandle, current: &str) -> Result<String, S
 
     if let Err(error) = bind(handle, fallback) {
         tracing::warn!("备选热键注册失败，尝试恢复原键：{error}");
-        // 只解析得出旧键才谈得上恢复；解析不出就如实说"现在没有热键"。
-        let previous = current.parse::<Shortcut>().ok();
-        if let Some(previous) = previous {
-            if let Err(restore) = bind(handle, previous) {
-                return Err(format!(
-                    "备选热键注册失败（{error}），原热键也无法恢复（{restore}）"
-                ));
+        // 旧键文本解析不出来就无从恢复——此刻确实没有热键，如实返回三态。
+        let Ok(previous) = current.parse::<Shortcut>() else {
+            return Ok(FallbackOutcome::NoneRegistered);
+        };
+        return match bind(handle, previous) {
+            Ok(()) => Ok(FallbackOutcome::RestoredOld(current.to_owned())),
+            Err(restore) => {
+                tracing::warn!("原热键也无法恢复：{restore}");
+                Ok(FallbackOutcome::NoneRegistered)
             }
-            return Err(format!("备选热键注册失败（{error}），已恢复原热键"));
-        }
-        return Err(format!("备选热键注册失败：{error}"));
+        };
     }
 
     tracing::info!("hotkey switched to {FALLBACK_SHORTCUT}");
-    Ok(FALLBACK_SHORTCUT.to_owned())
+    Ok(FallbackOutcome::Switched(FALLBACK_SHORTCUT.to_owned()))
 }
 
 /// 失焦即收走。
@@ -376,6 +410,43 @@ mod tests {
     fn an_oversized_window_falls_back_to_the_inner_corner() {
         let moved = clamp_with_work_area_margin(area(), (1200, 900), (500, 400), WORK_AREA_MARGIN);
         assert_eq!(moved, (WORK_AREA_MARGIN, WORK_AREA_MARGIN));
+    }
+
+    // -------------------------------------------------- R116 回落三态到热键文本
+
+    use super::{FallbackOutcome, next_hotkey};
+
+    /// 成功换键：状态里必须写成**新键**，否则托盘继续显示旧键。
+    #[test]
+    fn switched_outcome_writes_the_new_key() {
+        let outcome = FallbackOutcome::Switched(String::from("super+alt+s"));
+        assert_eq!(
+            next_hotkey(&outcome, "ctrl+alt+space"),
+            Some(String::from("super+alt+s"))
+        );
+    }
+
+    /// 备选失败但旧键恢复：状态保持为旧键，界面不该说"没热键"。
+    #[test]
+    fn restored_outcome_keeps_the_old_key() {
+        let outcome = FallbackOutcome::RestoredOld(String::from("ctrl+alt+space"));
+        assert_eq!(
+            next_hotkey(&outcome, "已被改过的旧值"),
+            Some(String::from("已被改过的旧值")),
+            "以当前状态为准：恢复的是它自己，不是 outcome 里抄来的副本"
+        );
+    }
+
+    /// 两个键都没注册上：状态必须置空，让 tooltip 与 `hotkey_status` 如实显示未注册。
+    ///
+    /// 这条是"界面不再骗人"的核心判定；若这里改回 `Some(current)`，
+    /// 界面会继续展示一个按不响的热键。
+    #[test]
+    fn none_registered_outcome_clears_the_key() {
+        assert_eq!(
+            next_hotkey(&FallbackOutcome::NoneRegistered, "ctrl+alt+space"),
+            None
+        );
     }
 
     /// 负坐标副屏（副屏在主屏左侧时很常见）同样要留边。

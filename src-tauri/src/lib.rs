@@ -417,9 +417,22 @@ async fn external_diff(state: tauri::State<'_, ShellState>) -> Result<system::Di
 }
 
 /// 列出 vault 里的备份（新的在前）。只给名字、大小与时间，不给完整路径。
+///
+/// 为什么是 `async` + `spawn_blocking`：这个命令要对**每一份**备份完整解析一遍
+/// （`list_backups` 里逐份 `doc::parse`）。备份可能有十几代，同步命令会把这些
+/// I/O 与解析全部压在主线程上，窗口正好在这时候卡住。vault 路径先克隆出来，
+/// 闭包里不再碰 Tauri 托管的 `State`。
+/// 返回 `Result` 而不是裸 `Vec`：`spawn_blocking` 的任务可能 panic 或被取消，
+/// 那时"空列表"与"真的没有备份"无法区分——界面会显示一份虚假的"没有备份"。
+/// 拒绝则走前端的错误分支，至少提示里说得清是"读取失败"。
 #[tauri::command]
-fn backup_list(state: tauri::State<'_, ShellState>) -> Vec<BackupRow> {
-    slip_store::fsops::list_backups(&state.vault)
+async fn backup_list(state: tauri::State<'_, ShellState>) -> Result<Vec<BackupRow>, String> {
+    let vault = state.vault.clone();
+    let list =
+        tauri::async_runtime::spawn_blocking(move || slip_store::fsops::list_backups(&vault))
+            .await
+            .map_err(|error| format!("读取备份列表被中断：{error}"))?;
+    Ok(list
         .into_iter()
         .map(|info| BackupRow {
             name: info.name,
@@ -428,7 +441,7 @@ fn backup_list(state: tauri::State<'_, ShellState>) -> Vec<BackupRow> {
             slips: info.slips,
             preview: info.preview,
         })
-        .collect()
+        .collect())
 }
 
 #[derive(serde::Serialize)]
@@ -610,17 +623,23 @@ async fn purge_archived(
 /// "禁止全文重序列化"两条不变量同时冲突，已被否决。这里只回答"能清理多少"，
 /// 具体的删除由用户在归档抽屉里**逐条**决定。
 #[tauri::command]
-fn vault_capacity(state: tauri::State<'_, ShellState>) -> Result<CapacityView, String> {
+async fn vault_capacity(state: tauri::State<'_, ShellState>) -> Result<CapacityView, String> {
+    // 这个统计要读**整个** `inbox.md` 再解析，是这一组只读命令里最重的一条；
+    // 同步执行会把主线程卡在读盘上。路径先取出来，闭包里只用普通 `PathBuf`。
     let path = state.vault.join("inbox.md");
-    let capacity =
-        slip_store::capacity::archived_capacity_at(&path).map_err(|error| error.to_string())?;
-    Ok(CapacityView {
-        archived: capacity.archived,
-        archived_bytes: capacity.archived_bytes,
-        total_records: capacity.total_records,
-        total_bytes: capacity.total_bytes,
-        ratio: capacity.archived_ratio(),
+    tauri::async_runtime::spawn_blocking(move || {
+        slip_store::capacity::archived_capacity_at(&path)
+            .map(|capacity| CapacityView {
+                archived: capacity.archived,
+                archived_bytes: capacity.archived_bytes,
+                total_records: capacity.total_records,
+                total_bytes: capacity.total_bytes,
+                ratio: capacity.archived_ratio(),
+            })
+            .map_err(|error| error.to_string())
     })
+    .await
+    .map_err(|error| format!("容量统计被中断：{error}"))?
 }
 
 /// 容量统计的 IPC 形状。
@@ -647,20 +666,41 @@ fn guard_corrupt_path(vault: &std::path::Path, raw: &str) -> Result<std::path::P
     if !name.starts_with("inbox.md.corrupt-") {
         return Err("只能预览 inbox.md.corrupt-* 证据文件".to_owned());
     }
-    // 规范化后再比对父目录：挡掉 `..` 穿越与符号链接指向仓库外的情形。
-    let parent = candidate
-        .parent()
-        .ok_or_else(|| "路径没有父目录".to_owned())?;
-    let parent = parent
-        .canonicalize()
-        .map_err(|_| "父目录不存在".to_owned())?;
+    // 先规范化**最终路径**，再比对它的父目录。
+    //
+    // 只 canonicalize 父目录是不够的：`vault/inbox.md.corrupt-x` 可以是一个指向
+    // vault 外部的符号链接，父目录检查照样通过，随后 `read_corrupt_preview`
+    // 就把任意文件的内容读进 webview 了。解析到真实文件之后再看它到底在哪。
+    let resolved = candidate.canonicalize().map_err(|error| {
+        // 不存在的文件无法规范化；这是最常见的失败（备份已被清理、名字拼错），
+        // 必须给出可分辨的说法，而不是把系统错误裸露给前端。
+        if error.kind() == std::io::ErrorKind::NotFound {
+            String::from("证据文件不存在")
+        } else {
+            format!("无法解析证据文件路径：{error}")
+        }
+    })?;
     let vault = vault
         .canonicalize()
         .map_err(|_| "vault 目录不可用".to_owned())?;
-    if parent != vault {
+    if resolved.parent() != Some(vault.as_path()) {
         return Err("只能预览 vault 目录下的文件".to_owned());
     }
-    Ok(candidate.to_path_buf())
+    // 目录也能通过父目录比对（名字恰好以 `inbox.md.corrupt-` 开头），
+    // 但读目录会得到一个与内容无关的 IO 错误。先说清楚它不是文件。
+    if !resolved.is_file() {
+        return Err("证据路径不是普通文件".to_owned());
+    }
+    // 符号链接可以在 vault 内换目标：`inbox.md.corrupt-1 -> inbox.md` 的父目录
+    // 检查一样通过。契约是"只预览证据文件"，所以真实文件名也必须带前缀。
+    let resolved_name = resolved
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "路径没有文件名".to_owned())?;
+    if !resolved_name.starts_with("inbox.md.corrupt-") {
+        return Err("只能预览 inbox.md.corrupt-* 证据文件".to_owned());
+    }
+    Ok(resolved)
 }
 
 #[tauri::command]
@@ -675,6 +715,24 @@ fn vault_path(state: tauri::State<'_, ShellState>) -> String {
 }
 
 // ---------------------------------------------------------------- 启动
+
+/// 在阻塞线程里完成启动读盘：建目录、构造 store、读偏好。
+///
+/// **这里的失败都不能 panic**。`ensure_dir` 失败只记错误然后继续构造 store：
+/// `MarkdownStore::new` 内部走 `startup_state`，它会把"读不到"落成
+/// `Degraded + 诊断`，界面横幅能显示原因；而 panic 会让整个进程在用户
+/// 双击之后直接消失（release 下连控制台都没有）。
+fn bootstrap_vault(vault: &std::path::Path) -> (Arc<MarkdownStore>, slip_store::prefs::Prefs) {
+    if let Err(kind) = slip_store::fsops::ensure_dir(vault) {
+        tracing::error!(?kind, path = %vault.display(), "cannot create vault directory; continuing degraded");
+    }
+    let store = Arc::new(MarkdownStore::new(vault.join("inbox.md")));
+    // 偏好只在启动时读一次；运行期唯一的写入点是 `system::persist_hotkey`
+    // （换备选热键成功时写回），所以"读一次"指的是这条读盘路径。
+    let prefs = JsonPrefsStore::new(vault.join("ui-state.json"));
+    let loaded = prefs.load_prefs();
+    (store, loaded)
+}
 
 /// 初始化日志。
 ///
@@ -754,18 +812,29 @@ pub fn run() {
             let prefs_path = vault.join("ui-state.json");
             // 启动 I/O 放到阻塞线程：UI 线程只等结果，不亲自读盘。
             let init_vault = vault.clone();
-            let (store, loaded) = std::thread::spawn(move || {
-                if let Err(kind) = slip_store::fsops::ensure_dir(&init_vault) {
-                    panic!("cannot create vault {init_vault:?}: {kind:?}");
-                }
-                let store = Arc::new(MarkdownStore::new(init_vault.join("inbox.md")));
-                // 偏好只在启动时读一次：热键由外壳解析，运行期不再写回。
-                let prefs = JsonPrefsStore::new(init_vault.join("ui-state.json"));
-                let loaded = prefs.load_prefs();
-                (store, loaded)
-            })
-            .join()
-            .expect("vault initialization failed");
+            let (store, loaded) =
+                match std::thread::spawn(move || bootstrap_vault(&init_vault)).join() {
+                    Ok(started) => started,
+                    Err(panic) => {
+                        // 线程 panic 不该让进程一起死：Windows release 是
+                        // `windows_subsystem = "windows"`，panic 只进 stderr——用户看到的是
+                        // "双击没反应"。退回到"同路径构造 store + 默认偏好"，
+                        // 让窗口照常出现，读不到的问题由 `startup_state` 落成 Degraded 诊断。
+                        //
+                        // `join()` 的错误是 `Box<dyn Any>`，没有 Display：手动取字符串，
+                        // 取不到就写个占位，日志里不能只剩一个类型名。
+                        let reason = panic
+                            .downcast_ref::<String>()
+                            .map(String::as_str)
+                            .or_else(|| panic.downcast_ref::<&str>().copied())
+                            .unwrap_or("<非字符串 panic 载荷>");
+                        tracing::error!("vault initialization thread panicked: {reason}");
+                        (
+                            Arc::new(MarkdownStore::new(vault.join("inbox.md"))),
+                            slip_store::prefs::Prefs::default(),
+                        )
+                    }
+                };
             // 热键的合法性属于外壳：存储层只存字符串。这里做解析 + 回落。
             let hotkey = hotkey::resolve_shortcut(loaded.hotkey.as_deref());
             let initial = store.snapshot();
@@ -880,4 +949,147 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("failed to run the Slip shell");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bootstrap_vault, guard_corrupt_path};
+    use slip_store::{Availability, Store};
+
+    /// 正常证据文件：必须原样放行，且返回的是规范化后的路径。
+    #[test]
+    fn guard_accepts_a_regular_corrupt_file_inside_the_vault() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md.corrupt-1");
+        std::fs::write(&path, b"evidence").expect("write");
+
+        let guarded = guard_corrupt_path(dir.path(), path.to_str().unwrap()).expect("accepted");
+        assert_eq!(
+            guarded,
+            path.canonicalize().expect("canonical"),
+            "返回的必须是规范化后的真实路径，后续读取才对得上"
+        );
+    }
+
+    /// 名字前缀不对：直接拒绝，连 canonicalize 都不值得做。
+    #[test]
+    fn guard_rejects_files_that_are_not_evidence() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("notes.md");
+        std::fs::write(&path, b"mine").expect("write");
+        assert!(guard_corrupt_path(dir.path(), path.to_str().unwrap()).is_err());
+    }
+
+    /// `..` 穿越：最终路径解析后必然落在 vault 外。
+    #[test]
+    fn guard_rejects_dotdot_traversal() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let vault = dir.path().join("vault");
+        std::fs::create_dir(&vault).expect("vault");
+        let outside = dir.path().join("inbox.md.corrupt-1");
+        std::fs::write(&outside, b"outside").expect("write");
+
+        let raw = vault.join("..").join("inbox.md.corrupt-1");
+        let error = guard_corrupt_path(&vault, raw.to_str().unwrap()).expect_err("rejected");
+        assert!(error.contains("vault 目录下"), "{error}");
+    }
+
+    /// 指向 vault 外的符号链接：父目录在 vault 内也没用，必须按**真实**位置判定。
+    #[cfg(unix)]
+    #[test]
+    fn guard_rejects_a_symlink_pointing_outside_the_vault() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let vault = dir.path().join("vault");
+        std::fs::create_dir(&vault).expect("vault");
+        let outside = dir.path().join("secret.txt");
+        std::fs::write(&outside, b"outside").expect("write");
+        let link = vault.join("inbox.md.corrupt-1");
+        std::os::unix::fs::symlink(&outside, &link).expect("symlink");
+
+        let error = guard_corrupt_path(&vault, link.to_str().unwrap()).expect_err("rejected");
+        assert!(error.contains("vault 目录下"), "{error}");
+    }
+
+    /// vault 内的符号链接指向 vault 内的**非证据文件**：位置对了，但契约仍是"只预览证据"。
+    #[cfg(unix)]
+    #[test]
+    fn guard_rejects_a_symlink_to_a_non_evidence_file_inside_the_vault() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("inbox.md");
+        std::fs::write(&target, b"live data").expect("write");
+        let link = dir.path().join("inbox.md.corrupt-1");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+        assert!(guard_corrupt_path(dir.path(), link.to_str().unwrap()).is_err());
+    }
+
+    /// 文件不存在时 `canonicalize` 会失败：要给出可分辨的说法，而不是系统错误原文。
+    #[test]
+    fn guard_reports_a_missing_evidence_file_clearly() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing = dir.path().join("inbox.md.corrupt-404");
+        let error =
+            guard_corrupt_path(dir.path(), missing.to_str().unwrap()).expect_err("rejected");
+        assert!(error.contains("不存在"), "{error}");
+    }
+
+    /// 目录名字碰巧符合前缀：读目录会得到无关的 IO 错误，必须先说清"不是文件"。
+    #[test]
+    fn guard_rejects_a_directory_named_like_evidence() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md.corrupt-dir");
+        std::fs::create_dir(&path).expect("mkdir");
+        let error = guard_corrupt_path(dir.path(), path.to_str().unwrap()).expect_err("rejected");
+        assert!(error.contains("不是普通文件"), "{error}");
+    }
+
+    /// `backup_bytes` 写出的备份必须与"调用方手里的字节"逐字节一致。
+    ///
+    /// 这条守的是"复用刚读到的内容"的正确性：调用方拿冲突检测读到的 `Vec<u8>`
+    /// 去备份，备份里就应当正好是那份内容，而不是写盘瞬间重新读到的另一份。
+    /// （正常路径下两者相同；差别只在测试里显式模拟：先读字节、再改文件，
+    /// 传旧字节进去，备份必须是旧字节。）
+    #[test]
+    fn backup_bytes_writes_exactly_the_bytes_it_was_given() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md");
+        std::fs::write(&path, b"version one\n").expect("seed");
+
+        let seen = std::fs::read(&path).expect("read");
+        // 文件在读出之后又变了：备份必须记录"读到的"那一份。
+        std::fs::write(&path, b"version two\n").expect("overwrite");
+
+        let backup = slip_store::fsops::backup_bytes(&path, &seen).expect("backup written");
+        assert_eq!(std::fs::read(&backup).expect("read backup"), seen);
+        assert_eq!(
+            std::fs::read(&path).expect("read live"),
+            b"version two\n",
+            "备份不得改动当前文件"
+        );
+    }
+
+    /// 启动时 inbox 路径指向"普通文件下的子路径"：`ensure_dir` 与创建都会失败，
+    /// 但必须返回一个 **Degraded + 非空诊断** 的 store，而不是 panic。
+    #[test]
+    fn startup_with_unreadable_path_degrades_instead_of_panicking() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let blocker = dir.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").expect("write blocker");
+        // `blocker/inbox` 无法存在：中间那层是文件。
+        let vault = blocker.join("vault");
+
+        let (store, prefs) = bootstrap_vault(&vault);
+
+        let snapshot = store.snapshot();
+        assert_eq!(
+            snapshot.health.availability,
+            Availability::Degraded,
+            "读不到 vault 时必须降级而不是假装可写"
+        );
+        assert!(
+            !snapshot.diagnostics.is_empty(),
+            "降级必须带诊断，否则界面上只剩一条看不懂的横幅"
+        );
+        assert!(prefs.hotkey.is_none(), "读不到偏好时回默认值");
+    }
 }

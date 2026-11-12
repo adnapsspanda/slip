@@ -140,6 +140,9 @@ pub enum RoundtripError {
     DuplicateId,
     /// 未被修改的行字节发生了变化——违反"Markdown 是真源"。
     UnmodifiedLineChanged { line: usize },
+    /// 被修改的行丢失或改写了未知键。用户手写的 `zz=9` 不属于 `Slip`，
+    /// 记录比较看不见它；少了这道检查，`rewrite_line` 的兜底分支一回归就会静默吞键。
+    ExtrasChanged { index: usize },
 }
 
 // ---------------------------------------------------------------- 解析
@@ -752,14 +755,29 @@ pub fn verify_roundtrip(
 
     for (index, line) in original.lines.iter().enumerate() {
         let after = &reparsed.document.lines[index];
-        let changed_record = match line.kind {
-            LineKind::Record {
-                index: record_index,
-            } => expected.get(record_index) != original.records.get(record_index).map(|r| &r.slip),
-            _ => false,
-        };
-        if changed_record {
-            continue;
+        if let LineKind::Record {
+            index: record_index,
+        } = line.kind
+        {
+            let changed_record =
+                expected.get(record_index) != original.records.get(record_index).map(|r| &r.slip);
+            if changed_record {
+                // 记录相等不代表行相等：`Slip` 里没有未知键，用户手写的 `zz=9`
+                // 只有 `Record::extras` 知道。跳过这一行之前必须先确认未知键一个没少，
+                // 否则 `rewrite_line` 退回 `build_line` 时会被静默吞掉。
+                let before = original.records.get(record_index).map(|r| &r.extras);
+                let after_extras = reparsed
+                    .document
+                    .records
+                    .get(record_index)
+                    .map(|r| &r.extras);
+                if before != after_extras {
+                    return Err(RoundtripError::ExtrasChanged {
+                        index: record_index,
+                    });
+                }
+                continue;
+            }
         }
 
         let separator_added = index + 1 == original.lines.len()
@@ -1297,6 +1315,38 @@ mod tests {
         assert_eq!(
             verify_roundtrip(&doc, &candidate, &expected),
             Err(RoundtripError::DuplicateId)
+        );
+    }
+
+    /// 被 patch 的行也必须守住未知键。
+    ///
+    /// `verify_roundtrip` 对"改动过的行"只看 `Slip` 相等，而 `zz=9` 属于
+    /// `Record::extras`——不在 `Slip` 里。少了 extras 比较，`rewrite_line` 退回
+    /// `build_line` 时用户手写的未知键会被静默吞掉，闭包却报成功。
+    #[test]
+    fn verify_detects_extras_lost_on_a_modified_line() {
+        let raw = format!("- [ ] 旧 <!-- slip:v1;zz=9;id={ID};created={CREATED} -->\n");
+        let doc = parse_ok(raw.as_bytes());
+        let id = SlipId::parse_strict(ID).unwrap();
+        let (next, changed) = apply(
+            &doc,
+            &[Mutation::Patch {
+                id,
+                patch: Patch::SetText("新".to_owned()),
+            }],
+        )
+        .unwrap();
+        assert!(changed);
+
+        let expected: Vec<Slip> = next.records.iter().map(|r| r.slip.clone()).collect();
+        // 正常路径：extras 保留 → 闭包通过。
+        verify_roundtrip(&doc, &render(&next), &expected).expect("忠实候选应当通过");
+
+        // 丢键的候选：正文与记录都正确，唯独 extras 没了。
+        let lost = format!("- [ ] 新 <!-- slip:v1;id={ID};created={CREATED} -->\n");
+        assert_eq!(
+            verify_roundtrip(&doc, lost.as_bytes(), &expected),
+            Err(RoundtripError::ExtrasChanged { index: 0 })
         );
     }
 

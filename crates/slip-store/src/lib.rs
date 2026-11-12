@@ -152,13 +152,20 @@ impl std::fmt::Display for BlockingError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreError {
-    Conflict { current_hash: Hash },
+    Conflict {
+        current_hash: Hash,
+    },
     NeedsReload,
     ReadOnly,
     Domain(DomainError),
     Blocking(BlockingError),
     Io(IoKind),
     NotDegraded,
+    /// 备份内容无法解析，恢复被拒绝。**当前文件一个字节都没动。**
+    ///
+    /// 单独成一类而不是塞进 `Blocking`：调用方需要知道"是备份坏了，当前内容还安好"，
+    /// 这与"当前文件解析失败、只能隔离重建"是相反的处境。
+    BackupInvalid,
 }
 
 /// 每次 `Store` 调用都返回它。**失败也必须携带可发布快照。**
@@ -560,6 +567,29 @@ impl MarkdownStore {
 
         // 候选字节由原始行拼接而成（被删的那行之外，一切原样）。
         let bytes = (self.ops.render)(&candidate);
+
+        // 事务层自身的闭合断言：候选字节必须**只**等于"原文档删掉目标行"。
+        //
+        // 单测已经在守同一件事，但单测不在生产路径上：`render` 一旦被改成顺手重排
+        // 或重序列化，测试红之前，用户的文件可能已经被悄悄改过一遍。删除是不可逆的，
+        // 所以这里宁可自己拒绝写盘，也不接受"看起来差不多"的字节。
+        let expected_bytes = concat_lines(&candidate);
+        // 第二个方向：原文档只删目标行。不克隆整份文档——`records` 里带着全部正文。
+        let original_bytes = concat_lines_except(&state.document, Some(line_index));
+        if bytes != expected_bytes || expected_bytes != original_bytes {
+            tracing::error!(
+                rendered = bytes.len(),
+                expected = expected_bytes.len(),
+                original = original_bytes.len(),
+                "彻底移除的字节闭合断言失败，拒绝写入"
+            );
+            state.diagnostics = vec![Diagnostic {
+                line: None,
+                message: String::from("彻底移除的字节闭合断言失败：其余行不再逐字节原样"),
+            }];
+            return StoreOutcome::failed(state.snapshot(), StoreError::Io(IoKind::Other));
+        }
+
         let expected: Vec<Slip> = candidate
             .records
             .iter()
@@ -591,8 +621,9 @@ impl MarkdownStore {
         }
 
         // 冲突检测：磁盘在载入之后被改过就不动它。
-        let current_hash = match read_for_conflict(&state.path) {
-            Ok(disk) => fsops::hash_bytes(&disk),
+        // 读到的字节留着当备份内容——备份必须与刚才比对 hash 的那一份**同一内容**。
+        let disk = match read_for_conflict(&state.path) {
+            Ok(disk) => disk,
             Err(kind) => {
                 let message = format!("移除前读取 {} 失败：{kind}", state.path.display());
                 state.degrade_with(Diagnostic {
@@ -602,16 +633,32 @@ impl MarkdownStore {
                 return StoreOutcome::failed(state.snapshot(), StoreError::Io(kind));
             }
         };
+        let current_hash = fsops::hash_bytes(&disk);
         if current_hash != state.loaded_hash {
             state.needs_reload = true;
             return StoreOutcome::failed(state.snapshot(), StoreError::Conflict { current_hash });
         }
 
-        // 备份先落地（失败只记警告，与常规写入一致）→ 原子替换。
-        let backup_ok = fsops::backup(&state.path).is_ok();
-        let prune_ok = backup_ok
-            && fsops::prune_backups(fsops::parent_dir(&state.path), BACKUP_KEEP, now_ms()).is_ok();
-        if backup_ok && prune_ok {
+        // 备份先落地 → 原子替换。
+        //
+        // **备份失败不阻断的唯一例外**：常规写入失败只记警告，因为主文件仍是旧内容，
+        // 用户没有失去任何东西；而彻底删除一旦写成功，被删的行就只存在于备份里。
+        // 备份没落地还继续删，等于用一个谎（"已留备份"）换一次不可逆操作。
+        // 所以这里直接拒绝：不写主文件、不改内存状态（文档、hash、rev 都保持原样）。
+        // 刻意不降级：备份失败可能只是磁盘一时满了，主文件本身仍然可读可写，
+        // 把它打成只读会让用户被迫"隔离重建"——那是比失败严重得多的处置。
+        if let Err(kind) = fsops::backup_bytes(&state.path, &disk) {
+            tracing::error!(
+                path = %state.path.display(),
+                %kind,
+                "彻底删除前备份失败，拒绝执行不可逆操作"
+            );
+            return StoreOutcome::failed(state.snapshot(), StoreError::Io(kind));
+        }
+        // 清理旧备份失败只记警告：它不产生新的不可逆风险，删除本身仍可进行。
+        let prune_ok =
+            fsops::prune_backups(fsops::parent_dir(&state.path), BACKUP_KEEP, now_ms()).is_ok();
+        if prune_ok {
             state.health.warnings.remove(&Warning::BackupFailed);
         } else {
             state.health.warnings.insert(Warning::BackupFailed);
@@ -629,6 +676,9 @@ impl MarkdownStore {
         state.document = candidate;
         state.loaded_hash = fsops::hash_bytes(&bytes);
         state.bump();
+        // 提交成功说明上一次回读闭包失败留下的诊断已经过期。不清的话横幅会
+        // 永久挂着一句"候选回读闭包失败"，而文件其实早就写好了。
+        state.diagnostics.clear();
         state.needs_reload = false;
         let unknown_fields = unknown_field_warnings(&state.document);
         state
@@ -696,8 +746,13 @@ impl Store for MarkdownStore {
         }
 
         // 4. 有变化才读盘比较原始 hash；不同则只置 `needs_reload`，不写任何字节。
-        let current_hash = match read_for_conflict(&state.path) {
-            Ok(disk) => fsops::hash_bytes(&disk),
+        //
+        // 读到的字节要留着：备份必须与"刚才据以判断冲突"的那一份**同一内容**。
+        // 旧实现把 `disk` 丢掉、让 `fsops::backup` 再读一次，于是 1 MB 的 inbox
+        // 每次提交要读三遍（冲突检测、备份、写后校验），而且两次读取之间文件若被
+        // 外部改动，备份内容就与冲突判断的依据不是同一份。
+        let disk = match read_for_conflict(&state.path) {
+            Ok(disk) => disk,
             Err(kind) => {
                 // 用 `{kind}`（Display）而不是 `{kind:?}`：这段文字会显示在界面诊断区，
                 // 用户需要知道"文件被其它程序占用"，而不是看到一个 Debug 名。
@@ -709,13 +764,15 @@ impl Store for MarkdownStore {
                 return StoreOutcome::failed(state.snapshot(), StoreError::Io(kind));
             }
         };
+        let current_hash = fsops::hash_bytes(&disk);
         if current_hash != state.loaded_hash {
             state.needs_reload = true;
             return StoreOutcome::failed(state.snapshot(), StoreError::Conflict { current_hash });
         }
 
         // 5. 备份（失败只记警告，不阻断）→ 原子替换（提交点）。
-        let backup_ok = fsops::backup(&state.path).is_ok();
+        //    复用上面刚读到的 `disk`，不再第二次读盘。
+        let backup_ok = fsops::backup_bytes(&state.path, &disk).is_ok();
         let prune_ok = backup_ok
             && fsops::prune_backups(fsops::parent_dir(&state.path), BACKUP_KEEP, now_ms()).is_ok();
         if backup_ok && prune_ok {
@@ -742,6 +799,9 @@ impl Store for MarkdownStore {
         state.document = candidate;
         state.loaded_hash = fsops::hash_bytes(&bytes);
         state.bump();
+        // 提交成功即证明文档已经写对，之前回读闭包失败留下的诊断必须消失；
+        // 否则它会永远挂在横幅上，而用户每次重试其实都成功了。
+        state.diagnostics.clear();
         state.needs_reload = false;
         state
             .health
@@ -840,16 +900,38 @@ impl Store for MarkdownStore {
 
     fn restore_backup(&self, name: &str) -> StoreOutcome {
         let path = self.lock().path.clone();
-        // 先给**当前**内容留一份：恢复本身也必须可逆，否则"恢复错了"就没有第二次机会。
-        if let Err(kind) = fsops::backup(&path) {
-            let state = self.lock();
-            return StoreOutcome::failed(state.snapshot(), StoreError::Io(kind));
+
+        // 1. 先读候选并预检。**任何拒绝都必须发生在碰当前文件之前**：
+        //    旧实现先备份后校验，非法名字白烧一代备份；inbox 缺失时更是连恢复都做不了
+        //    ——而那正是最需要恢复的场景。
+        let candidate = match fsops::read_backup(&path, name) {
+            Ok(bytes) => bytes,
+            Err(kind) => return StoreOutcome::failed(self.snapshot(), StoreError::Io(kind)),
+        };
+        // 预检必须与**载入路径同一口径**：只查 `problems` 会漏掉重复 ID——那种备份
+        // 能通过预检、覆盖成功，然后 `reload()` 才报 `Blocking(DuplicateId)` 并降级。
+        // 虽然当前文件已被备份、可救回，但"先污染再报错"不是恢复该有的顺序。
+        if parse_with_identity(DocOps::real(), &candidate).is_err() {
+            return StoreOutcome::failed(self.snapshot(), StoreError::BackupInvalid);
         }
-        if let Err(kind) = fsops::restore_backup(&path, name) {
-            let state = self.lock();
-            return StoreOutcome::failed(state.snapshot(), StoreError::Io(kind));
+
+        // 2. 给**当前**内容留一份：恢复本身也必须可逆，否则"恢复错了"就没有第二次机会。
+        //    `NotFound` 直接跳过——没有当前内容可备份，而恢复的目的正是把它写出来；
+        //    其他读失败照常拒绝：磁盘状态不明时不该继续覆盖。
+        match fsops::read_bytes(&path) {
+            Ok(current) => {
+                if let Err(kind) = fsops::backup_bytes(&path, &current) {
+                    return StoreOutcome::failed(self.snapshot(), StoreError::Io(kind));
+                }
+            }
+            Err(IoKind::NotFound) => {}
+            Err(kind) => return StoreOutcome::failed(self.snapshot(), StoreError::Io(kind)),
         }
-        // 走正常载入路径：解析、校验、重置 needs_reload 全都不用重写一遍。
+
+        // 3. 覆盖，然后走正常载入路径：解析、校验、重置 needs_reload 全都不用重写一遍。
+        if let Err(kind) = fsops::write_atomic(&path, &candidate) {
+            return StoreOutcome::failed(self.snapshot(), StoreError::Io(kind));
+        }
         self.reload()
     }
 
@@ -870,6 +952,28 @@ fn empty_document() -> doc::Document {
         preferred_terminator: None,
         ends_with_terminator: false,
     }
+}
+
+/// 按 `doc::render` 的同一口径把行拼成字节（BOM + 各行 `raw`），可跳过一行。
+///
+/// 刻意不调用 `doc::render`：闭合断言的用途正是**独立于渲染实现**核对它，
+/// 复用同一个函数等于自己证明自己。
+fn concat_lines_except(document: &doc::Document, skip: Option<usize>) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if document.bom {
+        bytes.extend_from_slice(&[0xEF, 0xBB, 0xBF]);
+    }
+    for (index, line) in document.lines.iter().enumerate() {
+        if Some(index) == skip {
+            continue;
+        }
+        bytes.extend_from_slice(&line.raw);
+    }
+    bytes
+}
+
+fn concat_lines(document: &doc::Document) -> Vec<u8> {
+    concat_lines_except(document, None)
 }
 
 /// 启动载入。任何失败都落成"空内容 + `Degraded` + 诊断"，不返回部分结果。
@@ -1922,6 +2026,188 @@ mod tests {
         assert!(!fixture.path.exists(), "reload 不得自动建文件");
     }
 
+    // ---------- 备份恢复（R？：先校验、再备份、最后覆盖） ----------
+
+    /// `inbox.md` 不存在时也必须能恢复——那正是最需要恢复的场景。
+    ///
+    /// 旧实现的顺序是"先备份当前文件"，而备份第一行就是读盘，于是缺失的 inbox
+    /// 让恢复在第一步就 NotFound，备份里明明有内容却救不回来。
+    #[test]
+    fn restore_backup_works_when_inbox_is_missing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md");
+        let store = MarkdownStore::new(&path);
+        assert!(
+            store
+                .apply(&[Mutation::Append(slip("恢复目标"))])
+                .result
+                .is_ok()
+        );
+        // 这次写入会为上一代内容留一份备份。
+        assert!(
+            store
+                .apply(&[Mutation::Append(slip("后来的"))])
+                .result
+                .is_ok()
+        );
+
+        let name = fsops::list_backups(dir.path())
+            .into_iter()
+            .next()
+            .expect("至少有一代备份")
+            .name;
+        let expected = std::fs::read(dir.path().join(&name)).expect("读取备份");
+        std::fs::remove_file(&path).expect("删掉 inbox");
+
+        let outcome = store.restore_backup(&name);
+
+        assert!(outcome.result.is_ok(), "结果：{:?}", outcome.result);
+        assert_eq!(read(&path), expected, "恢复后的内容必须等于备份");
+        assert_eq!(outcome.snapshot.slips.len(), 1);
+        assert_eq!(outcome.snapshot.slips[0].text, "恢复目标");
+    }
+
+    /// 非法名字必须在**碰盘之前**被拒绝：旧顺序会白烧一代备份。
+    #[test]
+    fn restore_with_an_invalid_name_does_not_consume_a_backup() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md");
+        let store = MarkdownStore::new(&path);
+        assert!(
+            store
+                .apply(&[Mutation::Append(slip("原文"))])
+                .result
+                .is_ok()
+        );
+        assert!(
+            store
+                .apply(&[Mutation::Append(slip("二代"))])
+                .result
+                .is_ok()
+        );
+
+        let before_backups = fsops::list_backups(dir.path()).len();
+        let before_bytes = read(&path);
+
+        for name in ["nope.md", "../evil.md", "inbox.md.bak-1-2-3"] {
+            let outcome = store.restore_backup(name);
+            assert!(outcome.result.is_err(), "非法名字必须被拒绝：{name}");
+        }
+
+        assert_eq!(read(&path), before_bytes, "被拒绝时不得改动当前文件");
+        assert_eq!(
+            fsops::list_backups(dir.path()).len(),
+            before_backups,
+            "被拒绝的恢复不得产生新备份"
+        );
+    }
+
+    /// 备份本身解析不了时必须拒绝，且当前文件一个字节都不动。
+    ///
+    /// 这是恢复路径最容易出错的顺序问题：先覆盖再验证，坏备份会顶掉好文件。
+    #[test]
+    fn restore_refuses_a_corrupt_backup_without_touching_inbox() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md");
+        let store = MarkdownStore::new(&path);
+        assert!(
+            store
+                .apply(&[Mutation::Append(slip("完好的内容"))])
+                .result
+                .is_ok()
+        );
+        let before_bytes = read(&path);
+        let before_rev = store.snapshot().content_rev;
+
+        let name = "inbox.md.bak-1700000000000";
+        std::fs::write(
+            dir.path().join(name),
+            b"- [ ] broken <!-- slip:v1;id=not-a-uuid;created=2026-11-10T11:49:14+08:00 -->\n",
+        )
+        .expect("写坏备份");
+
+        let outcome = store.restore_backup(name);
+
+        assert_eq!(outcome.result, Err(StoreError::BackupInvalid));
+        assert_eq!(read(&path), before_bytes, "坏备份不得覆盖当前文件");
+        assert_eq!(outcome.snapshot.content_rev, before_rev);
+        assert_eq!(outcome.snapshot.slips[0].text, "完好的内容");
+    }
+
+    /// 备份能解析、但内部有**重复 ID**：同样必须在碰当前文件之前拒绝。
+    ///
+    /// 只查 `problems` 的预检会放过它——覆盖成功之后 `reload()` 才报
+    /// `Blocking(DuplicateId)` 并降级，等于先把好文件换掉再说"这份不能用"。
+    /// 当前内容虽然已备份可救回，但恢复的正确顺序是"先拒绝，后动手"。
+    #[test]
+    fn restore_refuses_a_backup_with_duplicate_ids() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md");
+        let store = MarkdownStore::new(&path);
+        assert!(
+            store
+                .apply(&[Mutation::Append(slip("完好的内容"))])
+                .result
+                .is_ok()
+        );
+        let before_bytes = read(&path);
+
+        // 两条记录共用同一个 ID：解析本身没有问题，重复 ID 在上层检查里。
+        let id = "019a9f3c-2b70-7d84-a1c6-8e3f5b0d2741";
+        let name = "inbox.md.bak-1700000000000";
+        std::fs::write(
+            dir.path().join(name),
+            format!(
+                "- [ ] 甲 <!-- slip:v1;id={id};created=2026-11-10T11:49:14+08:00 -->\n\
+                 - [ ] 乙 <!-- slip:v1;id={id};created=2026-11-10T11:49:14+08:00 -->\n"
+            ),
+        )
+        .expect("写重复 ID 备份");
+
+        let outcome = store.restore_backup(name);
+
+        assert_eq!(outcome.result, Err(StoreError::BackupInvalid));
+        assert_eq!(read(&path), before_bytes, "重复 ID 的备份不得覆盖当前文件");
+        assert_eq!(outcome.snapshot.slips[0].text, "完好的内容");
+    }
+
+    /// 一次回读闭包失败留下的诊断，不能跟着成功提交一起活到下一次启动。
+    #[test]
+    fn successful_apply_clears_stale_diagnostics() {
+        let fixture = fixture(b"");
+        fixture.store.lock().diagnostics = vec![Diagnostic {
+            line: None,
+            message: String::from("上一次回读闭包失败"),
+        }];
+
+        let outcome = fixture.store.apply(&[Mutation::Append(slip("买发票"))]);
+
+        assert!(outcome.result.is_ok(), "结果：{:?}", outcome.result);
+        assert!(
+            outcome.snapshot.diagnostics.is_empty(),
+            "成功后诊断必须清空：{:?}",
+            outcome.snapshot.diagnostics
+        );
+    }
+
+    #[test]
+    fn successful_purge_clears_stale_diagnostics() {
+        let (store, _dir, first, _second, _third) = vault_with_archived();
+        store.lock().diagnostics = vec![Diagnostic {
+            line: None,
+            message: String::from("上一次回读闭包失败"),
+        }];
+
+        let outcome = store.purge_archived(first.id);
+
+        assert!(outcome.result.is_ok(), "结果：{:?}", outcome.result);
+        assert!(
+            outcome.snapshot.diagnostics.is_empty(),
+            "成功后诊断必须清空：{:?}",
+            outcome.snapshot.diagnostics
+        );
+    }
+
     // ---------- 真实 doc.rs 的端到端 ----------
 
     /// `validate_candidate` 是"改动过的记录必须仍然合法"的最后一道网。
@@ -2038,6 +2324,101 @@ mod tests {
                 .unwrap_or(false)
         });
         assert!(kept, "不可逆操作必须先留一份包含被删内容的备份");
+    }
+
+    /// 备份失败必须**拒绝执行**：删除是不可逆的，"删了但没备份"是谎报。
+    ///
+    /// 这是"备份失败不阻断"的唯一例外（普通写入仍只记警告，见
+    /// `commit_ack_survives_backup_failure`）。三条硬断言把拒绝钉死：
+    /// 结果 Err、文件逐字节不变、`content_rev` 不变。
+    #[test]
+    fn purge_refuses_to_delete_when_backup_fails() {
+        let (store, dir, first, _second, _third) = vault_with_archived();
+        let path = dir.path().join("inbox.md");
+        let before = read(&path);
+        let before_rev = store.snapshot().content_rev;
+
+        fsops::failpoints::fail_next_backup();
+        let outcome = store.purge_archived(first.id);
+
+        assert!(
+            outcome.result.is_err(),
+            "备份失败时不得删除，实际 {:?}",
+            outcome.result
+        );
+        assert_eq!(read(&path), before, "被拒绝时文件必须一个字节都不变");
+        assert_eq!(
+            outcome.snapshot.content_rev, before_rev,
+            "被拒绝时不得推进 content_rev"
+        );
+        assert!(
+            outcome
+                .snapshot
+                .slips
+                .iter()
+                .any(|slip| slip.id == first.id),
+            "被拒绝时记录必须还在内存视图里"
+        );
+    }
+
+    /// 渲染实现若不再"只删目标行"，事务层必须自己发现并拒绝写盘。
+    ///
+    /// 单测不跑在生产路径上；这条用构件化 `DocOps` 模拟一个会顺手吞掉普通行的
+    /// `render`，验证 `purge_archived` 的内建闭合断言兜得住。
+    #[test]
+    fn purge_refuses_a_render_that_drops_other_lines() {
+        // 逐字拼接 `raw`（含终止符），但**跳过普通行**——模拟一个会把非记录行
+        // 顺手吞掉的渲染实现。真实 `render` 从不这样做，所以只能靠构件化 DocOps 构造。
+        fn render_without_other_lines(document: &doc::Document) -> Vec<u8> {
+            let mut out = Vec::new();
+            for line in &document.lines {
+                if line.kind == doc::LineKind::Other {
+                    continue;
+                }
+                out.extend_from_slice(&line.raw);
+            }
+            out
+        }
+
+        let archived = Slip {
+            done: true,
+            archived_at: Some(datetime!(2026-11-10 12:05:00 +08:00)),
+            ..slip("已归档的一条")
+        };
+        let mut document = doc_literal();
+        document.records.push(doc::Record {
+            slip: archived.clone(),
+            extras: Vec::new(),
+        });
+        document.lines.push(doc::Line {
+            raw: "# 手写的标题\n".as_bytes().to_vec(),
+            terminator: doc::Terminator::Lf,
+            kind: doc::LineKind::Other,
+        });
+        document.lines.push(doc::Line {
+            raw: b"archived\n".to_vec(),
+            terminator: doc::Terminator::Lf,
+            kind: doc::LineKind::Record { index: 0 },
+        });
+        let bytes = concat_lines(&document);
+        let fixture = fixture_with(
+            &bytes,
+            document,
+            DocOps {
+                render: render_without_other_lines,
+                ..fake_ops()
+            },
+        );
+
+        let outcome = fixture.store.purge_archived(archived.id);
+
+        assert!(
+            outcome.result.is_err(),
+            "渲染吞掉了普通行却报告成功：{:?}",
+            outcome.result
+        );
+        assert_eq!(read(&fixture.path), bytes, "拒绝时必须不写盘");
+        assert_eq!(outcome.snapshot.content_rev, ContentRev(1));
     }
 
     #[test]

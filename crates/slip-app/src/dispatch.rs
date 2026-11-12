@@ -730,6 +730,9 @@ fn map_store_error(error: &StoreError) -> (&'static str, String) {
             "notDegraded",
             String::from("只有处于降级状态时才允许隔离重建"),
         ),
+        // 备份坏了但当前文件没动。这句话要让用户知道"没有更糟"，
+        // 否则他会去修一个其实完好的 inbox.md。
+        StoreError::BackupInvalid => ("invalidBackup", String::from("备份内容无法解析，未恢复")),
     }
 }
 
@@ -1081,6 +1084,12 @@ mod tests {
                 "io",
             ),
             (StoreError::NotDegraded, AckResult::Rejected, "notDegraded"),
+            // 备份坏了、当前文件没动：必须让前端能区分"恢复被拒绝"与"当前文件损坏"。
+            (
+                StoreError::BackupInvalid,
+                AckResult::Rejected,
+                "invalidBackup",
+            ),
         ];
 
         for (error, expected_result, expected_code) in cases {
@@ -1123,6 +1132,7 @@ mod tests {
             StoreError::Io(slip_store::IoKind::PermissionDenied),
             StoreError::Io(slip_store::IoKind::Busy),
             StoreError::NotDegraded,
+            StoreError::BackupInvalid,
         ];
 
         let mut codes = std::collections::BTreeSet::new();
@@ -1148,6 +1158,7 @@ mod tests {
                 "blocking",
                 "conflict",
                 "domain",
+                "invalidBackup",
                 "io",
                 "needsReload",
                 "notDegraded",

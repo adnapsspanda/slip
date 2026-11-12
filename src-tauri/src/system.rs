@@ -11,6 +11,7 @@
 
 use std::io::Write;
 
+use slip_store::prefs::{JsonPrefsStore, PrefsStore};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, Manager};
@@ -359,19 +360,63 @@ fn copy_latest_pending(app: &AppHandle) -> Result<(), String> {
         .map_err(|error| format!("写入剪贴板失败：{error}"))
 }
 
-/// R116：把热键换成备选键。成功则同步托管状态与托盘；失败保持原状（只留 warn）。
+/// R116：把本轮真正注册成功的热键写进 `ui-state.json`。
+///
+/// 为什么要写：换键只活在内存里的话，重启就悄悄回到默认键——用户会以为"设置没保存"，
+/// 而他其实从没被问过。这里是**唯一**的热键写入点（启动只读）。
+///
+/// 已存在的偏好必须整体保留再写回：`Prefs` 是整体序列化的，只构造一个
+/// "只有 hotkey 的 Prefs" 会把将来别的偏好字段一并抹掉。
+///
+/// 失败只 warn、不上报"已保存"：偏好丢了不伤内容，但**不能假装写成功**。
+fn persist_hotkey(vault: &std::path::Path, key: &str) {
+    let store = JsonPrefsStore::new(vault.join("ui-state.json"));
+    let mut prefs = store.load_prefs();
+    prefs.hotkey = Some(key.to_owned());
+    match store.save_prefs(&prefs) {
+        Ok(()) => tracing::info!("hotkey preference saved: {key}"),
+        Err(error) => {
+            tracing::warn!("热键已生效，但写入偏好失败（重启后会回到旧键）：{error:?}")
+        }
+    }
+}
+
+/// R116：把热键换成备选键，并按三种结局如实更新托管状态与托盘。
+///
+/// 三态各自的动作：
+/// - `Switched`：写状态、写偏好、刷托盘——三者必须一致；
+/// - `RestoredOld`：状态不变（旧键真的还按得响），只提示；
+/// - `NoneRegistered`：**置空**状态，让 tooltip 与 `hotkey_status` 显示未注册。
+///
+/// 为什么失败分支也要刷托盘：热键行与 tooltip 是用户唯一能看见"到底按不按得响"的地方，
+/// 只在成功时刷新，等于把失败藏起来。
 fn switch_fallback_hotkey(app: &AppHandle) {
+    use crate::hotkey::FallbackOutcome;
+
     let Some(state) = app.try_state::<crate::ShellState>() else {
         return;
     };
     let current = state.hotkey_text();
     match crate::hotkey::switch_to_fallback(app, &current) {
-        Ok(switched) => {
-            // 显示给用户的与真正注册的必须是同一个字符串（和启动时同一条纪律）。
-            state.set_hotkey(switched.clone());
+        Ok(outcome) => {
+            // 状态只能由纯函数决定：三态映射在 `hotkey::next_hotkey` 里单测，
+            // 这里不再写第二套 if/else，否则两边迟早不一致。
+            let next = crate::hotkey::next_hotkey(&outcome, &current);
+            match &outcome {
+                FallbackOutcome::Switched(key) => {
+                    persist_hotkey(&state.vault, key);
+                    tracing::info!("hotkey fallback in effect: {key}");
+                }
+                FallbackOutcome::RestoredOld(key) => {
+                    tracing::warn!("hotkey fallback failed, still on {key}");
+                }
+                FallbackOutcome::NoneRegistered => {
+                    tracing::error!("hotkey fallback failed and the old key is gone: no hotkey");
+                }
+            }
+            state.set_hotkey(next.unwrap_or_default());
             let pending = pending_of(app).unwrap_or(0);
             refresh_tray(app, pending);
-            tracing::info!("hotkey fallback in effect: {switched}");
         }
         Err(error) => tracing::warn!("hotkey fallback failed: {error}"),
     }
@@ -871,5 +916,56 @@ mod tests {
             slip_view("b", "好时间", false, false, "2026-11-10T08:00:00Z"),
         ]);
         assert_eq!(latest_pending_text(&snapshot).as_deref(), Some("好时间"));
+    }
+
+    // ------------------------------------------------------ R116 热键偏好落盘
+
+    use super::persist_hotkey;
+    use slip_store::prefs::{JsonPrefsStore, Prefs, PrefsStore};
+
+    /// 换键成功写回的必须是**新键**，且用正常读取路径能读回来。
+    #[test]
+    fn persist_hotkey_writes_the_new_key_for_the_next_start() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        persist_hotkey(dir.path(), "super+alt+s");
+
+        let store = JsonPrefsStore::new(dir.path().join("ui-state.json"));
+        assert_eq!(
+            store.load_prefs().hotkey,
+            Some(String::from("super+alt+s")),
+            "重启后应沿用刚切过去的键"
+        );
+    }
+
+    /// 已存在的偏好文件必须**先读后写**：写入结果只覆盖 `hotkey`，
+    /// 而不是把整份 `Prefs` 重置成默认值再写回。
+    #[test]
+    fn persist_hotkey_updates_an_existing_prefs_file() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("ui-state.json");
+        std::fs::write(&path, r#"{"hotkey":"ctrl+alt+space"}"#).expect("seed prefs");
+
+        persist_hotkey(dir.path(), "super+alt+s");
+
+        let prefs = JsonPrefsStore::new(&path).load_prefs();
+        assert_eq!(
+            prefs,
+            Prefs {
+                hotkey: Some(String::from("super+alt+s"))
+            },
+            "写回的内容应是合法 Preference，且热键已更新"
+        );
+    }
+
+    /// vault 目录不存在时写偏好会失败——但**不能 panic**，也不能声称已保存。
+    #[test]
+    fn persist_hotkey_does_not_panic_when_the_vault_is_missing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let missing = dir.path().join("no-such-vault");
+        persist_hotkey(&missing, "super+alt+s");
+        assert!(
+            !missing.join("ui-state.json").exists(),
+            "目录不存在时不该凭空写出文件"
+        );
     }
 }
