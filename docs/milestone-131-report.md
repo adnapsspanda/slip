@@ -7,9 +7,9 @@
 
 | 项 | 数值 |
 |---|---|
-| 提交总数 | **150**（标题含轮次编号的 94 个） |
+| 提交总数 | **153**（标题含轮次编号的 97 个） |
 | Rust 测试（Linux/WSL） | **282 项** |
-| 前端纯逻辑断言 | **254 条** |
+| 前端纯逻辑断言 | **268 条** |
 | 变异审计 | **10 处核心不变量**，10/10 可被测试抓住 |
 | IPC 命令 | **26** 个 |
 | 代码规模 | Rust 11,578 行 / 前端 4,623 行 / 工具脚本 3,944 行 / 文档 3,964 行 |
@@ -86,6 +86,8 @@
 | release 构建 / 正式发布包 | **仍未成功** | release 侧 proc-macro DLL 被 SAC 拒；打包链路本身已用 debug 产物验证 |
 | R67 `skipTaskbar` | **未定论（已裁决为接受）** | 判据（扩展样式）不可靠，改为实测值输出 + 人工目视 |
 | 归档抽屉容量摘要的实时性 | 有意为之 | 只在打开抽屉与删除后刷新（省体积）；抽屉开着时归档会短暂过期 |
+| Windows 侧 `cargo test --workspace` | 本机跑不了 | `slip_shell-*.exe` 被 SAC 拒；WSL 侧 282 项全绿、clippy 全目标可编译 |
+| 发丝边框对比度 1.31 / 1.43 | **有意低于 3:1** | 装饰性元素；交互线索（焦点环 4.91/4.94、次要文字 4.58/5.48）已合规并单独断言 |
 | CSS / JS 预算 | **两次提额** | CSS 10→14 KB、JS 70→80→88 KB；注释里写明"再提额前先问是不是该拆模块或砍功能" |
 
 ## 七、方法学结论（新增）
@@ -119,3 +121,22 @@ $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9223"
 Start-Process .\target\debug\slip-shell.exe
 & "C:\Users\spand\.bun\bin\bun.exe" tools/cdp-memory.mjs 9223 1000
 ```
+
+## 九、最终核查（收尾时实测）
+
+```
+WSL 全套              282 项通过
+前端纯逻辑断言         268 条通过
+cargo clippy          --workspace --all-targets -D warnings 通过
+cargo fmt --check     通过
+不可回退约束（8 项）    通过
+设计文档同步           通过（IPC 26 个、capability 2 项）
+钩子与 CI 零漂移       通过（各 10 个关口）
+常量检查（死代码+镜像）  通过
+变异审计              10 处，10/10 可被测试抓住
+产物                  CSS 11.73 KB / 14 KB、JS 81.55 KB / 88 KB
+```
+
+**Windows 侧 `cargo test --workspace` 在本机跑不了**：`slip_shell-*.exe` 测试二进制被
+Smart App Control 拒（连试 4 次 + 删掉重建 3 次均被拒）。这是**环境**问题，不是代码问题——
+`clippy --all-targets` 能把包括测试在内的全部目标编译过，而同样的测试在 WSL 里 282 项全绿。
