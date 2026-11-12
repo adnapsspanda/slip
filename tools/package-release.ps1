@@ -137,6 +137,22 @@ $zipItem = Get-Item $zipPath
 Write-Output ("  {0}（{1:N2} MB）" -f $zipItem.Name, ($zipItem.Length / 1MB))
 Write-Output "  位置：$($zipItem.FullName)"
 
+# SHA-256（R127）：给下载者一个可以自己核对的指纹。
+# 同时写进 zip 旁边的 .sha256 文件，格式用 `sha256sum` 认得的 `<hash>  <name>`——
+# 这样 Linux/macOS 侧一条 `sha256sum -c` 就能验，不用看文档。
+$hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$manifest = "$hash  $($zipItem.Name)"
+$manifestPath = "$zipPath.sha256"
+Set-Content -Path $manifestPath -Value $manifest -Encoding utf8 -NoNewline
+Write-Output "  SHA-256：$hash"
+Write-Output "  校验文件：$manifestPath"
+Write-Output "    验证命令：sha256sum -c $($zipItem.Name).sha256"
+
+# 二进制自身的指纹也报一次：调试"同一个版本为什么行为不同"时，
+# 比版本号可靠（版本号不会因为重新编译而变）。
+$exeHash = (Get-FileHash -Path $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+Write-Output "  二进制 SHA-256：$exeHash"
+
 # 解压回来核对一次：打包成功但内容缺失是很常见的静默失败。
 $verifyDir = Join-Path $env:TEMP ("slip-verify-" + [guid]::NewGuid().ToString('N'))
 Expand-Archive -Path $zipPath -DestinationPath $verifyDir -Force
