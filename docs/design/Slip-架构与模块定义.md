@@ -974,12 +974,12 @@ M0 验收子集：§9.1 第 1、6 条；§9.2 中"文本往返""原字节保留"
 | crate | 内容 | 测试 |
 |---|---|---|
 | `slip-domain` | 文本规范化、状态转换、拆条、`SlipId` 严格解析、前端契约 | 80 |
-| `slip-store` | 解析/渲染/局部替换、事务层、恢复矩阵、真实文件验收、格式闭包 | 163 |
-| `slip-app` | Presenter / Dispatcher / 队列 / 前端生命周期结构守卫 / 流水线 | 85 |
+| `slip-store` | 解析/渲染/局部替换、事务层、恢复矩阵、真实文件验收、格式闭包 | 167 |
+| `slip-app` | Presenter / Dispatcher / 队列 / 前端生命周期结构守卫 / 流水线 | 84 |
 | `slip-shell` | 窗口外壳、热键三态、guard、启动降级等 lib 单测 | 40 |
 | `src-tauri` + `ui` | 窗口外壳、**26 个 IPC 命令**、Svelte 5 前端（捕获框、列表、勾选、过滤、归档抽屉、备份面板、横幅与提示条） | — |
 
-**合计 368 个测试通过**（逻辑层 328 + 外壳 40，WSL 实测；另有 7 项性能测试按 `#[ignore]` 单独跑）；`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo fmt --all --check` 均干净。仓库无任何 `todo!()` / `unimplemented!()`。
+**合计 371 个测试通过**（逻辑层 331 + 外壳 40，WSL 实测；另有 7 项性能测试按 `#[ignore]` 单独跑）；`cargo clippy --workspace --all-targets -- -D warnings` 与 `cargo fmt --all --check` 均干净。仓库无任何 `todo!()` / `unimplemented!()`。
 
 M0 验收子集（§9.1 第 1、6 条；§9.2 的文本往返、原字节保留、追加、文法、事务、提交点、冲突）**已由 `crates/slip-store/tests/acceptance.rs` 覆盖**，且刻意不使用 mock——验证的就是"磁盘上到底发生了什么"。
 

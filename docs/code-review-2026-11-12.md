@@ -636,3 +636,19 @@ vault 内的符号链接/硬链接可让「只读证据」读到 vault 外的文
 - 三处展示优先级统一为 `resolveUiState`：当前三份实现一致，属于可读性优化。
 - `peek_slips` 的解析问题没有传给 `external_diff`：外部改坏一条时仍可能显示「消失 N 条」。
 - R-134（ACK/shutdown 超时上界）：**已完成（批次 J）**——submit 5s、shutdown 10s；hung consumer 测试覆盖。
+
+### 11.7 第三轮收尾（F–J）：欠账清零
+
+| 批次 | 内容 | 证据 |
+|---|---|---|
+| F 存储/差异 | `peek_slips` 返回 `problems`，`external_diff` 不再把损坏记录报成"消失"；`read_backup` 只接受当前 inbox 的备份（拒绝 `other.bak-*`、盘符、ADS）；非 UTF-8 普通行往返测试；批内净 Noop 不再写盘 | 4 条新测试；`describeDiff` 4 条纯函数断言；净 Noop 变异红 |
+| G 展示优先级 | `uiPriority` 成为唯一实现，横幅/级别/禁用理由三处派生 | 11 条断言；调换顺序变异红 |
+| H 死抽象 | 删除 `PaperViewSet` 与 `view()`/`with_view`；`Presenter::new` 直接构造 | 编译 + 管道测试全绿；AGENTS/设计/backlog 同步 |
+| I 最小能力面 | `core:default` → `core:event:allow-listen` / `allow-unlisten` / `core:window:allow-start-dragging` | `check-doc-sync` 通过；**GUI 行为待真机确认** |
+| J 超时上界 | `submit` 5s、`shutdown` 10s；超时返回 `unknown/timeout`，前端只重拉快照；`Hang` 消费者测试 | 测试外层 2s 兜底，去掉上界会变红而不是挂死 |
+
+最终实测：逻辑层 **331 passed**、外壳 **40 passed**、clippy/fmt 干净、前端 83 KB / 88 KB、
+六条 PowerShell 门禁 exit 0、变异审计 **11/11** 变红。
+
+**仍需真机确认**：capability 收窄后的 `event.listen` 与拖拽、托盘/热键真实行为、
+Alt+F4 收窗、透明窗口与定位、`verify-hotkey.ps1`。
