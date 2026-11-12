@@ -7,7 +7,9 @@
 用法（在 Windows 侧）：python tools/mutation-audit.py
 它会在每一步改文件、跑 WSL 测试、断言失败、再恢复，最后核对恢复后的内容与原文件**逐字节一致**。
 """
+import atexit
 import io
+import os
 import subprocess
 import sys
 
@@ -45,6 +47,63 @@ CASES = [
         "filter": "slip-domain",
         "expect_fail_marker": "FAILED",
     },
+    # ---- R129：扩到 10 处 ----
+    {
+        "name": "标签前缀判定（任意位置 # 都算标签 → URL 锚点被误判）",
+        "file": r"crates\slip-domain\src\tags.rs",
+        "old": "        let Some(rest) = token.strip_prefix('#') else {\n            continue;\n        };",
+        "new": "        let Some(pos) = token.find('#') else { continue };\n        let rest = &token[pos + 1..]; // [MUTATION]",
+        "filter": "slip-domain",
+        "expect_fail_marker": "FAILED",
+    },
+    {
+        "name": "定稿保护（锁只锁正文：去掉 SlipLocked 拦截）",
+        "file": r"crates\slip-domain\src\state.rs",
+        "old": "            if slip.locked {\n                return Err(DomainError::SlipLocked);\n            }\n            let text = normalize_text(raw)?;",
+        "new": "            // [MUTATION] 去掉锁定保护\n            let text = normalize_text(raw)?;",
+        "filter": "slip-domain",
+        "expect_fail_marker": "FAILED",
+    },
+    {
+        "name": "容量统计口径（只看 done，忽略 archived_at）",
+        "file": r"crates\slip-store\src\capacity.rs",
+        "old": "        if slip.done && slip.archived_at.is_some() {",
+        "new": "        if slip.done { // [MUTATION]",
+        "filter": "slip-store",
+        "expect_fail_marker": "FAILED",
+    },
+    {
+        "name": "置顶 marker 写入（去掉尾部兜底）",
+        "file": r"crates\slip-store\src\doc.rs",
+        "old": "    if slip.pinned && !wrote_pinned {\n        out.push_str(\";pinned=1\");\n    }",
+        "new": "    // [MUTATION] 去掉置顶写入",
+        "filter": "slip-store",
+        "expect_fail_marker": "FAILED",
+    },
+    {
+        "name": "备份保底保留（去掉\"更早那天的最后一份\"）",
+        "file": r"crates\slip-store\src\fsops.rs",
+        "old": "        .filter(|path| !keep_paths.iter().any(|kept| kept == *path));",
+        "new": "        .filter(|_| false); // [MUTATION]",
+        "filter": "slip-store",
+        "expect_fail_marker": "FAILED",
+    },
+    {
+        "name": "彻底移除的归档保护（允许删未归档条目）",
+        "file": r"crates\slip-store\src\lib.rs",
+        "old": "        if !(slip.done && slip.archived_at.is_some()) {",
+        "new": "        if false { // [MUTATION]",
+        "filter": "slip-store",
+        "expect_fail_marker": "FAILED",
+    },
+    {
+        "name": "撤销白名单（把置顶也当成可撤销）",
+        "file": r"crates\slip-app\src\dispatch.rs",
+        "old": "                        | Patch::Unarchive,\n                    ..",
+        "new": "                        | Patch::Unarchive\n                        | Patch::SetPinned(_),\n                    ..",
+        "filter": "slip-app",
+        "expect_fail_marker": "FAILED",
+    },
 ]
 
 
@@ -56,11 +115,35 @@ def run(cmd):
     return result.returncode, (result.stdout or "") + (result.stderr or "")
 
 
+# 退出时的兜底还原。
+#
+# 为什么要它：脚本一旦异常退出（例如被早关的管道打断、或 Ctrl+C），
+# 逐用例的 `finally` 可能来不及跑完，仓库里就留下**改坏的代码**——
+# 这是这类工具最危险的失败形态（你以为代码是干净的）。
+# 所以除了逐用例恢复，再挂一张全局底牌。
+_ORIGINALS: dict[str, str] = {}
+
+
+def restore_all() -> None:
+    for path, original in list(_ORIGINALS.items()):
+        try:
+            current = io.open(path, encoding="utf-8").read()
+            if current != original:
+                io.open(path, "w", encoding="utf-8", newline="").write(original)
+                print(f"[SAFETY] 已兜底还原 {os.path.basename(path)}")
+        except OSError as error:
+            print(f"[SAFETY] 还原 {path} 失败：{error}")
+
+
+atexit.register(restore_all)
+
+
 def main():
     failures = []
     for case in CASES:
         path = f"{REPO}\\{case['file']}"
         original = io.open(path, encoding="utf-8").read()
+        _ORIGINALS[path] = original
         if case["old"] not in original:
             print(f"[SKIP] {case['name']}：锚点未匹配，跳过（并视为失败）")
             failures.append(case["name"] + "（锚点未匹配）")
@@ -90,7 +173,7 @@ def main():
     # 全部恢复后必须重新全绿
     code, out = run(f'wsl.exe -d Arch -- bash -lc "cd /mnt/d/Dev/simple-todo && {WSL_TEST}"')
     if code == 0:
-        print("[PASS] 三处变异全部还原后，测试恢复全绿")
+        print(f"[PASS] {len(CASES)} 处变异全部还原后，测试恢复全绿")
     else:
         print("[FAIL] 还原后测试仍是红的——恢复过程有问题")
         failures.append("还原后未恢复全绿")
@@ -99,7 +182,7 @@ def main():
     if failures:
         print("变异审计未通过：" + "、".join(failures))
         sys.exit(1)
-    print("变异审计通过：三处核心不变量都有活的守卫。")
+    print(f"变异审计通过：{len(CASES)} 处核心不变量都有活的守卫。")
 
 
 if __name__ == "__main__":

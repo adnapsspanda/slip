@@ -704,6 +704,39 @@ fn result_for_code(code: &str) -> AckResult {
 
 #[cfg(test)]
 mod tests {
+    // ---------- R129：撤销白名单的守卫 ----------
+
+    /// 置顶是"标注"，不是内容编辑——它**不进撤销栈**。
+    ///
+    /// 这条断言是变异审计补出来的：审计把 `SetPinned` 加进 `undoable` 的白名单后，
+    /// 全套测试仍然全绿——说明"置顶不可撤销"当时只是一句注释，没有守卫。
+    #[test]
+    fn pinning_is_not_undoable() {
+        let id = SlipId::new_v7();
+        let pinned = vec![Mutation::Patch {
+            id,
+            patch: Patch::SetPinned(true),
+        }];
+        assert!(!undoable(&pinned), "置顶不该进撤销栈");
+        // 反向确认：真正的编辑仍然可撤销，否则上面的断言可能只是"永远为假"。
+        let edited = vec![Mutation::Patch {
+            id,
+            patch: Patch::SetText(String::from("改过")),
+        }];
+        assert!(undoable(&edited), "正文编辑必须可撤销");
+    }
+
+    /// 定稿同理（既有行为，这里一并钉住，避免白名单被顺手改动）。
+    #[test]
+    fn locking_is_not_undoable() {
+        let id = SlipId::new_v7();
+        let locked = vec![Mutation::Patch {
+            id,
+            patch: Patch::SetLocked(true),
+        }];
+        assert!(!undoable(&locked), "定稿不该进撤销栈");
+    }
+
     use std::sync::{Arc, Mutex};
 
     use slip_domain::{ContentRev, Slip, SlipId};
