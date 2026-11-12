@@ -101,6 +101,22 @@ CASES = [
         "crate": "slip-store",
     },
     {
+        "name": "彻底删除的备份保护（备份失败仍继续删）",
+        "file": "crates/slip-store/src/lib.rs",
+        "old": (
+            "        if let Err(kind) = fsops::backup_bytes(&state.path, &disk) {\n"
+            "            tracing::error!(\n"
+            "                path = %state.path.display(),\n"
+            "                %kind,\n"
+            '                "彻底删除前备份失败，拒绝执行不可逆操作"\n'
+            "            );\n"
+            "            return StoreOutcome::failed(state.snapshot(), StoreError::Io(kind));\n"
+            "        }"
+        ),
+        "new": "        // [MUTATION] 备份失败也继续删\n        let _ = fsops::backup_bytes(&state.path, &disk);",
+        "crate": "slip-store",
+    },
+    {
         "name": "撤销白名单（把置顶也当成可撤销）",
         "file": "crates/slip-app/src/dispatch.rs",
         "old": "                        | Patch::Unarchive,\n                    ..",

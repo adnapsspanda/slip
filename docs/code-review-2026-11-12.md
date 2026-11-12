@@ -551,3 +551,61 @@ vault 内的符号链接/硬链接可让「只读证据」读到 vault 外的文
 
 顺带清掉三处预算漂移：`docs/handover.md`（70→88 KB）、`.githooks/pre-commit` 注释
 （CSS 10→14、JS 70→88）、`ui/src/lib/tags.js`（70→88）。
+
+### 11.5 批次 1–3 已完成（数据安全 / 前端生命周期 / 外壳）
+
+#### 批次 1：数据安全（store）
+
+| 修复 | 测试 | 变异验证 |
+|---|---|---|
+| `purge_archived` 备份失败即拒绝（不写主文件、不 bump、不改内存） | `purge_refuses_to_delete_when_backup_fails` | 改回只记警告 → 红（`实际 Ok(ContentRev(7))`） |
+| `restore_backup` 重排：校验名字与候选 → 备份当前 → 覆盖 | `restore_backup_works_when_inbox_is_missing` / `restore_with_an_invalid_name_does_not_consume_a_backup` / `restore_refuses_a_corrupt_backup_without_touching_inbox` | 三处各自破坏均红 |
+| 恢复预检与载入路径同口径（含重复 ID） | `restore_refuses_a_backup_with_duplicate_ids` | 回到只查 `problems` → 红 |
+| purge 事务层字节闭合断言（独立于 `render` 实现） | `purge_refuses_a_render_that_drops_other_lines` | 去掉断言 → 红（`渲染吞掉了普通行却报告成功`） |
+| 成功提交清空诊断（`apply` 与 `purge` 两条路径） | `successful_apply_clears_stale_diagnostics` / `successful_purge_clears_stale_diagnostics` | 删掉 clear → 两条均红 |
+| 回读闭包校验被修改行的 `extras` | `verify_detects_extras_lost_on_a_modified_line` | 去掉 extras 比较 → 红 |
+
+新增 `StoreError::BackupInvalid`，在 `map_store_error` 映射为 `invalidBackup`；
+前端 `formatAckError` 补了对应分支，文案强调「当前 inbox.md 未被改动」。
+
+#### 批次 2：前端生命周期
+
+| 修复 | 守卫 |
+|---|---|
+| `pendingDone` 的失效条件 | 纯函数 `keepPendingIntent` + 4 条断言；`summon()` 源级断言；`handle_toggle_drops_the_pending_intent_through_the_pure_rule` |
+| 编辑失败后 Tab / `beginEdit` 不切目标、不重发草稿 | `commitEdit` 返回 boolean；`edit_switch_waits_for_commit_success` |
+| 损坏预览只读（`Ctrl+Z` / `Ctrl+F` 不再穿透） | `if (preview) return;` + Tab 拦截；`corrupt_preview_blocks_window_shortcuts` |
+| 撤销走串行队列 | `undo_goes_through_the_serial_queue` |
+| 备份面板代数保护 | `backup_list_response_is_guarded_by_a_generation_token` |
+
+`AGENTS.md` 的状态生命周期表新增 `pendingDone` 一行。
+
+#### 批次 3：外壳
+
+| 修复 | 守卫 |
+|---|---|
+| `backup_list` / `vault_capacity` 改 `async` + `spawn_blocking` | 编译 + clippy（无行为测试，见下） |
+| 热键回落三态（`Switched` / `RestoredOld` / `NoneRegistered`） | `next_hotkey` 纯函数 3 条测试；`NoneRegistered` 改回保留旧值 → 红 |
+| 换键落盘（`persist_hotkey`，先读后写） | 3 条测试：写入可读回、只覆盖 `hotkey`、目录缺失不 panic |
+| 启动 I/O 失败不 panic | `startup_with_unreadable_path_degrades_instead_of_panicking` |
+| 单次提交少读一次全文件 | `apply` / `purge` / `restore` 均复用已读字节 |
+| `guard_corrupt_path` 解析最终路径 + `is_file()` + 真实文件名校验 | 6 条测试（含 2 条 unix 符号链接） |
+
+#### 整合期补的四处缺口（子代理报告里提出、主代理修复）
+
+1. `apply` 里 `read_for_conflict` 的字节仍被丢弃 —— 已改为传给 `backup_bytes`。
+2. 前端缺 `invalidBackup` 分支 —— 已补，文案说明「当前文件未被改动」。
+3. 设计文档 §1.9 缺「备份失败即拒绝」的例外说明 —— 已补，并补了恢复顺序与字节闭合断言。
+4. 恢复预检只查 `problems`，重复 ID 会漏过 —— 已改用 `parse_with_identity`，并补回归测试。
+
+#### 本轮最终实测
+
+- 逻辑层：**318 passed / 0 failed**（基线 304），外壳 lib：**39 passed**（基线 24）。
+- `cargo clippy --workspace --all-targets -- -D warnings`：干净。
+- `cargo fmt --all --check`：干净；prettier：干净。
+- 前端构建：JS 84.16 KB / 88 KB、CSS 12.11 KB / 14 KB。
+- 六条 PowerShell 门禁（pwsh 7）：全部 exit 0。
+- `python3 tools/mutation-audit.py`：**11 处变异全部变红**，还原后全绿。
+
+**尚未验证**（环境限制，必须人工）：外壳的托盘/热键真实行为、透明窗口与窗口定位、
+端到端 `verify-hotkey.ps1`。本机是 WSL，没有交互式 Windows 桌面会话。

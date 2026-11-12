@@ -112,6 +112,7 @@ CI（`.github/workflows/ci.yml`）还跑前端构建、release 构建、Linux �
 | `notice`（撤销提示） | `summon()`、`reload`、`isolate`、`restore` | 按钮还在但后端已无对应撤销 |
 | `editingId` / `session` / `draft` | 该条目从 `slips` 消失时 | `editing` 恒真 → `Ctrl+Z` 被永久拦掉 |
 | `inFlight` / `draftVersion` | 提交结束 | 迟到的 ACK 把新草稿误判成自己的 |
+| `pendingDone`（未落盘的勾选意图） | 请求失败、快照已等于目标、`summon()` | 勾选要按两下：下一次点击从"没发生过的状态"反转 |
 | 撤销栈 | 任何"整体替换内容"路径：`Reload`、`RestoreBackup`、`IsolateAndReset` | 逆操作指向不存在的条目，之后每次撤销都撞同一堵墙 |
 | `needs_reload` | 成功写入或成功 `reload` | 永远写不进去 |
 
