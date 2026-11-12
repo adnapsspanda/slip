@@ -87,15 +87,15 @@ fi
 # 这些条目一旦被破坏代价是架构级返工，而它们原本只靠人记。
 if command -v pwsh >/dev/null 2>&1; then
   step "常量：死代码与前后端镜像（tools/check-dead-constants.ps1）"
-pwsh -NoProfile -File tools/check-dead-constants.ps1
+  pwsh -NoProfile -File tools/check-dead-constants.ps1
 
-step "设计文档与代码同步（tools/check-doc-sync.ps1）"
-pwsh -NoProfile -File tools/check-doc-sync.ps1
+  step "设计文档与代码同步（tools/check-doc-sync.ps1）"
+  pwsh -NoProfile -File tools/check-doc-sync.ps1
 
-step "钩子与 CI 的门禁对等性（tools/check-ci-parity.ps1）"
-pwsh -NoProfile -File tools/check-ci-parity.ps1
+  step "钩子与 CI 的门禁对等性（tools/check-ci-parity.ps1）"
+  pwsh -NoProfile -File tools/check-ci-parity.ps1
 
-step "不可回退的约束（禁止引入清单）"
+  step "不可回退的约束（禁止引入清单）"
   # `-SelfTest` 是这份守卫唯一的"守卫本身写错了"探测器：它用临时文件走真实代码路径，
   # 验证 `-Include` 真的能选中 Cargo.toml / tauri.conf.json。从不运行的自检等于没有自检。
   pwsh -NoProfile -File tools/check-forbidden.ps1 -SelfTest
@@ -116,8 +116,16 @@ step "前端纯逻辑检查（tools/check-ui-logic.mjs）"
 
 # 产物体积门禁（R74）：CSS < 14 KB、JS < 88 KB。超了不会有任何报错，
 # 只会让安装包悄悄变大——所以必须在这里硬拦。
-step "前端产物体积（tools/check-bundle-size.ps1）"
-pwsh -NoProfile -File tools/check-bundle-size.ps1
+#
+# 无 pwsh 时**跳过并喊出来**，与上面四条 PowerShell 门禁同一策略：这条钩子也会在
+# WSL / 纯 Linux 上被跑到，那里通常没有 pwsh。硬失败会让整个提交无法进行，
+# 而静默跳过又会让"预算是绿的"变成假象——所以显式留痕，CI 侧仍会拦。
+if command -v pwsh >/dev/null 2>&1; then
+  step "前端产物体积（tools/check-bundle-size.ps1）"
+  pwsh -NoProfile -File tools/check-bundle-size.ps1
+else
+  step "前端产物体积（跳过：环境里没有 pwsh；CI 仍会检查）"
+fi
 
 step "cargo fmt --all --check"
 cargo fmt --all --check
