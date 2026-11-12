@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # 编码守卫：*.ps1 必须带 UTF-8 BOM。
       # 与 .githooks/pre-commit 里的同一条检查对应——钩子可以被 --no-verify 绕过，
@@ -135,7 +135,7 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 安装 Rust 工具链
         run: |
@@ -176,7 +176,7 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Tauri v2 在 Linux 上编译所需的系统依赖（WebKitGTK / GTK / 托盘 / SVG / 链接工具）。
       # 注意 Ubuntu 版本差异：24.04 起用 libayatana-appindicator3-dev，
