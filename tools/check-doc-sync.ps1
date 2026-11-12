@@ -28,8 +28,14 @@ if (-not (Test-Path $doc)) {
 }
 
 $failed = 0
-$text = Get-Content $doc -Raw
-$docLines = Get-Content $doc
+# **剥掉 BOM 字符**：`Get-Content -Raw` 在 Windows PowerShell 5.1 下会把 U+FEFF
+# 留在字符串开头，`ConvertFrom-Json` 于是抛 ArgumentException——而且退出码是 1，
+# 看起来像文档不一致，实际是编码问题。设计文档与 capability JSON 都可能带 BOM。
+function Read-Text([string]$Path) {
+    return ((Get-Content -LiteralPath $Path -Raw) -replace "^\uFEFF", '')
+}
+$text = Read-Text $doc
+$docLines = (Read-Text $doc) -split "`r?`n"
 
 # ---- 1. IPC 命令数量 ----
 $actualCommands = (Select-String -Path 'src-tauri/src/*.rs' -Pattern '#\[tauri::command\]' | Measure-Object).Count
@@ -59,7 +65,7 @@ else {
 # 只读文档里那句**声明**（"Capability 只有两项：…"），不扫全文——
 # 全文里还有"core:window:default 的组成是…"这类解释，扫全文会把解释当成权限。
 $capPath = 'src-tauri/capabilities/default.json'
-$cap = Get-Content $capPath -Raw | ConvertFrom-Json
+$cap = Read-Text $capPath | ConvertFrom-Json
 $actualPerms = @($cap.permissions | Sort-Object)
 
 $declareIndex = -1
@@ -108,6 +114,44 @@ foreach ($marker in $staleMarkers) {
         }
         if ($outsideHistory) {
             Write-Output "[WARN] 正文里仍有「$($marker.Pattern)」——$($marker.Why)，确认它出现在历史语境里"
+        }
+    }
+}
+
+# ---- 4. 前端预算数字：脚本、文档、钩子注释三处必须一致 ----
+#
+# 这类数字最典型的失真方式：预算从 70 KB 提到 88 KB，脚本改了，文档与钩子注释
+# 还写着旧值。读者按错的数字理解系统，而没有任何东西会报错。
+$bundleScript = 'tools/check-bundle-size.ps1'
+$budgetSources = @('docs/handover.md', '.githooks/pre-commit', 'ui/src/lib/tags.js')
+if (Test-Path $bundleScript) {
+    $bundleText = Read-Text $bundleScript
+    $cssMatch = [regex]::Match($bundleText, '\$cssLimit\s*=\s*(\d+)\s*\*\s*1024')
+    $jsMatch = [regex]::Match($bundleText, '\$jsLimit\s*=\s*(\d+)\s*\*\s*1024')
+    if (-not $cssMatch.Success -or -not $jsMatch.Success) {
+        Write-Output '[FAIL] 无法从 check-bundle-size.ps1 解析出 css/js 预算，断言失效'
+        $failed++
+    }
+    else {
+        $cssKb = [int]$cssMatch.Groups[1].Value
+        $jsKb = [int]$jsMatch.Groups[1].Value
+        foreach ($source in $budgetSources) {
+            if (-not (Test-Path $source)) { continue }
+            $body = Read-Text $source
+            # 只看提到 KB 预算的句子，避免把「R84 时产物 71.09 KB」这类历史数字扫进来。
+            $claims = [regex]::Matches($body, '(CSS|JS)[^。\n]{0,24}?(\d+)\s*KB')
+            foreach ($claim in $claims) {
+                $kind = $claim.Groups[1].Value
+                $claimed = [int]$claim.Groups[2].Value
+                $expected = if ($kind -eq 'CSS') { $cssKb } else { $jsKb }
+                if ($claimed -ne $expected) {
+                    Write-Output "[FAIL] $source 写「$kind $claimed KB」，脚本预算是 $kind $expected KB"
+                    $failed++
+                }
+            }
+        }
+        if ($failed -eq 0) {
+            Write-Output "[PASS] 预算数字一致（CSS $cssKb KB / JS $jsKb KB）"
         }
     }
 }

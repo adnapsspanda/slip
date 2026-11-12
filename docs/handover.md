@@ -85,7 +85,8 @@ pwsh -NoProfile -File tools/package-release.ps1
 1. **CSS 预算：已提额到 14 KB**（`tools/check-bundle-size.ps1`）。原 10 KB 的配额定于 R31
    之前，当时还没有双模变量体系；R31–R41 整套深浅色 + 聚焦环 + 横幅三档 + 细滚动条净增约
    2.3 KB、压缩后 9.99 KB，控制力已经克制。死守 10 KB 只会逼出"为指标牺牲可读性"的缩写。
-   14 KB 留 4 KB 缓冲，仍能挡住无节制引入样式库。**JS 预算保持 70 KB。**
+   14 KB 留 4 KB 缓冲，仍能挡住无节制引入样式库。**JS 预算已提额到 88 KB**（理由见
+`tools/check-bundle-size.ps1` 头部的两次裁决记录；这个数字与脚本不一致时 `check-doc-sync.ps1` 会报错）。
 2. **`skipTaskbar`：维持"打印实测值 + 人工目视确认"，不写 Win32 样式断言。**
    现代 Chromium/WebView2/Tauri 应用摘任务栏按钮的主流做法是
    **`ITaskbarList::DeleteTab(hwnd)`**，而不是加 `WS_EX_TOOLWINDOW`——因为在 Win11 下

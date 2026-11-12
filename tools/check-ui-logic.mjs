@@ -6,6 +6,7 @@
 // 之后，一条 `bun` 命令就能验，不受环境影响。
 //
 // 用法：& "C:\Users\spand\.bun\bin\bun.exe" run tools/check-ui-logic.mjs
+import { readFile } from "node:fs/promises";
 import {
   bannerLevel,
   shouldShowReadonlyGuide,
@@ -609,12 +610,6 @@ const gate1 = confirmNext(null, 10_000);
 const gate2 = confirmNext(gate1.armedAt, 12_000);
 check("点两下才会真的执行", [gate1.execute, gate2.execute], [false, true]);
 
-if (failed > 0) {
-  console.log(`\n失败 ${failed} 项。`);
-  process.exit(1);
-}
-console.log("\n全部通过。");
-
 // ---------- R118：列表边界不蜂鸣 ----------
 //
 // 边界处的正确行为是"什么也不做"，而且调用方必须已经 preventDefault——
@@ -660,3 +655,40 @@ check("黑白对比度为 21", Math.round(contrastRatio("#000000", "#ffffff")), 
 check("同色对比度为 1", contrastRatio("#123456", "#123456"), 1);
 check("非法颜色返回 null", [parseHex("red"), contrastRatio("zzz", "#fff")], [null, null]);
 check("相对亮度：白 1 / 黑 0", [Math.round(relativeLuminance("#ffffff")), relativeLuminance("#000000")], [1, 0]);
+
+// ---------- 退出判定必须真的在最后 ----------
+//
+// 这条守卫守的是**脚本自身**：退出判定曾经写在文件中间，其后还有 14 条 check(
+// （列表边界 + 对比度），于是那 14 条即使全红进程也照样 exit 0——
+// 实测过：往末尾追加一条必失败断言，退出码仍是 0。
+//
+// 所以这里读自己的源码，确认「最后一次 check( 调用」出现在退出判定之前。
+// 将来任何人往末尾加断言忘了挪判定，这条会立刻变红。
+{
+  const source = await readFile(new URL(import.meta.url), "utf8");
+  const lines = source.split("\n");
+  const lastCheck = lines.reduce(
+    (last, line, index) => (/(^|[^.\w])check\(/.test(line) ? index : last),
+    -1,
+  );
+  const gate = lines.findIndex((line) => line.includes("process.exit(1)") && line.includes("if"));
+  const gateLine = lines.findIndex((line) => line.trim() === "if (failed > 0) {");
+  const effectiveGate = gateLine >= 0 ? gateLine : gate;
+  check("退出判定存在", effectiveGate >= 0, true);
+  check(
+    "最后一次 check( 在退出判定之前（否则末尾断言永远不参与判定）",
+    lastCheck >= 0 && effectiveGate > lastCheck,
+    true,
+  );
+  if (lastCheck >= 0 && effectiveGate <= lastCheck) {
+    console.log(
+      `  最后一次 check( 在第 ${lastCheck + 1} 行，退出判定在第 ${effectiveGate + 1} 行`,
+    );
+  }
+}
+
+if (failed > 0) {
+  console.log(`\n失败 ${failed} 项。`);
+  process.exit(1);
+}
+console.log("\n全部通过。");

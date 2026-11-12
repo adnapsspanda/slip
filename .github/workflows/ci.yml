@@ -71,7 +71,9 @@ jobs:
 
       - name: 不可回退的约束（禁止引入清单）
         shell: pwsh
-        run: pwsh -NoProfile -File tools/check-forbidden.ps1
+        # `-SelfTest` 走真实 Include 路径（临时 Cargo.toml / tauri.conf.json），
+        # 防止"正则对、但选不中文件"的守卫恒绿。
+        run: pwsh -NoProfile -File tools/check-forbidden.ps1 -SelfTest
 
       - name: 安装 bun
         uses: oven-sh/setup-bun@v2

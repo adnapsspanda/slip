@@ -481,3 +481,73 @@ vault 内的符号链接/硬链接可让「只读证据」读到 vault 外的文
 - 未执行 Windows 外壳构建与 `tools/verify-hotkey.ps1`（需要 Windows 交互桌面）。
 - 未执行本次新建议的回归测试——它们尚不存在；批次 1 落地时应逐条补上并做变异验证。
 
+
+---
+
+## 十一、复核修正与批次 0 执行记录（2026-11-12 当日追加）
+
+本节由修复执行方回读源码后追加。**本文第三章整节已过期**（它描述的是 85b9802 之前的状态，
+两个提交相差 22 秒）；下面同时修正几处与源码不符的结论，避免后来者照着做重复或错误的工作。
+
+### 11.1 第三章逐条复核
+
+| 条目 | 复核结果 |
+|---|---|
+| 3.1 `SetDone` 逆操作漏状态 | 已修，`dispatch.rs` 按 `slip.done` 分支，归档态补 `Patch::Archive` |
+| 3.2 整体替换失败也清撤销栈 | 已修，三处均为 `if error.is_none()` |
+| 3.3 `PurgeArchived` 的 `JoinError` 谎报未执行 | 已修，走 `fatal()` |
+| 3.4 空操作进撤销栈 | 已修，`run_batch` 用 `content_rev` 判 `changed` |
+| 3.5 `assert_body_contains` 是纯子串匹配 | **事实错误**：函数叫 `assert_body_has_statement`，已跳过注释行并要求整行相等；`notice` / `filter` / `filtering` 三项都在断言列表里 |
+
+### 11.2 需要降级或修正的条目
+
+- **§7（purge 的逐字节保护只有一条单测）**：不成立。`purge_removes_exactly_one_line_and_keeps_the_rest_byte_identical`
+  已经逐行比对删除前后的字节。真正缺的是**事务层自身的闭合断言**，按 P2 处理。
+- **§4（门禁对等性只检查一个方向）**：不准确。`$missingInHook` 确实检查了 CI→钩子方向。
+  真实问题有三点：归一失败被 `Where-Object { $_ }` 静默丢弃、`$hookOnly` 是空死代码、
+  命令片段只比对 `--workspace` 一处。
+- **§15（过滤视图清草稿）**：触发面比文中描述的还窄。编辑期间 `handleKeydown` 直接 return，
+  按不到 Ctrl+F；点过滤框会先触发 blur 提交。现实入口只剩「编辑中外部改文件 + 静默刷新筛掉该条」。
+  **本轮不改**：它会牵出「过滤导致编辑框卸载时草稿算提交还是丢弃」的语义问题，不应顺手决定。
+- **§11（编辑失败抢焦点导致重复提交）**：Enter 路径无害（编辑态下 `itemEls[index]` 未绑定，
+  `focus()` 是 no-op）。真正有后果的是 **Tab 路径**与 `beginEdit` 里的 `void commitEdit()`，
+  两处都会把同一份失败草稿再发一次并静默丢弃原草稿。
+
+### 11.3 本次实测到的环境事实
+
+- 逻辑层基线：**10 个目标 / 304 passed / 5 ignored / 0 failed**（本文 §十 的 286 已过期）。
+- 外壳 lib 测试：24 passed。
+- `tools/mutation-audit.py` 在修复前**完全失效**：`REPO = r"D:\Dev\simple-todo"` 与
+  `wsl.exe -d Arch` 硬编码；本机发行版是 `arch_lagacy`，仓库在 ext4。
+- `check-forbidden.ps1` 的 `Get-SourceIndex` 在 `\\wsl.localhost\...` 下用
+  `(Get-Location).Path` 会带 `FileSystem::` 前缀，`Directory.EnumerateFiles` 抛错，
+  **索引是空表、所有检查恒绿**。这与 `-Include` 写错是两个独立的假绿来源。
+- **Windows PowerShell 5.1 不是可用的门禁环境**：`ConvertFrom-Json` 受 BOM 影响抛异常；
+  中文按 GBK 解码导致关键词匹配不上（`check-ci-parity` 只识别出 2 个关口）。
+  门禁证据只认 `pwsh 7`。`check-doc-sync.ps1` 已改为读取时剥 BOM，但 5.1 的 GBK 问题不修——
+  钩子与 CI 都显式用 `pwsh`。
+
+### 11.4 批次 0 已完成（门禁）
+
+四条门禁修复全部落地，每条都做了「故意破坏 → 退出码非 0 → 还原」的验证：
+
+1. `check-forbidden.ps1`：`-Include` 拆成扩展名 / 精确文件名两种语义；
+   新增 `Split-IncludePatterns` / `Test-IncludeMatch`；`-SelfTest` 增加**端到端**用例
+   （临时 `Cargo.toml` 写 `notify` 必须被抓到）。另修 `Get-Location.ProviderPath`。
+   破坏验证：根 `Cargo.toml` 注入 `notify = "6"` → exit 1。
+2. `check-ui-logic.mjs`：退出判定移到文件末尾；新增「最后一次 `check(` 必须在退出判定之前」
+   的结构守卫。破坏验证：末尾追加必失败断言 → exit 1。
+3. `mutation-audit.py`：路径由 `__file__` 推导，直接调 `cargo`；判据收紧为
+   `test result: FAILED` 才算红，编译失败记 `[INVALID]` 并计失败；增加基线预检。
+   实测 10/10 变红、12 秒、还原后全绿。破坏验证：把一条变异改成语法错误 → `[INVALID]`、exit 1。
+4. `check-ci-parity.ps1`：补三条关口（常量 / 文档同步 / 门禁对等性）；未识别步骤默认 FAIL，
+   白名单按原始步骤名显式列出；命令片段双向断言（`--all-targets`、`-D warnings`、
+   `--workspace`、`fmt --all --check`、`-SelfTest`）。块提取会剥掉注释行——
+   第一版没剥，命令里删掉 `-SelfTest` 仍判绿，是假阴性。
+5. `-SelfTest` 已接入钩子与 CI。
+6. `check-doc-sync.ps1`：读取时剥 BOM；新增预算一致性断言（脚本 `$cssLimit` / `$jsLimit`
+   与 `docs/handover.md`、`.githooks/pre-commit`、`ui/src/lib/tags.js` 的 KB 数字比对）。
+   破坏验证：把 handover 的 JS 预算改回 80 KB → exit 1。
+
+顺带清掉三处预算漂移：`docs/handover.md`（70→88 KB）、`.githooks/pre-commit` 注释
+（CSS 10→14、JS 70→88）、`ui/src/lib/tags.js`（70→88）。

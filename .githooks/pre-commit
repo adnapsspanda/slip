@@ -96,7 +96,9 @@ step "钩子与 CI 的门禁对等性（tools/check-ci-parity.ps1）"
 pwsh -NoProfile -File tools/check-ci-parity.ps1
 
 step "不可回退的约束（禁止引入清单）"
-  pwsh -NoProfile -File tools/check-forbidden.ps1
+  # `-SelfTest` 是这份守卫唯一的"守卫本身写错了"探测器：它用临时文件走真实代码路径，
+  # 验证 `-Include` 真的能选中 Cargo.toml / tauri.conf.json。从不运行的自检等于没有自检。
+  pwsh -NoProfile -File tools/check-forbidden.ps1 -SelfTest
 fi
 
 # 前端格式：prettier 3 **不会**自动加载插件，所以 ui/.prettierrc.json 里必须显式
@@ -112,7 +114,7 @@ fi
 step "前端纯逻辑检查（tools/check-ui-logic.mjs）"
 "$BUN" run tools/check-ui-logic.mjs
 
-# 产物体积门禁（R74）：CSS < 10 KB、JS < 70 KB。超了不会有任何报错，
+# 产物体积门禁（R74）：CSS < 14 KB、JS < 88 KB。超了不会有任何报错，
 # 只会让安装包悄悄变大——所以必须在这里硬拦。
 step "前端产物体积（tools/check-bundle-size.ps1）"
 pwsh -NoProfile -File tools/check-bundle-size.ps1

@@ -76,7 +76,11 @@ function Get-SourceIndex {
     $files = [System.Collections.Generic.List[string]]::new()
     $skipDirs = @('\target\', '\node_modules\', '\.git\', '\dist\')
     $stack = [System.Collections.Generic.Stack[string]]::new()
-    $stack.Push((Get-Location).Path)
+    # **必须用 ProviderPath**：在 `\\wsl.localhost\...` 这类 UNC 路径下，
+    # `(Get-Location).Path` 会带上 `Microsoft.PowerShell.Core\FileSystem::` 前缀，
+    # `Directory.EnumerateFiles` 直接抛错，索引变成空表——所有检查恒绿。
+    # 本机就是这么踩到的：加了 notify 也不报。ProviderPath 才是纯文件系统路径。
+    $stack.Push((Get-Location).ProviderPath)
     while ($stack.Count -gt 0) {
         $dir = $stack.Pop()
         try {
@@ -105,21 +109,58 @@ function Get-SourceLines([string]$Path) {
     return $lines
 }
 
+# 把 `-Include` 的两种写法分开：
+#   · `*.rs` / `*.svelte` → 按**扩展名**匹配（`.rs`）；
+#   · `Cargo.toml` / `tauri.conf.json` → 按**完整文件名**精确匹配。
+#
+# 旧实现把两种都塞进「扩展名集合」，于是 `Cargo.toml` 被当成扩展名 `.toml` 永远不会
+# 与 `GetExtension` 的结果相等——那三条守卫（watcher / SQLite / CSP）曾经**恒为通过**。
+# 含 `?`、`[` 等复杂 glob 一律拒绝：静默退回 `.Like` 只会让下一次改动又悄悄失效。
+function Split-IncludePatterns {
+    param([string[]]$Include)
+    $exts = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $names = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($glob in $Include) {
+        if ($glob -match '[?\[\]]') {
+            throw "Include 只支持 '*.ext' 与精确文件名两种写法，收到：$glob"
+        }
+        if ($glob.StartsWith('*.')) {
+            [void]$exts.Add($glob.Substring(1))
+        }
+        else {
+            [void]$names.Add($glob)
+        }
+    }
+    return [pscustomobject]@{ Exts = $exts; Names = $names }
+}
+
+function Test-IncludeMatch {
+    param([string]$File, $Patterns)
+    if ($Patterns.Names.Contains([System.IO.Path]::GetFileName($File))) { return $true }
+    return $Patterns.Exts.Contains([System.IO.Path]::GetExtension($File))
+}
+
 function Check-Forbidden {
     param(
         [string]$Label,
         [string]$Pattern,
         [string[]]$Include,
         [string]$Reason,
-        [switch]$SkipComments
+        [switch]$SkipComments,
+        # 自检要能直接喂一个临时文件，不必改仓库。默认走全仓库索引。
+        [string[]]$FileList,
+        # 自检时不想刷屏：只累加失败，不打印「通过」。
+        [switch]$Quiet,
+        # 自检失败要能被调用方看见，所以默认累加，显式 $false 时只返回命中数。
+        [bool]$RecordFailure = $true,
+        # 只给自检用：把命中数作为函数输出返回。正常调用不返回，避免把数字打进报告。
+        [switch]$PassThru
     )
     $hits = @()
-    # Include 目前全是 `*.ext` 形态，换算成扩展名集合做 O(1) 查找，比逐文件 `-like` 快。
-    # 若将来出现更复杂的 glob，这里需要退回通配匹配——所以保留一条断言式注释提醒。
-    $exts = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($glob in $Include) { [void]$exts.Add(($glob -replace '^\*', '')) }
-    foreach ($file in (Get-SourceIndex)) {
-        if (-not $exts.Contains([System.IO.Path]::GetExtension($file))) { continue }
+    $patterns = Split-IncludePatterns -Include $Include
+    $files = if ($null -ne $FileList) { $FileList } else { Get-SourceIndex }
+    foreach ($file in $files) {
+        if (-not (Test-IncludeMatch -File $file -Patterns $patterns)) { continue }
 
         $state = 'code'
         $scanState = [ref]$state
@@ -132,20 +173,23 @@ function Check-Forbidden {
                 $state -ne 'code' -or $line.Contains('//') -or $line.Contains('/*') -or $line.Contains('<!--'))
             $scan = if ($needsMask) { Mask-Comments -Text $line -State $scanState } else { $line }
             if ($scan -match $Pattern) {
-                $rel = $file.Replace((Get-Location).Path + '\', '')
+                $rel = $file.Replace((Get-Location).ProviderPath + '\', '')
                 $hits += ("{0}:{1}: {2}" -f $rel, $lineNo, $line.Trim())
             }
         }
     }
     if ($hits.Count -gt 0) {
-        Write-Output "  [禁止] $Label —— $Reason"
-        $hits | Select-Object -First 6 | ForEach-Object { Write-Output "         $_" }
-        if ($hits.Count -gt 6) { Write-Output ("         ……另有 " + ($hits.Count - 6) + " 处") }
-        $script:failures += $Label
+        if (-not $Quiet) {
+            Write-Output "  [禁止] $Label —— $Reason"
+            $hits | Select-Object -First 6 | ForEach-Object { Write-Output "         $_" }
+            if ($hits.Count -gt 6) { Write-Output ("         ……另有 " + ($hits.Count - 6) + " 处") }
+        }
+        if ($RecordFailure) { $script:failures += $Label }
     }
-    else {
+    elseif (-not $Quiet) {
         Write-Output "  [通过] $Label"
     }
+    if ($PassThru) { Write-Output $hits.Count }
 }
 
 # ---------------------------------------------------------------------------
@@ -211,7 +255,7 @@ Check-Forbidden -Label "CSP 被削弱" `
 
 if ($SelfTest) {
     Write-Output ""
-    Write-Output "== 自检：模式对正负样本的判定 =="
+    Write-Output "== 自检 1：模式对正负样本的判定 =="
     $cases = @(
         @{ Name = '网络请求'; Pattern = $PATTERN_NETWORK; Yes = 'const r = await fetch("http://x")'; No = 'const note = "fetch 还没实现"' }
         @{ Name = '危险 API'; Pattern = $PATTERN_DANGEROUS; Yes = 'el.innerHTML = userText'; No = 'const marker = "innerHTML" /* 说明 */' }
@@ -224,8 +268,67 @@ if ($SelfTest) {
         if ($case.No -notmatch $case.Pattern) { Write-Output "  [PASS] $($case.Name)：负样本不命中" }
         else { Write-Output "  [FAIL] $($case.Name)：负样本被误判"; $bad++ }
     }
+
+    # 只测正则是不够的：上面三条模式全都「对」，但把它们接到 `Cargo.toml` /
+    # `tauri.conf.json` 上的 `-Include` 曾经写错，守卫照样恒绿。所以这里走**真实
+    # 代码路径**：临时目录造文件 → 调 Check-Forbidden → 断言命中与否。
+    Write-Output ""
+    Write-Output "== 自检 2：Include 真的能选中 Cargo.toml / tauri.conf.json =="
+    $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("slip-forbidden-selftest-" + [guid]::NewGuid().ToString('n'))
+    New-Item -ItemType Directory -Path $tmp | Out-Null
+    try {
+        $cargoBad = Join-Path $tmp 'Cargo.toml'
+        $cargoGood = Join-Path $tmp 'Cargo.good.toml'
+        $confBad = Join-Path $tmp 'tauri.conf.json'
+        $confGood = Join-Path $tmp 'tauri.good.json'
+        Set-Content -LiteralPath $cargoBad -Encoding utf8 -Value @(
+            '[dependencies]', 'notify = "6"', 'rusqlite = "0.31"')
+        Set-Content -LiteralPath $cargoGood -Encoding utf8 -Value @(
+            '[dependencies]', 'serde = "1"')
+        Set-Content -LiteralPath $confBad -Encoding utf8 -Value @(
+            '{ "app": { "security": { "csp": "script-src ''self'' unsafe-inline" } } }')
+        Set-Content -LiteralPath $confGood -Encoding utf8 -Value @(
+            '{ "app": { "security": { "csp": "script-src ''self''" } } }')
+
+        $watcher = Check-Forbidden -Label '自检-watcher' -Pattern '^\s*(notify|notify-debouncer-mini)\s*=' `
+            -Include @('Cargo.toml') -Reason '自检' -SkipComments -Quiet -RecordFailure $false -PassThru `
+            -FileList @($cargoBad, $cargoGood)
+        $sqlite = Check-Forbidden -Label '自检-sqlite' -Pattern '^\s*(rusqlite|sqlx|diesel)\s*=' `
+            -Include @('Cargo.toml') -Reason '自检' -SkipComments -Quiet -RecordFailure $false -PassThru `
+            -FileList @($cargoBad, $cargoGood)
+        $csp = Check-Forbidden -Label '自检-csp' -Pattern $PATTERN_CSP_WEAK `
+            -Include @('tauri.conf.json') -Reason '自检' -Quiet -RecordFailure $false -PassThru `
+            -FileList @($confBad, $confGood)
+
+        foreach ($probe in @(
+                @{ Name = 'watcher 命中 Cargo.toml'; Got = $watcher; Want = 1 }
+                @{ Name = 'SQLite 命中 Cargo.toml'; Got = $sqlite; Want = 1 }
+                @{ Name = 'CSP 命中 tauri.conf.json'; Got = $csp; Want = 1 }
+            )) {
+            if ($probe.Got -eq $probe.Want) {
+                Write-Output "  [PASS] $($probe.Name)：命中 $($probe.Got) 处"
+            }
+            else {
+                Write-Output "  [FAIL] $($probe.Name)：命中 $($probe.Got) 处，期望 $($probe.Want) 处——Include 又选不中文件了"
+                $bad++
+            }
+        }
+
+        # 负样本同样要过：没有违禁项的文件必须 0 命中，否则守卫会天天误报。
+        $clean = Check-Forbidden -Label '自检-干净文件' -Pattern $PATTERN_CSP_WEAK `
+            -Include @('tauri.conf.json') -Reason '自检' -Quiet -RecordFailure $false -PassThru `
+            -FileList @($confGood)
+        if ($clean -eq 0) { Write-Output "  [PASS] 干净文件不误报" }
+        else { Write-Output "  [FAIL] 干净文件被误报 $clean 处"; $bad++ }
+    }
+    finally {
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     if ($bad -gt 0) { exit 1 }
-    Write-Output "自检通过：三条新模式都能区分正负样本。"
+    Write-Output "自检通过：模式与 Include 都能区分正负样本。"
+    # 自检是**加验**，不能掩盖本次全仓扫描的结果。
+    if ($failures.Count -gt 0) { exit 1 }
     exit 0
 }
 
