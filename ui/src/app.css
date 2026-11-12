@@ -710,7 +710,8 @@ body {
 /* 行尾的三个图标按钮共用一套「低对比、hover 才显现」的规格（R95 的图钉并入其中）。 */
 .slip__lock,
 .slip__archive,
-.slip__pin {
+.slip__pin,
+.slip__purge {
   flex: none;
   display: flex;
   align-items: center;
@@ -731,9 +732,11 @@ body {
 .slip:hover .slip__lock,
 .slip:hover .slip__archive,
 .slip:hover .slip__pin,
+.slip:hover .slip__purge,
 .slip__lock:focus-visible,
 .slip__archive:focus-visible,
-.slip__pin:focus-visible {
+.slip__pin:focus-visible,
+.slip__purge:focus-visible {
   opacity: 0.85;
   /* 只改透明度是不够的：这两颗按钮平时就是半透明，1 到 0.85 的差别肉眼看不出来。
      必须给实心焦点环，否则键盘用户等于没有焦点提示。 */
@@ -744,7 +747,8 @@ body {
 
 .slip__lock:hover,
 .slip__archive:hover,
-.slip__pin:hover {
+.slip__pin:hover,
+.slip__purge:hover {
   background: var(--paper-active);
   opacity: 1;
 }
@@ -761,6 +765,25 @@ body {
 .slip__pin--on {
   color: var(--accent);
   opacity: 1;
+}
+
+/*
+ * 彻底删除的"已武装"态（R104）：复用危险操作的浅红底。
+ * 必须让用户看出第一下点的是哪一行——否则第二下就成了盲点。
+ */
+.slip__purge--armed {
+  border: 1px solid var(--confirm-edge);
+  background: var(--confirm-bg);
+  color: var(--confirm-text);
+  opacity: 1;
+}
+
+/* 归档抽屉底部的容量摘要（R104）：一行小字，不抢列表的注意力。 */
+.archive-summary {
+  margin: 0;
+  padding: 2px 14px 10px;
+  font-size: 11px;
+  color: var(--ink-soft);
 }
 
 .notice {

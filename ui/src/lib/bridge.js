@@ -124,6 +124,22 @@ export const vaultPath = () => call("vault_path");
 export const corruptFiles = () => call("corrupt_files");
 
 /**
+ * 归档墓碑的容量统计（R102A/R104）。**只读**：只回答"能清理多少"，不删任何东西。
+ *
+ * 读不到就让界面不显示这一行，不要用 0 冒充——那会和"抽屉里明明有归档"打架。
+ * @returns {Promise<{archived: number, archivedBytes: number, totalRecords: number, totalBytes: number, ratio: number}>}
+ */
+export const vaultCapacity = () => call("vault_capacity");
+
+/**
+ * 彻底删除一条已归档记录（R104）。**不可逆**：后端只允许删 `done && archived_at`
+ * 的记录，会先写备份；成功后后端已经清空撤销栈，所以界面**不能**给它挂"撤销"。
+ * @returns {Promise<Ack>}
+ */
+export const purgeArchived = (requestId, id) =>
+  call("purge_archived", { requestId, id });
+
+/**
  * 损坏证据文件的**只读**残存文本（前 64 KiB，非法 UTF-8 被替换成 U+FFFD）。
  *
  * **安全约束在后端**：只接受 vault 目录下、文件名以 `inbox.md.corrupt-` 开头的路径，

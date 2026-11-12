@@ -30,3 +30,27 @@ export function confirmStep({ armedAt, now, windowMs = CONFIRM_WINDOW_MS }) {
   }
   return "execute";
 }
+
+/**
+ * 二次确认的**状态迁移**：给出"这一下点完之后，武装时间戳该是什么"。
+ *
+ * 与 `confirmStep` 的分工：那个只回答"算不算确认"，这个回答"状态怎么变"。
+ * 界面（`App.svelte` 的 `confirmGate`）需要的正是后者——一行 `armed = next.armedAt`
+ * 就能同时表达"武装 / 执行 / **超时自动还原**"，不必在每个调用点各写一遍定时器语义。
+ *
+ * `armedAt === null` 且 `execute === false` 以外的两种结果：
+ * - `{armedAt: now, execute: false}`：刚武装（或超时后重新武装，时间戳取"现在"）；
+ * - `{armedAt: null, execute: true}`：窗口内第二下，执行并解除武装。
+ *
+ * @param {number|null|undefined} armedAt
+ * @param {number} now
+ * @param {number} [windowMs]
+ * @returns {{armedAt: number|null, execute: boolean}}
+ */
+export function confirmNext(armedAt, now, windowMs = CONFIRM_WINDOW_MS) {
+  if (confirmStep({ armedAt, now, windowMs }) === "execute") {
+    return { armedAt: null, execute: true };
+  }
+  // 超时不是"继续倒数"，而是从这一刻重新计时——过期状态绝不能被下一次误点兑现。
+  return { armedAt: now, execute: false };
+}

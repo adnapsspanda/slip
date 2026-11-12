@@ -10,10 +10,15 @@
   import { matchesFilter, parseQuery } from "./lib/filter.js";
   import { orderSlips } from "./lib/order.js";
   import { dropUndoBurst, extendUndoBurst, undoNotice } from "./lib/notice.js";
-  import { captureFailureHint, restoreCoverWarning } from "./lib/messages.js";
+  import {
+    captureFailureHint,
+    capacitySummary,
+    purgeNotice,
+    restoreCoverWarning,
+  } from "./lib/messages.js";
   import { closeFadeDelay } from "./lib/motion.js";
   import { createSerialQueue, nextToggleTarget } from "./lib/queue.js";
-  import { confirmStep, CONFIRM_WINDOW_MS } from "./lib/confirm.js";
+  import { confirmNext, CONFIRM_WINDOW_MS } from "./lib/confirm.js";
   import * as bridge from "./lib/bridge.js";
   import Capture from "./lib/Capture.svelte";
   import SlipList from "./lib/SlipList.svelte";
@@ -131,34 +136,48 @@
   let showBackups = $state(false);
   /** 备份列表；只在打开面板时取一次。 */
   let backups = $state([]);
+  /**
+   * 归档抽屉的容量摘要（R104）。`vault_capacity` 是只读统计，本地算不出来（要读盘）。
+   * 读不到就保持 null → `capacityLine` 为空串 → 整行不显示，绝不用 0 冒充。
+   */
+  let capacity = $state(null);
+  let capacityLine = $derived(capacitySummary(capacity));
   /** 等待二次确认的备份名——恢复会覆盖当前内容，不该一次点击就执行。 */
   let pendingRestore = $state(null);
   /**
-   * 三处"会改数据"的二次确认共用一套武装状态：隔离重建、归档已完成（R97）、
-   * 完成匹配项（R96）。`null` = 该操作未武装。
+   * "会改数据"的二次确认共用一套武装状态：隔离重建、归档已完成（R97）、
+   * 完成匹配项（R96）、彻底删除归档项（R104，键是 `purge:<id>`）。`null` = 未武装。
    *
-   * 为什么合成一个对象 + 一个入口：三者的窗口语义完全相同（`confirmStep` + 4 秒
-   * 自动还原）。抄三份的下场是"改了窗口只改到两处"，而这类不一致只在手滑误触时
-   * 才暴露出来。
+   * 为什么合成一个对象 + 一个入口：这些操作的窗口语义完全相同（4 秒自动还原）。
+   * 抄多份的下场是"改了窗口只改到两处"，而这类不一致只在手滑误触时才暴露出来。
+   * 彻底删除需要"哪一条被武装"，所以它的键带 id；未武装项从对象的键上自然也读得出来。
    */
   let armed = $state({ isolate: null, archive: null, complete: null });
   /** 每个操作各一个自动还原定时器。 */
   const armTimers = {};
 
+  /** 归档抽屉里"已被武装待彻底删除"的那一条 id（没有则是 null）。 */
+  let purgeArmedId = $derived.by(() => {
+    for (const key of Object.keys(armed)) {
+      if (key.startsWith("purge:") && armed[key] !== null) return key.slice(6);
+    }
+    return null;
+  });
+
   /**
    * 二次确认闸门：第一下武装（并起 4 秒定时器），窗口内第二下返回 true 表示执行。
    *
-   * @param {"isolate"|"archive"|"complete"} kind
+   * 状态迁移本身在 `confirm.js` 的 `confirmNext` 里（纯函数，可断言"超时自动还原"）；
+   * 这里只负责两件有副作用的事：记/清定时器、把时间戳写回响应式状态。
+   *
+   * @param {string} kind
    * @returns {boolean}
    */
   function confirmGate(kind) {
-    const step = confirmStep({ armedAt: armed[kind], now: Date.now() });
+    const next = confirmNext(armed[kind], Date.now());
     clearTimeout(armTimers[kind]);
-    if (step === "execute") {
-      armed[kind] = null;
-      return true;
-    }
-    armed[kind] = Date.now();
+    armed[kind] = next.armedAt;
+    if (next.execute) return true;
     armTimers[kind] = setTimeout(() => {
       armed[kind] = null;
     }, CONFIRM_WINDOW_MS);
@@ -750,6 +769,66 @@
   }
 
   /**
+   * 打开/收起归档抽屉（R104）。
+   *
+   * 打开时取一次容量统计：它是"还能清理多少"的唯一来源（归档字节数只能读盘算）。
+   */
+  function toggleArchived() {
+    showArchived = !showArchived;
+    if (showArchived) void refreshCapacity();
+  }
+
+  /** 取一次容量统计；读不到就清成 null，让摘要行整行消失。 */
+  async function refreshCapacity() {
+    try {
+      capacity = await bridge.vaultCapacity();
+    } catch {
+      // 读不到就不显示：显示"归档 0 条"会和抽屉里明明存在的记录直接打架。
+      capacity = null;
+    }
+  }
+
+  /** 彻底删除一条归档项的两步确认入口（R104）：武装逻辑见 `confirmGate`。 */
+  function handlePurgeClick(slip) {
+    // 同时只允许**一条**处于"待确认"：否则武装 A 之后再去点 B，高亮会指在 A 上，
+    // 用户按第二下时根本不知道自己确认的是哪一条。清掉别的键就够了——它们的
+    // 定时器到点会再写一次 null，无害。
+    for (const key of Object.keys(armed)) {
+      if (key.startsWith("purge:") && key !== `purge:${slip.id}`)
+        armed[key] = null;
+    }
+    if (confirmGate(`purge:${slip.id}`)) handlePurge(slip);
+  }
+
+  /**
+   * 彻底删除（R104）。**不可逆**，后端在成功时已清空撤销栈。
+   *
+   * 所以这里刻意不用 `markUndone`：给一个"撤销"按钮只会让用户按到一个必然报错的
+   * 东西。本地连击计数也一并作废——它描述的那个栈已经不存在了。
+   */
+  async function handlePurge(slip) {
+    try {
+      const ack = await bridge.purgeArchived(bridge.newRequestId(), slip.id);
+      // 列表以后端为准：刷新快照，那条自然从抽屉里消失（不做本地乐观删除）。
+      await refresh();
+      if (ack.result === "applied") {
+        hint = DEFAULT_HINT;
+        notice = purgeNotice();
+        undoTrail = null;
+        void refreshCapacity();
+        // 删掉最后一条后抽屉就空了：留在空抽屉里只会让人以为数据没了，
+        // 而且"返回列表"的入口（有归档才显示）也跟着消失了。
+        if (archivedSlips.length === 0) showArchived = false;
+      } else {
+        hint = `未删除：${formatAckError(ack)}`;
+      }
+    } catch (error) {
+      hint = `purge_archived 失败：${error}`;
+      await refresh();
+    }
+  }
+
+  /**
    * 「归档已完成 (N)」的两步确认入口（R97）：武装逻辑见 `confirmGate`。
    */
   function handleArchiveAllClick() {
@@ -1202,7 +1281,7 @@
         <button
           type="button"
           class="paper__archive-all"
-          onclick={() => (showArchived = !showArchived)}
+          onclick={toggleArchived}
           title={showArchived ? "回到未归档列表" : "查看已归档的纸条"}
         >
           {showArchived ? "返回列表" : `已归档 ${archivedSlips.length}`}
@@ -1435,12 +1514,22 @@
       onlock={handleLock}
       onpin={handlePin}
       onarchive={handleArchive}
+      onpurge={handlePurgeClick}
+      {purgeArmedId}
       onseekcapture={() => captureRef?.focus()}
       ondelink={handleOpenLink}
       onswipecomplete={handleSwipeComplete}
       onnotice={(message) => (hint = message)}
       bind:editing={listEditing}
     />
+  {/if}
+
+  {#if showArchived && capacityLine && !showBackups}
+    <!--
+      R104：抽屉底部的容量摘要。文案由 `capacitySummary` 生成；
+      读不到容量时 `capacityLine` 是空串，整行不出现（不拿 0 冒充）。
+    -->
+    <p class="archive-summary">{capacityLine}</p>
   {/if}
 
   {#if preview}

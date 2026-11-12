@@ -46,3 +46,36 @@ export function restoreCoverWarning(pending) {
   }
   return `恢复后将覆盖当前 ${Math.floor(pending)} 条未完成项`;
 }
+
+/**
+ * 归档抽屉底部的容量摘要（R104）。
+ *
+ * 为什么"拿不到就不显示"：`vault_capacity` 是**只读统计**，读不到可能只是文件被占用；
+ * 这时显示"归档 0 条"是错误信息——用户明明看得见列表里有归档。
+ * 同理，拿不到字节数时只报条数，不编一个 "约 0 KB"。
+ *
+ * @param {{archived?: number, archivedBytes?: number}|null|undefined} capacity
+ * @returns {string} 空串表示不显示
+ */
+export function capacitySummary(capacity) {
+  const archived = capacity?.archived;
+  if (!Number.isFinite(archived) || archived <= 0) return "";
+  const bytes = capacity?.archivedBytes;
+  if (!Number.isFinite(bytes) || bytes < 0) return `归档 ${archived} 条`;
+  // 取整到 KB 并夹到下限 1：几十字节的墓碑说成 "约 0 KB" 会让人以为没占空间，
+  // 那正好与"能清理多少"这个用途相反。
+  return `归档 ${archived} 条，约占 ${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+/**
+ * 彻底删除之后的提示（R104）。
+ *
+ * **绝不能挂撤销**：`purge_archived` 成功后后端已经把撤销栈清空（删除不可逆），
+ * 在这里挂一个"撤销"按钮等于给用户一个必然报错的按钮。
+ * `undo: false` 就是这个语义的机器可读表达——断言里专门守它。
+ *
+ * @returns {{message: string, undo: boolean}}
+ */
+export function purgeNotice() {
+  return { message: "已彻底删除（已留备份，无法恢复）", undo: false };
+}

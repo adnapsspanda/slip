@@ -55,6 +55,13 @@
     archivedCount = 0,
     /** 把一条已归档的纸条恢复回列表。 */
     onunarchive,
+    /**
+     * 彻底删除一条归档项（R104）。**不可逆**，二次确认由上层闸门负责；
+     * 这里只负责把意图交出去，并让"已武装"的那一行看得见。
+     */
+    onpurge,
+    /** 已被武装待彻底删除的那一条 id；`null` 表示没有。 */
+    purgeArmedId = null,
     /** 双向暴露"是否正在编辑"，让 App 的 Ctrl+Z 知道该不该让路。 */
     editing = $bindable(false),
   } = $props();
@@ -616,6 +623,40 @@
                   fill="none"
                   stroke="currentColor"
                   stroke-width="1.35"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                />
+              </svg>
+            </button>
+          {/if}
+          {#if archivedView}
+            <!--
+              R104：彻底删除。**不可逆**，所以二次确认由上层闸门负责（4 秒自动还原），
+              这里只做两件事：低对比地露出来，以及把"已武装"状态标出去——
+              否则用户根本看不出自己刚点的第一下是在确认什么。
+            -->
+            <button
+              type="button"
+              class="slip__purge"
+              class:slip__purge--armed={purgeArmedId === slip.id}
+              aria-label="彻底删除（不可恢复）"
+              title={purgeArmedId === slip.id
+                ? "再点一次确认：彻底删除后无法恢复（已留备份）"
+                : "彻底删除（不可恢复）"}
+              onclick={() => onpurge?.(slip)}
+              ondblclick={(event) => event.stopPropagation()}
+            >
+              <svg
+                viewBox="0 0 16 16"
+                width="13"
+                height="13"
+                aria-hidden="true"
+              >
+                <path
+                  d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.2a1 1 0 0 0 1 .8h4.8a1 1 0 0 0 1-.8l.6-8.2"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.3"
                   stroke-linecap="round"
                   stroke-linejoin="round"
                 />

@@ -14,7 +14,7 @@ import {
   SILENT_REFRESH_GAP_MS,
 } from "../ui/src/lib/status.js";
 import { createSerialQueue, nextToggleTarget } from "../ui/src/lib/queue.js";
-import { confirmStep, CONFIRM_WINDOW_MS } from "../ui/src/lib/confirm.js";
+import { confirmNext, confirmStep, CONFIRM_WINDOW_MS } from "../ui/src/lib/confirm.js";
 import {
   cleanPastedText,
   stripTrailingPunctuation,
@@ -40,7 +40,12 @@ import {
   undoSuffix,
   undoNotice,
 } from "../ui/src/lib/notice.js";
-import { captureFailureHint, restoreCoverWarning } from "../ui/src/lib/messages.js";
+import {
+  captureFailureHint,
+  capacitySummary,
+  purgeNotice,
+  restoreCoverWarning,
+} from "../ui/src/lib/messages.js";
 import { SWIPE_COMPLETE_PX, swipeIntent, swipeOffset } from "../ui/src/lib/swipe.js";
 import { CLOSE_FADE_MS, closeFadeDelay } from "../ui/src/lib/motion.js";
 import { vaultFilePath } from "../ui/src/lib/bridge.js";
@@ -505,6 +510,50 @@ check("脏入参不炸", [vaultFilePath(null, "a"), vaultFilePath("D:\\v", null)
 check("正常情况等一次 0.12s 淡出", closeFadeDelay(false), CLOSE_FADE_MS);
 check("未声明 reduce 时按正常处理", closeFadeDelay(undefined), CLOSE_FADE_MS);
 check("要求减少动效时立即消失（延迟为 0）", closeFadeDelay(true), 0);
+
+// ---- R104 归档抽屉：容量摘要、彻底删除的二次确认与"不给撤销"语义 ----
+// 摘要：拿不到容量就**不显示**（空串），绝不用 0 冒充——抽屉里明明有记录时，
+// "归档 0 条"是错误信息。
+check("容量摘要：条数与取整后的 KB", capacitySummary({ archived: 3, archivedBytes: 2048 }), "归档 3 条，约占 2 KB");
+check("容量摘要：四舍五入到整数 KB", capacitySummary({ archived: 3, archivedBytes: 1500 }), "归档 3 条，约占 1 KB");
+check("容量摘要：1536 B 进位到 2 KB", capacitySummary({ archived: 1, archivedBytes: 1536 }), "归档 1 条，约占 2 KB");
+check("容量摘要：几十字节也不说成 0 KB", capacitySummary({ archived: 1, archivedBytes: 40 }), "归档 1 条，约占 1 KB");
+check("容量摘要：没有字节数时只报条数", capacitySummary({ archived: 2 }), "归档 2 条");
+check(
+  "容量摘要：拿不到容量就不显示",
+  [capacitySummary(null), capacitySummary(undefined), capacitySummary({}), capacitySummary({ archived: Number.NaN })],
+  ["", "", "", ""],
+);
+check("容量摘要：零归档不显示", capacitySummary({ archived: 0, archivedBytes: 0 }), "");
+check("容量摘要：脏字节数只报条数", capacitySummary({ archived: 2, archivedBytes: -5 }), "归档 2 条");
+
+// 彻底删除后的提示：**不能**挂撤销（后端成功时已清空撤销栈），并说明不可逆。
+const purged = purgeNotice();
+check("彻底删除的提示明确不可逆", purged.message.includes("无法恢复"), true);
+check("彻底删除的提示说明已留备份", purged.message.includes("备份"), true);
+check("彻底删除不挂撤销按钮（否则是死按钮）", purged.undo, false);
+check("彻底删除的提示可以被 Alt+Z 收起（纯信息）", noticeAction(purged), "dismiss");
+
+// 二次确认的状态迁移：武装 → 窗口内执行 → 超时自动还原（R104 复用的闸门）
+check("第一下武装并记下时间", confirmNext(null, 1000), { armedAt: 1000, execute: false });
+check("窗口内第二下执行并解除武装", confirmNext(1000, 1000 + CONFIRM_WINDOW_MS), { armedAt: null, execute: true });
+check(
+  "窗口内普通第二下执行",
+  confirmNext(1000, 1500),
+  { armedAt: null, execute: true },
+);
+check(
+  "超时后不是执行而是重新武装（自动还原）",
+  confirmNext(1000, 1000 + CONFIRM_WINDOW_MS + 1),
+  { armedAt: 1000 + CONFIRM_WINDOW_MS + 1, execute: false },
+);
+check("时钟回拨同样退回武装", confirmNext(9000, 1000), { armedAt: 1000, execute: false });
+check("自定义窗口：500ms 内仍执行", confirmNext(0, 400, 500).execute, true);
+check("自定义窗口：超出就重新武装", confirmNext(0, 501, 500), { armedAt: 501, execute: false });
+// 一条完整的点两下叙事：第一下武装、第二下执行
+const gate1 = confirmNext(null, 10_000);
+const gate2 = confirmNext(gate1.armedAt, 12_000);
+check("点两下才会真的执行", [gate1.execute, gate2.execute], [false, true]);
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);
