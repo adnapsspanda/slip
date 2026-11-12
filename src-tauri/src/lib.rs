@@ -251,6 +251,31 @@ async fn set_locked(
         .await)
 }
 
+/// 切换置顶。与 `set_locked` 同构：一条 Patch、一次 `apply`、`content_rev` 只 +1。
+///
+/// 为什么与锁定分开成两条命令而不是合成 `set_flag(id, flag, value)`：
+/// 合成会让"置顶"和"锁定"共用一个错误面，将来任何一方的规则变化都会牵连另一方。
+/// 两条窄命令更容易守住各自的语义。
+#[tauri::command]
+async fn set_pinned(
+    state: tauri::State<'_, ShellState>,
+    request_id: String,
+    id: String,
+    pinned: bool,
+) -> Result<Ack, String> {
+    let id = match SlipId::parse_strict(&id) {
+        Ok(id) => id,
+        Err(error) => {
+            return Ok(rejected(&request_id, "domain", error.to_string()));
+        }
+    };
+    let patch = Patch::SetPinned(pinned);
+    Ok(state
+        .dispatcher
+        .apply(request_id, vec![Mutation::Patch { id, patch }])
+        .await)
+}
+
 /// 归档一条或多条已完成的纸条。
 ///
 /// 一批归档走同一个 `apply` 批次：共用一次原子替换、`content_rev` 只 +1，
@@ -576,6 +601,7 @@ pub fn run() {
             complete,
             edit,
             set_locked,
+            set_pinned,
             archive,
             unarchive,
             undo,

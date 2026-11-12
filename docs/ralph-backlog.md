@@ -53,6 +53,15 @@
 
 ## 完成记录
 
+- **R94/R95 后端桥接（本轮）**：为前端置顶 UI 打通数据通路——
+  - `SlipView` 增加 `pinned: bool`（`crates/slip-app/src/lib.rs`），presenter 两处映射补齐；
+  - 新增 IPC 命令 `set_pinned`（与 `set_locked` 同构：一条 Patch、一次 `apply`、
+    `content_rev` 只 +1）。**没有**做成 `set_flag(id, flag, value)` 的合并式命令：
+    合成会让"置顶"与"锁定"共用一个错误面，将来任何一方规则变化都会牵连另一方。
+  - 命令数 21 → 22，设计文档与 `check-doc-sync.ps1` 已同步（该守卫当场确认一致）。
+  - AGENTS 里 `export-<ms>.md` 的旧命名同步为 `export-YYYYMMDD-HHmmss.md`；
+    backlog 里的历史记录**保留原样**（那是当时的事实），只在文末加了一条时间注记。
+
 - **R92 置顶字段（领域层）+ R93 marker 写入（存储层）**：两轮耦合，合并一次提交（都在同一条
   数据通路上，拆开会让中间态编译不过）。
   - R92：`Slip` 增加 `pinned: bool`、`Patch::SetPinned(bool)`；`apply_patch` 值未变返回 `Noop`
@@ -1719,3 +1728,9 @@
   §9.7.1 人眼清单第 3 条里对 `spike_hide` 的依赖改成 `Esc`/点窗口外。
 - **R-01｜撤回**：上一轮把它当 P0 报出来，实际代码完整实现了归档撤销且有端到端
   覆盖。教训写进铁律第 4 条。
+
+---
+
+> **2026-11-12 命名变更（R110）**：上文历史记录里出现的 `export-<ms>.md` /
+> `export-<unix_ms>.md` 是**当时的事实**，保留不改。当前实际命名是
+> `export-YYYYMMDD-HHmmss.md`（本地时间），同秒撞名追加 `-2`/`-3`，永不覆盖。

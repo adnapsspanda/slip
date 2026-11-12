@@ -45,6 +45,8 @@ pub struct SlipView {
     pub archived: bool,
     /// 定稿标记：正文不可改，但完成与归档照常。
     pub locked: bool,
+    /// 用户置顶：只影响**显示顺序**，不改任何语义（不改正文、不改完成状态）。
+    pub pinned: bool,
     pub created_at: String,
     pub done_at: Option<String>,
 }

@@ -872,6 +872,7 @@ mod tests {
             done,
             archived,
             locked: false,
+            pinned: false,
             created_at: created.to_owned(),
             done_at: None,
         }
