@@ -86,6 +86,14 @@ pub struct Ack {
     pub request_id: String,
     pub result: AckResult,
     pub ui_rev: Option<u64>,
+    /// 这次请求是否**真的产生了可撤销的内容变化**（`content_rev` 前进）。
+    ///
+    /// Noop 也是 `Applied`，前端据此判断"要不要挂撤销提示"：把 Noop 当成
+    /// 可撤销的一步，用户按 Ctrl+Z 会消耗掉上一条真实操作。
+    ///
+    /// 只对进撤销栈的命令（编辑/勾选/归档/取消归档）有意义；追加、锁定、置顶
+    /// 这类不进撤销栈的命令恒为 `false`——为它们多取一次整份快照不值得。
+    pub changed: bool,
     pub error: Option<AckError>,
 }
 

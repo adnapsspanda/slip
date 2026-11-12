@@ -93,6 +93,26 @@ pub fn hash_bytes(bytes: &[u8]) -> Hash {
 /// `tempfile::NamedTempFile::persist` **不会** fsync 文件或目录，所以这里先自己
 /// `sync_all()`，再替换。
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), IoKind> {
+    // `Busy`（Windows 共享冲突/杀软短暂持锁）是**瞬时**状态，读路径已经为它做了
+    // 指数退避；写路径旧实现一次就放弃，于是用户点一下就把整库打成 `Degraded`，
+    // 必须手动 reload 才能恢复。重试 rename 是安全的：临时文件每次重新创建，
+    // 旧文件在提交点之前一个字节都没动。
+    const ATTEMPTS: usize = 6;
+    let mut last = IoKind::Other;
+    for attempt in 0..ATTEMPTS {
+        match write_atomic_once(path, bytes) {
+            Ok(()) => return Ok(()),
+            Err(IoKind::Busy) if attempt + 1 < ATTEMPTS => {
+                last = IoKind::Busy;
+                std::thread::sleep(crate::retry_delay(attempt));
+            }
+            Err(kind) => return Err(kind),
+        }
+    }
+    Err(last)
+}
+
+fn write_atomic_once(path: &Path, bytes: &[u8]) -> Result<(), IoKind> {
     let dir = parent_dir(path);
     let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(map_io)?;
     tmp.write_all(bytes).map_err(map_io)?;
@@ -103,6 +123,12 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), IoKind> {
     #[cfg(test)]
     if failpoints::take_write_interruption() {
         return Err(IoKind::Other);
+    }
+
+    // 故障注入点（R58）：模拟 rename 遇到一次瞬时共享冲突。
+    #[cfg(test)]
+    if failpoints::take_write_busy() {
+        return Err(IoKind::Busy);
     }
 
     // 提交点：这一行返回成功之后，文件已经是新内容。
@@ -458,6 +484,7 @@ pub(crate) mod failpoints {
         static DIR_SYNC_FAILURE: Cell<bool> = const { Cell::new(false) };
         static PINNED_NOW: RefCell<Option<u64>> = const { RefCell::new(None) };
         static WRITE_INTERRUPTION: Cell<bool> = const { Cell::new(false) };
+        static WRITE_BUSY: Cell<bool> = const { Cell::new(false) };
     }
 
     /// 让下一次 [`super::write_atomic`] 在"临时文件已写好、尚未替换"时失败。
@@ -467,6 +494,15 @@ pub(crate) mod failpoints {
 
     pub(crate) fn take_write_interruption() -> bool {
         WRITE_INTERRUPTION.with(|flag| flag.replace(false))
+    }
+
+    /// 让下一次 [`super::write_atomic`] 在 persist 前返回一次 `Busy`。
+    pub(crate) fn fail_next_write_busy() {
+        WRITE_BUSY.with(|flag| flag.set(true));
+    }
+
+    pub(crate) fn take_write_busy() -> bool {
+        WRITE_BUSY.with(|flag| flag.replace(false))
     }
 
     pub(crate) fn fail_next_backup() {
@@ -565,6 +601,18 @@ mod tests {
     }
 
     // ---------- 原子替换 ----------
+
+    #[test]
+    fn write_atomic_retries_a_transient_busy() {
+        let dir = temp_dir();
+        let path = dir.path().join("inbox.md");
+        write_file(&path, b"old");
+
+        failpoints::fail_next_write_busy();
+        write_atomic(&path, b"new").expect("一次瞬时 Busy 应被退避重试吃掉");
+
+        assert_eq!(std::fs::read(&path).expect("read back"), b"new");
+    }
 
     #[test]
     fn write_atomic_replaces_content_and_leaves_no_temp_files() {

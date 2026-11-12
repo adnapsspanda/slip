@@ -136,6 +136,7 @@ impl Dispatcher {
                 request_id,
                 result: AckResult::Unknown,
                 ui_rev: None,
+                changed: false,
                 error: Some(AckError {
                     code: String::from("dropped"),
                     message: String::from("consumer dropped the reply"),
@@ -362,12 +363,14 @@ async fn run(
                                 request_id,
                                 result: AckResult::Applied,
                                 ui_rev: Some(ui_rev),
+                                changed: false,
                                 error: None,
                             },
                             Some((code, message)) => Ack {
                                 request_id,
                                 result: result_for_code(code),
                                 ui_rev: Some(ui_rev),
+                                changed: false,
                                 error: Some(AckError {
                                     code: code.to_owned(),
                                     message,
@@ -479,12 +482,14 @@ fn settle(
             request_id,
             result: AckResult::Applied,
             ui_rev: Some(ui_rev),
+            changed: false,
             error: None,
         },
         Some((code, message)) => Ack {
             request_id,
             result: result_for_code(code),
             ui_rev: Some(ui_rev),
+            changed: false,
             error: Some(AckError {
                 code: code.to_owned(),
                 message,
@@ -528,11 +533,13 @@ async fn run_batch(
     })
     .await;
     match result {
-        Ok((outcome, inverse, changed)) => (
-            settle(presenter, sink, request_id, &outcome),
-            inverse,
-            changed,
-        ),
+        Ok((outcome, inverse, changed)) => {
+            // Noop 也是 Applied；把后端已经算出的 `changed` 带给前端，
+            // 否则前端会给一次空操作挂上"可撤销"的提示。
+            let mut ack = settle(presenter, sink, request_id, &outcome);
+            ack.changed = changed;
+            (ack, inverse, changed)
+        }
         // 得到 JoinError 意味着我们无法知道磁盘上到底发生了什么：可能 rename
         // 已经成功。只能报 unknown 并进入 Fatal。
         Err(join) => (
@@ -653,6 +660,7 @@ fn fatal(
         request_id,
         result: AckResult::Unknown,
         ui_rev: Some(ui_rev),
+        changed: false,
         error: Some(AckError {
             code: String::from("fatal"),
             message: String::from("runtime state is no longer trusted; restart to recover"),
@@ -699,6 +707,7 @@ fn rejected(request_id: String, code: &str, message: &str) -> Ack {
         request_id,
         result: AckResult::Rejected,
         ui_rev: None,
+        changed: false,
         error: Some(AckError {
             code: code.to_owned(),
             message: message.to_owned(),
@@ -733,6 +742,7 @@ fn map_store_error(error: &StoreError) -> (&'static str, String) {
         // 备份坏了但当前文件没动。这句话要让用户知道"没有更糟"，
         // 否则他会去修一个其实完好的 inbox.md。
         StoreError::BackupInvalid => ("invalidBackup", String::from("备份内容无法解析，未恢复")),
+        StoreError::NotArchived => ("notArchived", String::from("只有已归档的纸条才能彻底删除")),
     }
 }
 
@@ -1090,6 +1100,7 @@ mod tests {
                 AckResult::Rejected,
                 "invalidBackup",
             ),
+            (StoreError::NotArchived, AckResult::Rejected, "notArchived"),
         ];
 
         for (error, expected_result, expected_code) in cases {
@@ -1133,6 +1144,7 @@ mod tests {
             StoreError::Io(slip_store::IoKind::Busy),
             StoreError::NotDegraded,
             StoreError::BackupInvalid,
+            StoreError::NotArchived,
         ];
 
         let mut codes = std::collections::BTreeSet::new();
@@ -1161,6 +1173,7 @@ mod tests {
                 "invalidBackup",
                 "io",
                 "needsReload",
+                "notArchived",
                 "notDegraded",
                 "readOnly"
             ],

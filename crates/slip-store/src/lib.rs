@@ -166,6 +166,11 @@ pub enum StoreError {
     /// 单独成一类而不是塞进 `Blocking`：调用方需要知道"是备份坏了，当前内容还安好"，
     /// 这与"当前文件解析失败、只能隔离重建"是相反的处境。
     BackupInvalid,
+    /// 目标记录存在，但不是"有效归档"（`done && archived_at.is_some()`）。
+    ///
+    /// 不能用 `ArchiveRequiresDone`：那条 Display 是"未完成的纸条不能归档"，
+    /// 而这里可能是"已完成但没归档"，对用户是假消息。
+    NotArchived,
 }
 
 /// 每次 `Store` 调用都返回它。**失败也必须携带可发布快照。**
@@ -534,17 +539,13 @@ impl MarkdownStore {
             .iter()
             .position(|record| record.slip.id == id)
         else {
-            return StoreOutcome::failed(
-                state.snapshot(),
-                StoreError::Domain(slip_domain::DomainError::InvalidId),
-            );
+            // 与 `apply` 的 `SlipNotFound` 同一条规则：ID 合法但不在当前视图里，
+            // 说明调用方拿的是旧列表，应该重新载入，而不是"编号不合法"。
+            return StoreOutcome::failed(state.snapshot(), StoreError::NeedsReload);
         };
         let slip = &state.document.records[record_index].slip;
         if !(slip.done && slip.archived_at.is_some()) {
-            return StoreOutcome::failed(
-                state.snapshot(),
-                StoreError::Domain(slip_domain::DomainError::ArchiveRequiresDone),
-            );
+            return StoreOutcome::failed(state.snapshot(), StoreError::NotArchived);
         }
 
         let Some(line_index) = state.document.lines.iter().position(
@@ -564,6 +565,17 @@ impl MarkdownStore {
                 line.kind = doc::LineKind::Record { index: index - 1 };
             }
         }
+        // 删除可能改变文档的换行口径：被删的那行若是"第一个出现的终止符"或
+        // "唯一没有终止符的末行"，旧值会让下一次 append 写出混合换行/丢失末尾换行。
+        // §4.6：追加分隔符 = 第一个实际出现的终止符；新末行继承追加前的末尾换行属性。
+        candidate.preferred_terminator = candidate
+            .lines
+            .iter()
+            .find_map(|line| (line.terminator != doc::Terminator::None).then_some(line.terminator));
+        candidate.ends_with_terminator = candidate
+            .lines
+            .last()
+            .is_some_and(|line| line.terminator != doc::Terminator::None);
 
         // 候选字节由原始行拼接而成（被删的那行之外，一切原样）。
         let bytes = (self.ops.render)(&candidate);
@@ -639,7 +651,14 @@ impl MarkdownStore {
             return StoreOutcome::failed(state.snapshot(), StoreError::Conflict { current_hash });
         }
 
-        // 备份先落地 → 原子替换。
+        // **先 prune 再备份**：prune 按文件名时间戳保留最新 5 代。如果先备份再 prune，
+        // 而目录里已有 5 份时间戳更"新"的备份（系统时钟跳到未来、vault 从另一台时钟
+        // 更快的机器同步过来），刚写的备份反而最旧，会被 prune 删掉，随后仍执行
+        // 不可逆删除——设计 §1.9 承诺的"先写备份"就被静默绕过。实测过这个形状。
+        let prune_ok =
+            fsops::prune_backups(fsops::parent_dir(&state.path), BACKUP_KEEP, now_ms()).is_ok();
+
+        // 备份落地。
         //
         // **备份失败不阻断的唯一例外**：常规写入失败只记警告，因为主文件仍是旧内容，
         // 用户没有失去任何东西；而彻底删除一旦写成功，被删的行就只存在于备份里。
@@ -655,9 +674,6 @@ impl MarkdownStore {
             );
             return StoreOutcome::failed(state.snapshot(), StoreError::Io(kind));
         }
-        // 清理旧备份失败只记警告：它不产生新的不可逆风险，删除本身仍可进行。
-        let prune_ok =
-            fsops::prune_backups(fsops::parent_dir(&state.path), BACKUP_KEEP, now_ms()).is_ok();
         if prune_ok {
             state.health.warnings.remove(&Warning::BackupFailed);
         } else {
@@ -772,9 +788,12 @@ impl Store for MarkdownStore {
 
         // 5. 备份（失败只记警告，不阻断）→ 原子替换（提交点）。
         //    复用上面刚读到的 `disk`，不再第二次读盘。
+        //
+        //    prune 也放在 backup 之前：否则新备份可能因为时间戳比已有备份旧
+        //    （时钟回拨/多机同步）而被同一轮 prune 删掉，等于这一代备份白留。
+        let prune_ok =
+            fsops::prune_backups(fsops::parent_dir(&state.path), BACKUP_KEEP, now_ms()).is_ok();
         let backup_ok = fsops::backup_bytes(&state.path, &disk).is_ok();
-        let prune_ok = backup_ok
-            && fsops::prune_backups(fsops::parent_dir(&state.path), BACKUP_KEEP, now_ms()).is_ok();
         if backup_ok && prune_ok {
             state.health.warnings.remove(&Warning::BackupFailed);
         } else {
@@ -909,11 +928,15 @@ impl Store for MarkdownStore {
             Err(kind) => return StoreOutcome::failed(self.snapshot(), StoreError::Io(kind)),
         };
         // 预检必须与**载入路径同一口径**：只查 `problems` 会漏掉重复 ID——那种备份
-        // 能通过预检、覆盖成功，然后 `reload()` 才报 `Blocking(DuplicateId)` 并降级。
-        // 虽然当前文件已被备份、可救回，但"先污染再报错"不是恢复该有的顺序。
-        if parse_with_identity(DocOps::real(), &candidate).is_err() {
-            return StoreOutcome::failed(self.snapshot(), StoreError::BackupInvalid);
-        }
+        // 能通过预检、覆盖成功，然后才在载入时报 `Blocking(DuplicateId)` 并降级。
+        // 这里保留预检产出的 `Accepted`，提交后直接安装，**不再 reload**：
+        // `write_atomic` 返回 Ok 即提交点已过，之后再读盘失败也不能把这次恢复报成失败。
+        let accepted = match parse_with_identity(DocOps::real(), &candidate) {
+            Ok(accepted) => accepted,
+            Err(_) => {
+                return StoreOutcome::failed(self.snapshot(), StoreError::BackupInvalid);
+            }
+        };
 
         // 2. 给**当前**内容留一份：恢复本身也必须可逆，否则"恢复错了"就没有第二次机会。
         //    `NotFound` 直接跳过——没有当前内容可备份，而恢复的目的正是把它写出来；
@@ -928,11 +951,21 @@ impl Store for MarkdownStore {
             Err(kind) => return StoreOutcome::failed(self.snapshot(), StoreError::Io(kind)),
         }
 
-        // 3. 覆盖，然后走正常载入路径：解析、校验、重置 needs_reload 全都不用重写一遍。
+        // 3. 覆盖。`write_atomic` 成功 = 提交点已过；之后只允许记 `DurabilityUnconfirmed`。
         if let Err(kind) = fsops::write_atomic(&path, &candidate) {
             return StoreOutcome::failed(self.snapshot(), StoreError::Io(kind));
         }
-        self.reload()
+        let mut state = self.lock();
+        accept(&mut state, accepted);
+        if fsops::sync_dir(fsops::parent_dir(&state.path)).is_err() {
+            state.health.warnings.insert(Warning::DurabilityUnconfirmed);
+        } else {
+            state
+                .health
+                .warnings
+                .remove(&Warning::DurabilityUnconfirmed);
+        }
+        StoreOutcome::ok(state.snapshot())
     }
 
     fn snapshot(&self) -> StoreSnapshot {
@@ -2059,12 +2092,16 @@ mod tests {
         let expected = std::fs::read(dir.path().join(&name)).expect("读取备份");
         std::fs::remove_file(&path).expect("删掉 inbox");
 
+        let before_rev = store.snapshot().content_rev;
         let outcome = store.restore_backup(&name);
 
         assert!(outcome.result.is_ok(), "结果：{:?}", outcome.result);
         assert_eq!(read(&path), expected, "恢复后的内容必须等于备份");
         assert_eq!(outcome.snapshot.slips.len(), 1);
         assert_eq!(outcome.snapshot.slips[0].text, "恢复目标");
+        // 提交点之后是 accept（内存安装 + rev+1），不是再读一次盘。
+        assert_eq!(outcome.snapshot.content_rev, before_rev.next());
+        assert!(!outcome.snapshot.needs_reload);
     }
 
     /// 非法名字必须在**碰盘之前**被拒绝：旧顺序会白烧一代备份。
@@ -2311,6 +2348,101 @@ mod tests {
         assert_eq!(store.snapshot().slips.len(), 2);
     }
 
+    /// 删除首行可能改变"第一个出现的终止符"：后续 append 必须按新值写。
+    #[test]
+    fn purge_recomputes_the_preferred_terminator() {
+        let (_store, dir, first, _second, _third) = vault_with_archived();
+        let path = dir.path().join("inbox.md");
+        let bytes = read(&path);
+        let mut patched = Vec::with_capacity(bytes.len() + 1);
+        let mut replaced = false;
+        for byte in bytes {
+            if byte == b'\n' && !replaced {
+                patched.extend_from_slice(b"\r\n");
+                replaced = true;
+            } else {
+                patched.push(byte);
+            }
+        }
+        assert!(replaced, "夹具里至少应有一个换行");
+        std::fs::write(&path, &patched).expect("write crlf first line");
+
+        let store = MarkdownStore::new(&path);
+        assert!(store.purge_archived(first.id).result.is_ok());
+        assert!(
+            store
+                .apply(&[Mutation::Append(slip("新加的"))])
+                .result
+                .is_ok()
+        );
+
+        let after = read(&path);
+        // 被删的是唯一的 CRLF 行；剩余行都是 LF。追加时分隔符必须用 LF，
+        // 旧实现保留 CRLF 口径，会在这里留下一个 `\r`。
+        assert!(
+            !after.contains(&b'\r'),
+            "删掉唯一的 CRLF 行后，追加必须改用 LF：{:?}",
+            String::from_utf8_lossy(&after)
+        );
+    }
+
+    /// 删除无终止符的末行后，append 必须恢复"文件以换行结尾"的口径。
+    #[test]
+    fn purge_recomputes_ends_with_terminator() {
+        let (_store, dir, _first, _second, third) = vault_with_archived();
+        let path = dir.path().join("inbox.md");
+        // 夹具的末行本来就没有终止符（空文件首次 append 的既有语义）。
+        assert!(!read(&path).ends_with(b"\n"));
+
+        let store = MarkdownStore::new(&path);
+        assert!(store.purge_archived(third.id).result.is_ok());
+        assert!(
+            store
+                .apply(&[Mutation::Append(slip("新加的"))])
+                .result
+                .is_ok()
+        );
+
+        let after = read(&path);
+        assert!(
+            after.ends_with(b"\n"),
+            "删掉无终止符的末行后，追加应恢复末尾换行：{:?}",
+            String::from_utf8_lossy(&after)
+        );
+    }
+
+    /// prune 必须在 backup 之前：否则时间戳更"新"的旧备份会把刚写的那代挤掉。
+    ///
+    /// 场景：系统时钟曾跳到未来，或 vault 从另一台时钟更快的机器同步过来。
+    /// 旧顺序（backup → prune）下，新备份是最旧的一份，会被保留策略删除，
+    /// 然后不可逆删除照常执行——被删的行只存在于一份已经不存在的备份里。
+    #[test]
+    fn purge_backup_survives_prune_when_existing_backups_are_from_the_future() {
+        let (store, dir, first, _second, _third) = vault_with_archived();
+        for n in 0..5 {
+            std::fs::write(
+                dir.path()
+                    .join(format!("inbox.md.bak-{}", 9_999_999_999_999u64 - n)),
+                b"future backup",
+            )
+            .expect("write future backup");
+        }
+        let id = first.id.to_canonical_string();
+
+        let outcome = store.purge_archived(first.id);
+
+        assert!(outcome.result.is_ok(), "结果：{:?}", outcome.result);
+        let kept = backups(dir.path()).iter().any(|name| {
+            std::fs::read_to_string(dir.path().join(name))
+                .map(|text| text.contains(&id))
+                .unwrap_or(false)
+        });
+        assert!(
+            kept,
+            "不可逆删除前刚写的备份必须还在，即使目录里有更'新'时间戳的备份"
+        );
+    }
+
     #[test]
     fn purge_writes_a_backup_first() {
         let (store, dir, first, _second, _third) = vault_with_archived();
@@ -2433,7 +2565,11 @@ mod tests {
         let before = read(&path);
 
         let outcome = store.purge_archived(id);
-        assert!(outcome.result.is_err(), "未归档的条目不允许被彻底删除");
+        assert_eq!(
+            outcome.result.err(),
+            Some(StoreError::NotArchived),
+            "未归档的条目必须返回 NotArchived，而不是 ArchiveRequiresDone"
+        );
         assert_eq!(read(&path), before, "被拒绝时文件必须一个字节都不变");
     }
 
@@ -2442,7 +2578,11 @@ mod tests {
         let (store, dir, _a, _b, _c) = vault_with_archived();
         let before = read(&dir.path().join("inbox.md"));
         let outcome = store.purge_archived(SlipId::new_v7());
-        assert!(outcome.result.is_err());
+        assert_eq!(
+            outcome.result.err(),
+            Some(StoreError::NeedsReload),
+            "未知 ID 是视图陈旧，不是 ID 不合法"
+        );
         assert_eq!(read(&dir.path().join("inbox.md")), before);
     }
 

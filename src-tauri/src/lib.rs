@@ -93,6 +93,7 @@ fn rejected(request_id: &str, code: &str, message: impl Into<String>) -> Ack {
         request_id: request_id.to_owned(),
         result: AckResult::Rejected,
         ui_rev: None,
+        changed: false,
         error: Some(AckError {
             code: code.to_owned(),
             message: message.into(),

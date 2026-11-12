@@ -388,6 +388,8 @@
         return `磁盘读写失败（${msg.replace(/^i\/o error:\s*/, "")}）`;
       case "notDegraded":
         return "当前文件状态正常，不需要隔离";
+      case "notArchived":
+        return "只有已归档的纸条才能彻底删除";
       case "domain":
         if (msg.includes("locked")) return "纸条已锁定，请先解锁再修改";
         if (msg.includes("empty")) return "纸条内容不能为空";

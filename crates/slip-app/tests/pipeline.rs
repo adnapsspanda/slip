@@ -757,6 +757,10 @@ async fn noop_apply_does_not_consume_an_undo_step() {
     )
     .await;
     assert_eq!(ack.result, AckResult::Applied, "{ack:?}");
+    assert!(
+        ack.changed,
+        "真实编辑必须标记 changed，否则前端不挂撤销提示"
+    );
 
     // 同一份正文再提交一次：成功，但 content_rev 不前进。
     let before_noop = dispatcher.get_snapshot().await.unwrap().content_rev;
@@ -768,6 +772,10 @@ async fn noop_apply_does_not_consume_an_undo_step() {
     )
     .await;
     assert_eq!(ack.result, AckResult::Applied, "noop 仍然是成功: {ack:?}");
+    assert!(
+        !ack.changed,
+        "Noop 不得标记 changed，否则前端会挂一个假的撤销提示"
+    );
     let after_noop = dispatcher.get_snapshot().await.unwrap().content_rev;
     assert_eq!(
         after_noop, before_noop,
