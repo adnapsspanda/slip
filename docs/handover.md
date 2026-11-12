@@ -7,21 +7,38 @@
 
 | 命令 | 结果 | 说明 |
 |---|---|---|
-| `cargo test --workspace` | **254 项通过** | Windows 侧，含原生错误码映射、文件锁等平台专属测试 |
-| `wsl.exe -d Arch -- bash -lc 'sh /mnt/d/Dev/simple-todo/tools/wsl-test.sh'` | **241 项通过** | Linux 侧，不受 SAC 影响；缺的 13 项是 Windows 专属 |
-| `& "C:\Users\spand\.bun\bin\bun.exe" run tools/check-ui-logic.mjs` | **108 条断言** | 前端纯逻辑，不需要浏览器 |
+| `cargo test --workspace --offline` | 通过 | Windows 侧，含原生错误码映射、文件锁等平台专属测试 |
+| `bash tools/wsl-test.sh` 或 `cargo test -p slip-domain -p slip-store -p slip-app --all-targets --offline` | 通过 | Linux 侧，不受 SAC 影响；平台专属测试只在 Windows 运行 |
+| `bun run tools/check-ui-logic.mjs` | 通过 | 前端纯逻辑，不需要浏览器 |
 | `cargo clippy --workspace --all-targets -- -D warnings` | 通过 | |
 | `cargo fmt --all --check` | 通过 | |
-| `pwsh -File tools/check-forbidden.ps1` | 8 项约束通过 | 依赖、归档、锁、HTML 注入、网络出口、危险 API、CSP |
+| `pwsh -File tools/check-forbidden.ps1` | 通过 | 依赖、归档、锁、HTML 注入、网络出口、危险 API、CSP |
 | `pwsh -File tools/check-doc-sync.ps1` | 通过 | 文档里的 IPC 命令数与 capability 清单 |
 | `pwsh -File tools/check-ci-parity.ps1` | 零漂移 | 钩子与 CI 是否覆盖同一组关口 |
-| `pwsh -File tools/check-bundle-size.ps1` | 通过 | CSS 9.99 KB / **14 KB**、JS 68 KB / 70 KB |
+| `pwsh -File tools/check-bundle-size.ps1` | 通过 | 前端产物在预算内 |
 | `pwsh -File tools/check-ps1-syntax.ps1` | 通过 | `*.ps1` 的 BOM 与语法 |
-| `python tools/mutation-audit.py` | 通过 | 三处核心不变量的变异审计 |
+| `python tools/mutation-audit.py` | 通过 | 核心不变量的变异审计 |
 
 `git commit` 的钩子会把这些里的绝大多数跑一遍（不需要手动逐条）。
 
-## 二、什么被挡住了，以及**别怎么试**
+### Linux 支持现状
+
+| 项 | 状态 |
+|---|---|
+| 逻辑层（domain/store/app） | 可编译、测试通过；CI 的 `logic-linux` job 覆盖 |
+| Linux 外壳（`slip-shell`） | 可编译、可启动；CI 的 `shell-linux` job 做 clippy / build / lib 单测 |
+| 显示会话 | **X11 为准**；Wayland 下全局热键可能不可用，托盘取决于 AppIndicator/桌面环境 |
+| 透明/置顶/圆角 | 取决于合成器；未做与 Windows 同等级的实测 |
+| 打开 Inbox/链接/附件 | 依赖 `xdg-open`；缺失时这些入口报错，其余功能不受影响 |
+| 端到端验收 | **尚无** Linux 等价物；`shell-linux` 只验证编译与单测，不跑 GUI/E2E |
+
+Linux 默认 vault 为 `$HOME/Documents/Slip`（没有 `Documents` 时 `$HOME/Slip`），
+仍可用 `SLIP_VAULT` 覆盖。
+
+## 二、Windows 上什么被挡住了，以及**别怎么试**
+
+> 本节只适用于 Windows。Smart App Control（SAC）是 Windows 的系统策略；
+> Linux 逻辑层与 Linux 外壳编译不受它影响（见上一节）。
 
 | 项 | 现象 | 结论 |
 |---|---|---|
@@ -45,7 +62,7 @@
 `schemars_derive-*.dll`、`slip_shell-*.exe` 测试二进制各有一例）。等待期间用 WSL 写代码、
 跑逻辑测试完全不受影响。
 
-## 三、环境恢复后按这个顺序继续
+## 三、Windows 环境恢复后按这个顺序继续
 
 ```powershell
 # 1. 确认 exe 能跑（连试几次；被拒就等）

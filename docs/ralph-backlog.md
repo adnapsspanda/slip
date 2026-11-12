@@ -50,9 +50,76 @@
 | R-09 | 无安装包 | `bundle.active: false`，只能分发绿色 exe | 确认是否刻意；若是，在 README「已知限制」里写明不提供安装包及原因 | ✅ 见 README.md:140-142（写明原因与开启方法） |
 | R-03 | 摆放兜底居中到主屏 | **降级**：原证据（用户两次启动坐标恒为 `(965,344)`）实际来自沙盒启动，交互桌面上 `place_near_cursor` 正常跟随光标 | 仅在能复现"真实桌面下光标不可读"时再修；修法是把兜底顺序改为 光标所在屏 → 前台窗口所在屏 → 主屏 | 降级 |
 | R-32 | 状态生命周期覆盖缺口 | `AGENTS.md` 自述：`showArchived` / `showBackups` 跨唤出、`notice` 与三个整体替换路径**没有任何断言** | 在 SAC 拦 exe、端到端跑不了的条件下补可运行的守卫；能变异验证 | ✅ 见完成记录 |
+| R-133 | 外部审计 13 项：撤销逆操作、清栈规则、purge 未知路径、结构守卫假阴性、版本回退 | 独立代码走查（未实跑：Windows 侧 registry 缺 serde 索引）。核心结论：`inverse_batch` 按 `(done, done_at)` 判状态、`PurgeArchived` 的 JoinError 报 `not_executed`、`RestoreBackup`/`IsolateAndReset` 失败也清栈、Noop 占撤销步、purge 错误码硬编码 `Rejected`、结构守卫是子串匹配 | 全部修正 + 可运行的回归（单测 / 集成 / 结构守卫），并做变异验证 | ✅ 见完成记录 |
+| R-134 | ACK 与 `shutdown()` 没有超时上界 | `dispatch.rs` 的 `submit` 等 oneshot、`shutdown` 用 `send().await`；store 的 `write_atomic` 在同步盘/杀软持锁时不可取消（`spawn_blocking`），消费者会一直卡在那一批 | 定产品行为：给 `shutdown` 加等待上界（或壳层退出直接放弃并记 `DurabilityUnconfirmed` 风险）、给前端可感知的 ACK 超时，并补测试 | 待办（低） |
 | R-01 | ~~归档撤销承诺与实现不符~~ | **撤回**：`Patch::Unarchive`（`model.rs:52`）、`apply_patch` 分支（`state.rs:135`）、`inverse_batch` 双向映射（`dispatch.rs:565-568`）、领域测试（`state.rs:304`）、端到端测试（`pipeline.rs:301` `archive_and_undo_preserve_done_state_through_disk`）全部就位 | 无需改动。文档承诺与实现**一致** | ✅ 撤回 |
 
 ## 完成记录
+
+- **R-133｜本轮：外部审计的 13 项，修 11 项、记录 2 项**。审计来自一次独立代码走查
+  （未实跑，理由见待办表）。逐条落地：
+  - **高1｜逆操作的完成态判据**。`inverse_batch` 原来按 `(done, done_at)` 匹配，
+    "文件里 done=true 但缺 done_at"（`state.rs::accepts_done_without_done_at` 明确允许）
+    会落进"原本未完成"分支，逆操作算成 `SetDone{false}`——取消完成再 Ctrl+Z 什么也
+    不恢复。改为**按 `slip.done` 分支**；且原状态有 `archived_at` 时补一条
+    `Patch::Archive`（`SetDone{false}` 会连归档一起清掉，`state.rs` §4.7），顺序必须
+    "先完成后归档"（`Archive` 要求 done 为真）。单测 3 条 + 集成 2 条，HEAD 上均红。
+  - **高2｜`PurgeArchived` 的 JoinError**。原分支只记日志并回 `not_executed`，与模块头
+    "panic 不等于没写"直接冲突（rename 可能已经成功），也不进 Fatal。改为与其它命令
+    一致走 `fatal()`；单测 `purge_panic_enters_fatal_instead_of_reporting_not_executed`。
+  - **高3｜整体替换类命令的清栈规则**。`RestoreBackup` / `IsolateAndReset` 原来在
+    settle 之后**无条件** `undo.clear()`，连失败也清（备份名非法、健康态 `NotDegraded`）。
+    改为与 `Reload` 同规则：只有 `error.is_none()` 才清。集成 2 条 + 单测 2 条；
+    `failed_restore_keeps_the_undo_stack` 在 HEAD 上就是红的。
+  - **中1｜Noop 占撤销步**。入栈判据原来是 `ACK == Applied`，而 Noop 也是 Applied。
+    现在把"取写入前快照 + apply"放进**同一个** `spawn_blocking`（主循环不再深拷贝整份
+    文档，顺带修掉审计里"消费者线程同步 `snapshot()`"那条），用 `content_rev` 是否
+    前进得出 `changed`，只有 `changed` 才入栈。
+  - **中2｜测试缺口**。`tests/pipeline.rs` 新增 7 条（+434 行）覆盖 restore 失败/成功、
+    purge 冲突与成功、Noop、取消完成、缺 done_at；`dispatch.rs` 单测新增 7 条
+    （逆操作矩阵 3 条 + restore/purge 行为与 panic 注入 4 条）。`MockStore` 增加
+    可配置的 restore/purge 行为与 slips 预置——这两个方法原来走 trait 默认实现
+    （永远失败），dispatch 侧对它们的处理**从未被单测覆盖**。
+  - **中3｜`frontend_lifecycle` 假阴性**。`assert_body_contains` 改为按行匹配并**跳过
+    注释行**（`assert_body_has_statement`，失败时打印函数体）；`summon` 断言从 3 条扩到
+    7 条（notice / undoTrail / filter / filtering / showArchived / showBackups /
+    pendingRestore）。变异验证：注释掉 `showArchived = false;` → 红；还原 → 绿。
+  - **中5｜purge 错误码**。原实现把 store 错误硬编码成 `AckResult::Rejected`，冲突/
+    需重载被压平成"被拒绝"。改为与其它命令共用的 `settle()`（走 `result_for_code`）；
+    集成 `purge_conflict_maps_to_conflict_result`。
+  - **中6｜sink 语义不可达**。`spawn_with_sink` 是私有的、生产用 `NoopSink`，而
+    `Presenter` 构造时就发布了 `ui_rev=1`、sink 之后才注入 → 将来接推送会缺首帧。
+    现在消费者启动时主动 `emit` 一次当前快照；`execution_and_acceptance_alternate_in_order`
+    的轨迹随之固定为 `emit:1, exec:2, emit:2, exec:3, emit:3`。
+  - **低｜presenter 版本回退**。`debug_assert!` 升级为运行期判定：降版本快照被丢弃、
+    保留 `latest`、置 `Fatal` 并仍递增 `ui_rev`；单测
+    `accepting_a_regressed_content_rev_drops_it_and_goes_fatal`。
+  - **低｜view 测试诚实化**。`view_roundtrip_never_drops_the_hotkey` 改名并注明它只钉
+    字段复制、生产没有视图写入路径；新增 `presenter_keeps_the_view_set_it_was_built_with`。
+  - **低｜launch 非 Unicode 参数**。签名改 `AsRef<OsStr>`，外壳改用 `args_os()`；
+    Unix/Windows 各一条"非 Unicode 参数不 panic"的测试。
+  - **低｜focus 遗留标志**。`hotkey::show()` 开头**无条件**复位 `FOCUSED_SINCE_SUMMON`，
+    不再依赖每条隐藏路径各自复位（将来新增托盘隐藏/关闭转隐藏时不会再"一闪就没"）。
+  - **低｜`NotDegraded` 英文文案**。`map_store_error` 改中文，并纳入
+    `user_facing_error_messages_are_chinese` 的码集合（现含 `notDegraded`，与前端
+    `formatAckError` 的 case 一致）。
+  - **验证**：WSL（`arch_lagacy`）对 `/mnt/d` 源码跑
+    `cargo test -p slip-domain -p slip-store -p slip-app --all-targets --offline`
+    → **303 passed / 0 failed**（55 lib + 4 + 15 + 79 + 1 + 129 + 12 + 1 + 7；5 条 perf
+    仍 `#[ignore]`）；`cargo fmt --all -- --check` 无 diff；
+    `cargo clippy -p slip-app --all-targets -- -D warnings` 通过；
+    Windows 侧 `cargo check -p slip-shell` 通过（外壳两行改动可编译，lib.rs/hotkey.rs）。
+  - **范围说明**：本轮只处理 `docs/code-review-2026-11-12.md` 的**第三节（撤销与状态一致性）
+    全部 5 条**，以及用户点名的那几条相邻项（presenter 版本回退、sink 语义、view 测试诚实化、
+    launch 非 Unicode、focus 遗留标志、`NotDegraded` 文案）。该文档的 §1（门禁假绿：`Include`
+    语义 / `check-ui-logic` 退出码 / `mutation-audit.py` 路径）、§2（备份与恢复安全）、
+    §4–§7 **未动**，仍是待办；其中 §2.1（purge 备份失败仍删行）与 §2.2（inbox 缺失时
+    restore 必然失败）影响最大。
+  - **未做**：ACK / `shutdown()` 超时仍无上界（见 R-134）。另外 `SetDone` 逆操作在
+    "文件里 `done=false` 但残留 `archived_at`"这种组合下**无法**恢复残留值：
+    `Patch::Archive` 要求 `done` 为真，公开的 `Patch` 集合里没有"给未完成条目写
+    `archived_at`"的表达方式；而该组合本来就是无效归档（有效归档 = `done && archived_at`），
+    恢复它没有用户可见意义，所以只在代码注释里说明，不扩 Patch 词汇表。
 
 - **R-32｜本轮：补齐两条「没有断言」的状态生命周期**。
   - 新增 `crates/slip-app/tests/frontend_lifecycle.rs`（4 条）：读 `ui/src/App.svelte`
@@ -1924,3 +1991,32 @@
 > **2026-11-12 命名变更（R110）**：上文历史记录里出现的 `export-<ms>.md` /
 > `export-<unix_ms>.md` 是**当时的事实**，保留不改。当前实际命名是
 > `export-YYYYMMDD-HHmmss.md`（本地时间），同秒撞名追加 `-2`/`-3`，永不覆盖。
+
+- **R126｜Linux 外壳支持（本轮，2026-11-12）**：Windows 保持主平台行为不变，
+  新增 Linux 外壳的编译/运行路径。
+  - **平台差异收口**：新增 `src-tauri/src/platform.rs`，把家目录变量
+    （Windows `USERPROFILE` / 其它 `HOME`）、默认 vault、打开路径
+    （`explorer.exe` / `xdg-open`）、打开 URL（`rundll32` / `xdg-open`）、
+    文件管理器定位（`/select,` / 打开父目录）、本地时区偏移
+    （注册表 `ActiveTimeBias` / `time::OffsetDateTime::now_local`）集中到一处；
+    业务模块不再直接出现平台命令字面量。`time` 增加 `local-offset` feature。
+  - **Linux 默认 vault**：`$HOME/Documents/Slip`，没有 `Documents` 时 `$HOME/Slip`；
+    `SLIP_VAULT` 仍可覆盖。打开类入口依赖系统 `xdg-open`，缺失时报错。
+  - **平台专属逻辑加 `cfg`**：`diag.rs` 的 `hwnd` 在非 Windows 固定 0；
+    `slip-store/src/fsops.rs` 的 32/33 原生错误码映射只在 Windows 生效
+    （Linux 上 32/33 是 `EPIPE`/`EDOM`，无条件比较会误判成文件占用）。
+  - **前端修复**：损坏文件预览的路径分隔符、RFC3339 1–9 位小数秒兼容、
+    无边框窗口拖动改为 `data-tauri-drag-region="deep"`。
+  - **CI**：新增 `shell-linux` job（ubuntu-latest），安装 WebKitGTK 4.1 / GTK3 /
+    AppIndicator / SVG / patchelf 等依赖，先构建前端，再跑
+    `cargo clippy/build/test -p slip-shell`。只验证编译与单测，**不跑 GUI/E2E**。
+  - **证据**：
+    - `cargo test -p slip-domain -p slip-store -p slip-app --all-targets --offline` 通过；
+    - `cargo check -p slip-shell --offline`、`cargo build -p slip-shell --offline`、
+      `cargo test -p slip-shell --lib --offline`、`cargo clippy -p slip-shell --all-targets --offline -- -D warnings` 通过；
+    - WSLg 下冒烟启动 `slip-shell` 成功（窗口流程可走通）；
+    - 前端纯逻辑检查 `bun run tools/check-ui-logic.mjs` 通过；
+    - CI 的 `shell-linux` job 已加入 workflow。
+  - **边界**：Linux 首版以 **X11** 为准；Wayland 下全局热键可能不可用，
+    托盘行为受 AppIndicator/桌面环境影响，透明/置顶/圆角取决于合成器。
+    Linux **没有** `verify-hotkey.ps1` 的等价端到端验收；GUI 行为仍需人工确认。

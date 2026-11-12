@@ -1,6 +1,8 @@
 # Slip
 
-Windows 11 上的极轻量待办捕获工具。按一个热键，把脑子里那点琐碎念头丢进去，然后继续手头的事。
+极轻量的召唤式待办捕获工具。按一个热键，把脑子里那点琐碎念头丢进去，然后继续手头的事。
+
+Windows 是主平台；Linux 外壳已支持（首版以 **X11** 为准，见文末已知限制）。
 
 不打断、不整理、不要求你先想清楚它属于哪个项目。
 
@@ -10,8 +12,11 @@ Windows 11 上的极轻量待办捕获工具。按一个热键，把脑子里那
 
 需要 [Rust](https://rustup.rs) 和 [bun](https://bun.sh)。
 
+### Windows
+
 ```powershell
-$env:PATH = "C:\Users\spand\.cargo\bin;" + $env:PATH
+# cargo 不在 PATH 时先补（按你的用户名替换，或直接用下面这行）
+$env:PATH = "$env:USERPROFILE\.cargo\bin;" + $env:PATH
 
 # 1. 构建前端（产物会被嵌进二进制，改了界面就必须重建这一步）
 cd ui
@@ -21,6 +26,31 @@ cd ..
 # 2. 构建并运行
 cargo run -p slip-shell
 ```
+
+### Linux
+
+先装 Tauri v2 的系统依赖，再构建前端与外壳：
+
+```bash
+# Arch
+sudo pacman -S --needed base-devel webkit2gtk-4.1 gtk3 libappindicator librsvg patchelf openssl
+
+# Debian / Ubuntu
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+  librsvg2-dev patchelf libssl-dev
+
+cd ui
+bun install
+bun run build
+cd ..
+
+cargo build -p slip-shell
+./target/debug/slip-shell          # 默认 vault：$HOME/Documents/Slip
+# 需要隔离测试时：SLIP_VAULT="$HOME/Slip-dev" ./target/debug/slip-shell
+```
+
+需要在图形会话里运行（首版以 X11 为准）。只验证编译/单测不需要桌面：
+`cargo build -p slip-shell`、`cargo test -p slip-shell --lib`。
 
 开机自启时程序静默驻留托盘；**手动双击（或 `cargo run`）会直接把窗口显示出来**，
 不会因为别的程序抢焦点而消失——它是个正常窗口，用 `Esc` 或托盘收走。
@@ -81,7 +111,12 @@ cargo run -p slip-shell
 
 ## 数据在哪
 
-默认 vault 是 `%USERPROFILE%\Documents\Slip\`。用可见路径而不是隐藏的 appdata，因为
+默认 vault：
+
+- Windows：`%USERPROFILE%\Documents\Slip\`
+- Linux：`$HOME/Documents/Slip/`；没有 `Documents` 目录时用 `$HOME/Slip/`
+
+用可见路径而不是隐藏的 appdata，因为
 **Markdown 才是真源**——你随时可以用任何编辑器打开、手写、批量改。
 
 `inbox.md`，每行一条：
@@ -113,9 +148,13 @@ cargo run -p slip-shell
 $env:SLIP_VAULT = "D:\Notes\Slip"
 ```
 
+```bash
+export SLIP_VAULT="$HOME/Notes/Slip"
+```
+
 ### 换热键
 
-编辑 `<vault>\ui-state.json`：
+编辑 `<vault>/ui-state.json`：
 
 ```json
 { "hotkey": "ctrl+alt+s" }
@@ -130,6 +169,10 @@ $env:SLIP_VAULT = "D:\Notes\Slip"
 $env:SLIP_LOG = "debug"   # error | warn | info | debug | trace，默认 info
 ```
 
+```bash
+export SLIP_LOG=debug
+```
+
 日志写到 stderr。启动时 stdout 会打印 vault、偏好文件和实际生效的热键各一行。
 
 ---
@@ -138,9 +181,12 @@ $env:SLIP_LOG = "debug"   # error | warn | info | debug | trace，默认 info
 
 诚实列出来，这些是**取舍**不是待办：
 
-- **只在 Windows 11 上验证过。** 跨不同 DPI 缩放混用（例如 100% + 150%）尚未实测：
-  开发机所有显示器的缩放都相同。
-- **单条写入 p50 约 13 ms、p95 约 15 ms**（debug 构建，1000 条之上的连续追加），
+- **Windows 11 是主平台，Linux 外壳也能编、能跑，但验证程度不同。** Windows 上做过真实界面与
+  端到端验收；Linux 目前只覆盖编译、clippy、lib 单测与基础启动冒烟，**GUI/E2E 尚未覆盖**。
+  Linux 首版以 X11 为准：Wayland 下全局热键可能不可用，托盘行为受 AppIndicator/桌面环境影响，
+  透明窗口、置顶与圆角取决于合成器。Linux 上打开 Inbox/链接/附件还需要 `xdg-open`。
+- 跨不同 DPI 缩放混用（例如 100% + 150%）尚未实测：开发机所有显示器的缩放都相同。
+- **单条写入 p50 约 13 ms、p95 约 15 ms**（Windows、debug 构建，1000 条之上的连续追加），
   来源是「整文件重写 + 备份 + fsync」。这是"Markdown 为真源、不加索引"的代价：
   换来的任何提速都只能来自降低耐久性，而那会改变崩溃后的行为。
   启动解析随行数线性增长：1000 行约 14 ms、10000 行（约 1.1 MB）约 75 ms，
@@ -165,11 +211,13 @@ $env:SLIP_LOG = "debug"   # error | warn | info | debug | trace，默认 info
 
 - 架构与模块边界：[`docs/design/Slip-架构与模块定义.md`](docs/design/Slip-架构与模块定义.md)
 - 构建、测试门禁、编码约定：[`AGENTS.md`](AGENTS.md)
-- 端到端验收（真实热键 + CDP + 磁盘取证）：
+- 端到端验收（真实热键 + CDP + 磁盘取证，**仅 Windows**）：
 
 ```powershell
 pwsh -File tools/verify-hotkey.ps1
 ```
+
+- Linux 侧没有等价的端到端脚本；CI 的 `shell-linux` job 只验证编译、clippy 与 lib 单测。
 
 提交前门禁装一次：`git config core.hooksPath .githooks`（本地配置，不随仓库走）。
 

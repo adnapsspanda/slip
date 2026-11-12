@@ -255,6 +255,36 @@ accept(await getSnapshot());                        // ② 再取首个全量
 
 spike 时即按 `presenter` 输出 `Vec<PaperRender>{ id, rect, content, state }` 的边界实现，**以便把改动限制在 `shell` 与 `dock` 的输出适配层**；若实测连这层也无法隔离，则明示返工范围，不假装"只换壳"。
 
+### 2.5 平台差异层（`src-tauri/src/platform.rs`）
+
+**`platform.rs` 是外壳唯一的平台出口。** 其余模块只调用语义化函数，不出现
+`explorer.exe` / `xdg-open` / `USERPROFILE` / `reg.exe` 这类平台字面量；
+每加一个平台不需要在业务入口里再写一遍 `#[cfg]`。
+
+| 能力 | Windows | 非 Windows（Linux） |
+|---|---|---|
+| 家目录 | `USERPROFILE` | `HOME` |
+| 默认 vault | `<home>\Documents\Slip`，无 `Documents` 时 `<home>\Slip` | 同规则，路径分隔符由 `PathBuf` 决定 |
+| 打开路径 / 目录 | `explorer.exe <path>` | `xdg-open <path>` |
+| 打开 URL | `rundll32.exe url.dll,FileProtocolHandler <url>` | `xdg-open <url>` |
+| 在文件管理器定位 | `explorer.exe /select,<path>`（`/select,<path>` 为单个参数） | 打开父目录（无等价"选中"语义） |
+| 本地时区偏移 | 注册表 `ActiveTimeBias`（进程内缓存） | `time::OffsetDateTime::now_local`（工作区 `time` 启用 `local-offset`） |
+
+约束：
+
+- **Windows 行为保持不变**：上表 Windows 列就是原有实现，只是搬进了 `platform.rs`；
+  其语义（只 `spawn` 不 `wait`、URL 单 argv、定位失败只影响便利性）不得改变。
+- 平台差异只在**外壳**；`slip-domain` / `slip-store` / `slip-app` 不感知操作系统。
+- `diag` 的 `hwnd` 在非 Windows 固定为 `0`，字段形状保持不变；`EnumWindows` 对照
+  与 `tools/diag-window.ps1` 只是 Windows 排查手段。
+- `slip-store` 的 32/33 原生错误码映射**只在 Windows 生效**：Linux 上这两个数字
+  分别是 `EPIPE` / `EDOM`，无条件比较会把普通错误误判成"文件被占用"。
+- 非 Windows 依赖系统有 `xdg-open`；缺失时打开入口返回错误，不静默假装成功。
+
+Linux 外壳首版以 **X11** 为准：Wayland 下全局热键可能不可用，托盘行为受
+AppIndicator/桌面环境影响，透明/置顶/圆角取决于合成器。Linux 没有与
+`tools/verify-hotkey.ps1` 等价的端到端验收。
+
 ---
 
 ## 3. Store 与偏好
@@ -776,7 +806,10 @@ private bytes，进程树合计；基线静置 5 分钟；24h；< 20MB 且无单
 
 任一持续抖动 → 切每纸一窗，并按 §2.4 列明的边界评估返工范围。
 
-#### 9.7.1 本机实测记录（2026-11-10，`slip-shell` 启动自检输出）
+#### 9.7.1 Windows 本机实测记录（2026-11-10，`slip-shell` 启动自检输出）
+
+> 以下全部是 Windows 实测。Linux 外壳只验证过编译、lib 单测与基础启动冒烟，
+> 没有做本节同等级的窗口/DXGI/合成器验收（§2.5）。
 
 已机械确认：
 
@@ -814,16 +847,22 @@ private bytes，进程树合计；基线静置 5 分钟；24h；< 20MB 且无单
 2. 自检的价值只在启动瞬间一次，不需要常驻的命令面。
 
 保留的部分并入 `src-tauri/src/diag.rs`：`log_window` / `log_monitors` 在启动时
-以 `tracing::debug` 输出窗口的实际状态（含 `hwnd`、`visible`、`focused`、
-`always_on_top`、位置尺寸、每台显示器的位置/尺寸/缩放/主屏标记）。查看方式：
+以 `tracing::debug` 输出窗口的实际状态（含 `visible`、`focused`、`always_on_top`、
+位置尺寸、每台显示器的位置/尺寸/缩放/主屏标记；**Windows 上另有原生 `hwnd`，
+其它平台固定为 0**）。查看方式：
 
 ```powershell
 $env:SLIP_LOG = "debug"
 ```
 
-排查「进程在跑但看不到窗口」时的判据：若日志里的 `hwnd` 有效，而外部
+```bash
+export SLIP_LOG=debug
+```
+
+**Windows 上**排查「进程在跑但看不到窗口」时的判据：若日志里的 `hwnd` 有效，而外部
 `EnumWindows` 数不到该进程的顶层窗口，则窗口建在了另一个桌面/窗口站上
-（`tools/diag-window.ps1` 可直接给出这个结论）。
+（`tools/diag-window.ps1` 可直接给出这个结论）。这是 Win32 专有手段；Linux
+没有等价判据，只能结合 `XDG_SESSION_TYPE`、合成器与桌面环境的日志人工排查。
 
 外壳已提供对应按钮（穿透开关、置顶开关、读窗口状态、列显示器、隐藏/显示），
 不需要改代码就能跑完这 5 条。
@@ -917,7 +956,7 @@ M0 验收子集：§9.1 第 1、6 条；§9.2 中"文本往返""原字节保留"
 
 M0 验收子集（§9.1 第 1、6 条；§9.2 的文本往返、原字节保留、追加、文法、事务、提交点、冲突）**已由 `crates/slip-store/tests/acceptance.rs` 覆盖**，且刻意不使用 mock——验证的就是"磁盘上到底发生了什么"。
 
-### 14.1.1 垂直链路已用真实界面验证
+### 14.1.1 垂直链路已用真实界面验证（Windows）
 
 不是"看着应该行"，而是通过 WebView2 的 CDP 端点驱动真实窗口跑出来的：
 
@@ -934,7 +973,7 @@ M0 验收子集（§9.1 第 1、6 条；§9.2 的文本往返、原字节保留�
 
 ### 14.2 实施期的三处契约补明确
 
-1. **`write_atomic` 的 `Err` 严格只表示"未提交"**；目录同步拆成独立的 `fsops::sync_dir()`，在 `rename` 成功之后调用。这样 §4.4 的"替换成功后目录 sync 失败 → 已提交 + `DurabilityUnconfirmed`"才能落地，而不需要"提交后返回 `Err`"这种自相矛盾的签名。Windows 上 `sync_dir` 恒 `Ok`（不伪造失败事件）。
+1. **`write_atomic` 的 `Err` 严格只表示"未提交"**；目录同步拆成独立的 `fsops::sync_dir()`，在 `rename` 成功之后调用。这样 §4.4 的"替换成功后目录 sync 失败 → 已提交 + `DurabilityUnconfirmed`"才能落地，而不需要"提交后返回 `Err`"这种自相矛盾的签名。Windows 上 `sync_dir` 恒 `Ok`（不伪造失败事件）；Linux/Unix 会真正打开父目录并尝试同步。`map_io` 的 32/33 原生错误码映射只在 Windows 生效（§2.5）。
 2. **`ApplyError::SlipNotFound` → `NeedsReload`**，见 §6.5 的补充说明。
 3. **`RoundtripError` 无对应 `StoreError` 变体**：映射为 `Io(IoKind::Other)` + `tracing::error` + 诊断，且**绝不写盘**。它是防 `doc.rs` 回归的机械保证，正常路径下不应出现。
 
@@ -943,6 +982,9 @@ M0 验收子集（§9.1 第 1、6 条；§9.2 的文本往返、原字节保留�
 - **捕获框独立窗口**：现在唤出的是主窗口本身。设计上捕获框应当是独立小窗，
   否则"记一句话"会连带展开整个 Inbox。
 - **§9.7 人工验收 5 条**：见 §9.7.1，其中"跨不同 DPI"本机无 100%/125% 显示器，不可验。
+- **Linux 端到端验收缺失**：没有与 `tools/verify-hotkey.ps1` 等价的脚本；CI 的
+  `shell-linux` job 只做 clippy / build / lib 单测，不跑 GUI。X11 是首版基准，
+  Wayland 热键与托盘行为未纳入验收。
 - **偏好持久化未接前端**：`prefs.json` 只被读取，折叠/排序还没产生写入。
 - **`ui_rev` 事件推送**：当前靠每次 ACK 后 `GetSnapshot` 补偿，未用事件通道；
   补偿路径是契约允许的，但事件能省一次往返。
@@ -974,7 +1016,7 @@ Capability 只有两项：`core:default` 与 `core:window:allow-start-dragging`�
   标题栏的 `data-tauri-drag-region` 因此必须单独授这一条，否则**无边框窗口完全无法移动**，
   而外观毫无异常。收窄权限时踩过这个坑，现由验收脚本钉住（修订 16）。
 
-**真实热键验收**（Win32 `keybd_event` 发真键 + CDP 读界面 + 文件系统读磁盘 + `GetForegroundWindow` 读焦点）：
+**真实热键验收（Windows；Win32 `keybd_event` 发真键 + CDP 读界面 + 文件系统读磁盘 + `GetForegroundWindow` 读焦点）**：
 
 | 阶段 | 实测 |
 |---|---|
@@ -985,7 +1027,7 @@ Capability 只有两项：`core:default` 与 `core:window:allow-start-dragging`�
 | 磁盘 | `- [ ] 热键唤出后写入的一条 <!-- slip:v1;id=01a1c4a1-… -->` |
 | 收走后前台 | 回到 Windows Terminal —— **原应用拿回了焦点**（§9.7 第 3 条） |
 
-### 14.5.1 §9.3–9.6 性能实测
+### 14.5.1 §9.3–9.6 性能实测（Windows）
 
 `crates/slip-store/tests/perf.rs`，真实临时目录 + 真实 fsync，四种构建配置各跑一遍。
 运行方式：`cargo test --release -p slip-store --test perf --offline -- --ignored --nocapture`
