@@ -13,7 +13,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use slip_domain::{Mutation, Patch};
+use slip_domain::{Mutation, Patch, SlipId};
 use slip_store::{Store, StoreError, StoreOutcome, StoreSnapshot};
 use time::OffsetDateTime;
 use tokio::sync::mpsc::error::TrySendError;
@@ -69,6 +69,12 @@ pub enum Command {
     },
     IsolateAndReset {
         request_id: String,
+        reply: oneshot::Sender<Ack>,
+    },
+    /// 彻底移除一条已归档记录（不可逆）。
+    PurgeArchived {
+        request_id: String,
+        id: SlipId,
         reply: oneshot::Sender<Ack>,
     },
     GetSnapshot {
@@ -181,6 +187,18 @@ impl Dispatcher {
         self.submit(request_id, move |id, reply| Command::IsolateAndReset {
             request_id: id,
             reply,
+        })
+        .await
+    }
+
+    /// 彻底移除一条已归档记录（R104）。不可逆，调用方负责二次确认。
+    pub async fn purge(&self, request_id: String, id: SlipId) -> Ack {
+        self.submit(request_id, move |request_id, reply| {
+            Command::PurgeArchived {
+                request_id,
+                id,
+                reply,
+            }
         })
         .await
     }
@@ -342,6 +360,57 @@ async fn run(
                         }
                     }
                     Err(join) => fatal(&mut presenter, &mut *sink, request_id, join.to_string()),
+                };
+                let _ = reply.send(ack);
+            }
+
+            Command::PurgeArchived {
+                request_id,
+                id,
+                reply,
+            } => {
+                if presenter.is_fatal() {
+                    let _ = reply.send(not_executed(request_id));
+                    continue;
+                }
+                let store_handle = Arc::clone(&store);
+                let result =
+                    tokio::task::spawn_blocking(move || store_handle.purge_archived(id)).await;
+                // 删掉一行 = 撤销记录里可能指向一条已经不存在的条目，因此与"隔离重建"
+                // 同属整体替换类操作：成功就清栈。失败时**不清**——那条记录还在，
+                // 用户手上的撤销步仍然有效。
+                let ack = match result {
+                    Ok(outcome) => {
+                        let error = outcome.result.as_ref().err().map(map_store_error);
+                        presenter.accept(&outcome);
+                        let ui_rev = presenter.ui_rev();
+                        emit(&presenter, &mut *sink);
+                        if error.is_none() {
+                            undo.clear();
+                        }
+                        match error {
+                            None => Ack {
+                                request_id,
+                                result: AckResult::Applied,
+                                ui_rev: Some(ui_rev),
+                                error: None,
+                            },
+                            Some((code, message)) => Ack {
+                                request_id,
+                                result: AckResult::Rejected,
+                                ui_rev: Some(ui_rev),
+                                error: Some(AckError {
+                                    code: code.to_owned(),
+                                    message,
+                                }),
+                            },
+                        }
+                    }
+                    Err(join_error) => {
+                        tracing::error!(?join_error, "purge 任务失败");
+                        let _ = reply.send(not_executed(request_id));
+                        continue;
+                    }
                 };
                 let _ = reply.send(ack);
             }
@@ -560,6 +629,9 @@ fn reject(command: Command) {
         | Command::Reload { request_id, reply }
         | Command::Undo { request_id, reply }
         | Command::RestoreBackup {
+            request_id, reply, ..
+        }
+        | Command::PurgeArchived {
             request_id, reply, ..
         }
         | Command::IsolateAndReset { request_id, reply } => {

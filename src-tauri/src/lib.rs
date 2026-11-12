@@ -584,6 +584,28 @@ async fn isolate_and_reset(
     Ok(state.dispatcher.isolate_and_reset(request_id).await)
 }
 
+/// **彻底移除**一条已归档记录（R104 方案 A 的落地：单条删除，不是整文件 compact）。
+///
+/// 与 `archive` 的区别是"真的把那一行从文件里删掉"。因为不可逆：
+/// - 后端只允许删**已归档**的记录（store 里还有一道同样的保护）；
+/// - 与 `isolate_and_reset` 同属"整体替换类"操作，成功后必须清掉撤销栈——
+///   否则撤销条会指向一条已经不存在的记录。
+#[tauri::command]
+async fn purge_archived(
+    state: tauri::State<'_, ShellState>,
+    request_id: String,
+    id: String,
+) -> Result<Ack, String> {
+    let id = match SlipId::parse_strict(&id) {
+        Ok(id) => id,
+        Err(error) => {
+            return Ok(rejected(&request_id, "domain", error.to_string()));
+        }
+    };
+    // 走 dispatcher 是为了复用同一条队列与 ACK 形状（错开并发、崩溃可观测）。
+    Ok(state.dispatcher.purge(request_id, id).await)
+}
+
 /// 归档墓碑的容量统计（R102A）。**只读**——不删任何东西。
 ///
 /// 原矩阵设想的是"整文件 compact 物理清除墓碑"，那与"未修改行逐字节保留"和
@@ -716,6 +738,7 @@ pub fn run() {
             isolate_and_reset,
             vault_path,
             vault_capacity,
+            purge_archived,
             corrupt_preview,
             corrupt_files,
             reveal_corrupt,

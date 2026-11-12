@@ -222,6 +222,12 @@ pub trait Store: Send + Sync {
     fn restore_backup(&self, _name: &str) -> StoreOutcome {
         StoreOutcome::failed(self.snapshot(), StoreError::Io(IoKind::NotFound))
     }
+
+    /// 彻底移除一条已归档记录（R104）。默认实现**明确失败**：不是每个实现都支持
+    /// 物理删除，静默成功会让调用方以为记录没了。
+    fn purge_archived(&self, _id: SlipId) -> StoreOutcome {
+        StoreOutcome::failed(self.snapshot(), StoreError::Io(IoKind::NotFound))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -494,7 +500,161 @@ impl MarkdownStore {
     }
 }
 
+impl MarkdownStore {
+    /// **彻底移除**一条已归档的记录（R104 方案 A：单条删除，不是整文件 compact）。
+    ///
+    /// 与"归档"的区别：归档只是给记录挂上 `archived_at` 墓碑（行还在），
+    /// 这个操作会**真的把那一行从文件里删掉**。因此：
+    /// - 只允许删**有效归档**的记录（`done && archived_at.is_some()`）——未归档的条目
+    ///   应该先归档，这条限制能挡住"手滑删掉今天还没做的事"；
+    /// - 先写备份，再原子替换（提交点语义与常规写入一致）；
+    /// - **其余每一行都逐字节原样保留**——不是全文重序列化，只是"这一行不参与了"；
+    /// - 不可撤销：调用方必须自己确认并清掉撤销栈（外壳与前端负责）。
+    pub fn purge_archived(&self, id: SlipId) -> StoreOutcome {
+        let mut state = self.lock();
+
+        if state.needs_reload {
+            return StoreOutcome::failed(state.snapshot(), StoreError::NeedsReload);
+        }
+        if !state.health.is_writable() {
+            return StoreOutcome::failed(state.snapshot(), StoreError::ReadOnly);
+        }
+
+        // 找到目标记录及其所在行。
+        let Some(record_index) = state
+            .document
+            .records
+            .iter()
+            .position(|record| record.slip.id == id)
+        else {
+            return StoreOutcome::failed(
+                state.snapshot(),
+                StoreError::Domain(slip_domain::DomainError::InvalidId),
+            );
+        };
+        let slip = &state.document.records[record_index].slip;
+        if !(slip.done && slip.archived_at.is_some()) {
+            return StoreOutcome::failed(
+                state.snapshot(),
+                StoreError::Domain(slip_domain::DomainError::ArchiveRequiresDone),
+            );
+        }
+
+        let Some(line_index) = state.document.lines.iter().position(
+            |line| matches!(line.kind, doc::LineKind::Record { index } if index == record_index),
+        ) else {
+            return StoreOutcome::failed(state.snapshot(), StoreError::Io(IoKind::Other));
+        };
+
+        // 构造候选文档：删掉那一行、删掉那条记录、把后续记录的索引前移一位。
+        let mut candidate = state.document.clone();
+        candidate.lines.remove(line_index);
+        candidate.records.remove(record_index);
+        for line in &mut candidate.lines {
+            if let doc::LineKind::Record { index } = line.kind
+                && index > record_index
+            {
+                line.kind = doc::LineKind::Record { index: index - 1 };
+            }
+        }
+
+        // 候选字节由原始行拼接而成（被删的那行之外，一切原样）。
+        let bytes = (self.ops.render)(&candidate);
+        let expected: Vec<Slip> = candidate
+            .records
+            .iter()
+            .map(|record| record.slip.clone())
+            .collect();
+        // 校验方式与就地替换**不同**：`verify` 是"行数不变"的闭合检查（逐行比对原文档），
+        // 删除一行必然让它失败。这里改成"重新解析候选字节，确认记录集合正好少了目标那条"，
+        // 并且没有任何解析问题——对删除来说这才是正确的闭合条件。
+        let reparsed = doc::parse(&bytes);
+        let actual: Vec<Slip> = reparsed
+            .document
+            .records
+            .iter()
+            .map(|record| record.slip.clone())
+            .collect();
+        if !reparsed.problems.is_empty() || actual != expected {
+            tracing::error!(
+                problems = ?reparsed.problems,
+                "彻底移除后的回读校验失败，拒绝写入"
+            );
+            state.diagnostics = vec![Diagnostic {
+                line: None,
+                message: format!(
+                    "彻底移除后的回读校验失败：{} 个解析问题",
+                    reparsed.problems.len()
+                ),
+            }];
+            return StoreOutcome::failed(state.snapshot(), StoreError::Io(IoKind::Other));
+        }
+
+        // 冲突检测：磁盘在载入之后被改过就不动它。
+        let current_hash = match read_for_conflict(&state.path) {
+            Ok(disk) => fsops::hash_bytes(&disk),
+            Err(kind) => {
+                let message = format!("移除前读取 {} 失败：{kind}", state.path.display());
+                state.degrade_with(Diagnostic {
+                    line: None,
+                    message,
+                });
+                return StoreOutcome::failed(state.snapshot(), StoreError::Io(kind));
+            }
+        };
+        if current_hash != state.loaded_hash {
+            state.needs_reload = true;
+            return StoreOutcome::failed(state.snapshot(), StoreError::Conflict { current_hash });
+        }
+
+        // 备份先落地（失败只记警告，与常规写入一致）→ 原子替换。
+        let backup_ok = fsops::backup(&state.path).is_ok();
+        let prune_ok = backup_ok
+            && fsops::prune_backups(fsops::parent_dir(&state.path), BACKUP_KEEP, now_ms()).is_ok();
+        if backup_ok && prune_ok {
+            state.health.warnings.remove(&Warning::BackupFailed);
+        } else {
+            state.health.warnings.insert(Warning::BackupFailed);
+        }
+
+        if let Err(kind) = fsops::write_atomic(&state.path, &bytes) {
+            let message = format!("彻底移除时写入 {} 失败：{kind}", state.path.display());
+            state.degrade_with(Diagnostic {
+                line: None,
+                message,
+            });
+            return StoreOutcome::failed(state.snapshot(), StoreError::Io(kind));
+        }
+
+        state.document = candidate;
+        state.loaded_hash = fsops::hash_bytes(&bytes);
+        state.bump();
+        state.needs_reload = false;
+        let unknown_fields = unknown_field_warnings(&state.document);
+        state
+            .health
+            .warnings
+            .retain(|warning| !matches!(warning, Warning::UnknownField { .. }));
+        state.health.warnings.extend(unknown_fields);
+        if fsops::sync_dir(fsops::parent_dir(&state.path)).is_err() {
+            state.health.warnings.insert(Warning::DurabilityUnconfirmed);
+        } else {
+            state
+                .health
+                .warnings
+                .remove(&Warning::DurabilityUnconfirmed);
+        }
+
+        StoreOutcome::ok(state.snapshot())
+    }
+}
+
 impl Store for MarkdownStore {
+    fn purge_archived(&self, id: SlipId) -> StoreOutcome {
+        // 固有方法里有完整实现（校验 + 备份 + 原子替换），这里只做转发。
+        MarkdownStore::purge_archived(self, id)
+    }
+
     fn apply(&self, mutations: &[Mutation]) -> StoreOutcome {
         let mut state = self.lock();
 
@@ -1822,6 +1982,91 @@ mod tests {
     /// 反过来说：如果把空文件当成解析失败，用户会看到一个空白的、要求"隔离并重建"的
     /// 应用面，而他的文件其实完好。
     #[test]
+    fn purge_removes_exactly_one_line_and_keeps_the_rest_byte_identical() {
+        let (store, dir, first, _second, _third) = vault_with_archived();
+        let path = dir.path().join("inbox.md");
+        let before = read(&path);
+        let before_lines: Vec<&[u8]> = before.split_inclusive(|byte| *byte == b'\n').collect();
+
+        let outcome = store.purge_archived(first.id);
+        assert!(outcome.result.is_ok(), "结果：{:?}", outcome.result);
+
+        let after = read(&path);
+        let after_lines: Vec<&[u8]> = after.split_inclusive(|byte| *byte == b'\n').collect();
+        assert_eq!(after_lines.len(), before_lines.len() - 1, "只该少一行");
+        // 其余两行必须逐字节一致（不是重排、不是重新序列化）。
+        assert_eq!(after_lines[0], before_lines[1]);
+        assert_eq!(after_lines[1], before_lines[2]);
+        assert_eq!(store.snapshot().slips.len(), 2);
+    }
+
+    #[test]
+    fn purge_writes_a_backup_first() {
+        let (store, dir, first, _second, _third) = vault_with_archived();
+        assert!(store.purge_archived(first.id).result.is_ok());
+        // 不能断言"备份数量增加了"：BACKUP_KEEP 会把总数封顶在 5。
+        // 正确的断言是"存在一份备份，里面还留着被删掉的那条"。
+        let id = first.id.to_canonical_string();
+        let kept = backups(dir.path()).iter().any(|name| {
+            std::fs::read_to_string(dir.path().join(name))
+                .map(|text| text.contains(&id))
+                .unwrap_or(false)
+        });
+        assert!(kept, "不可逆操作必须先留一份包含被删内容的备份");
+    }
+
+    #[test]
+    fn purge_refuses_a_record_that_is_not_archived() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md");
+        std::fs::write(&path, b"").expect("write empty");
+        let store = MarkdownStore::new(&path);
+        let slip = slip("还没做的事");
+        let id = slip.id;
+        assert!(store.apply(&[Mutation::Append(slip)]).result.is_ok());
+        let before = read(&path);
+
+        let outcome = store.purge_archived(id);
+        assert!(outcome.result.is_err(), "未归档的条目不允许被彻底删除");
+        assert_eq!(read(&path), before, "被拒绝时文件必须一个字节都不变");
+    }
+
+    #[test]
+    fn purge_refuses_an_unknown_id() {
+        let (store, dir, _a, _b, _c) = vault_with_archived();
+        let before = read(&dir.path().join("inbox.md"));
+        let outcome = store.purge_archived(SlipId::new_v7());
+        assert!(outcome.result.is_err());
+        assert_eq!(read(&dir.path().join("inbox.md")), before);
+    }
+
+    #[test]
+    fn purge_keeps_unknown_keys_of_the_remaining_lines() {
+        // 这里刻意丢掉第一个 store：下面要给文件打补丁后**重新载入**，
+        // 用旧 store 会把补丁覆盖掉（它的 loaded_hash 已经过期）。
+        let (_store, dir, first, _second, _third) = vault_with_archived();
+        let path = dir.path().join("inbox.md");
+        // 手工给一行加未知键，然后删掉**另一行**，未知键必须原样还在。
+        let text = String::from_utf8(read(&path)).expect("utf8");
+        let patched = text.replacen("slip:v1;", "slip:v1;zz=9;", 1);
+        std::fs::write(&path, patched.as_bytes()).expect("write patched");
+        let store = MarkdownStore::new(&path);
+
+        // zz=9 加在第一条上，所以必须删**别的**记录，否则连它一起没了，断言就失去意义。
+        assert!(store.purge_archived(_third.id).result.is_ok());
+        let after = String::from_utf8(read(&path)).expect("utf8");
+        assert!(after.contains("zz=9"), "未知键被吞了：{after}");
+        assert!(
+            !after.contains(&_third.id.to_canonical_string()),
+            "目标行没被删掉"
+        );
+        assert!(
+            after.contains(&first.id.to_canonical_string()),
+            "没被删的行必须还在"
+        );
+    }
+
+    #[test]
     fn empty_inbox_is_healthy_and_first_write_is_canonical() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("inbox.md");
@@ -1932,5 +2177,54 @@ mod tests {
             "diagnostics: {:?}",
             snapshot.diagnostics
         );
+    }
+
+    // ---------- R104 单条彻底移除 ----------
+
+    /// 造一个"三条都已归档 + 一条未归档"的 vault，返回 (store, dir, 三条的 id)。
+    fn vault_with_archived() -> (MarkdownStore, tempfile::TempDir, Slip, Slip, Slip) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("inbox.md");
+        std::fs::write(&path, b"").expect("write empty");
+        let store = MarkdownStore::new(&path);
+
+        let mut ids = Vec::new();
+        for text in ["一条", "二条", "三条"] {
+            let slip = slip(text);
+            ids.push(slip.id);
+            assert!(store.apply(&[Mutation::Append(slip)]).result.is_ok());
+        }
+        // 全部标完成再归档。
+        let completes: Vec<Mutation> = ids
+            .iter()
+            .map(|id| Mutation::Patch {
+                id: *id,
+                patch: Patch::SetDone {
+                    done: true,
+                    at: datetime!(2026-11-10 12:00:00 +08:00),
+                },
+            })
+            .collect();
+        assert!(store.apply(&completes).result.is_ok());
+        let archives: Vec<Mutation> = ids
+            .iter()
+            .map(|id| Mutation::Patch {
+                id: *id,
+                patch: Patch::Archive {
+                    at: datetime!(2026-11-10 12:05:00 +08:00),
+                },
+            })
+            .collect();
+        assert!(store.apply(&archives).result.is_ok());
+
+        let slips = store.snapshot().slips;
+        let find = |text: &str| {
+            slips
+                .iter()
+                .find(|slip| slip.text == text)
+                .expect("seeded slip")
+                .clone()
+        };
+        (store, dir, find("一条"), find("二条"), find("三条"))
     }
 }
