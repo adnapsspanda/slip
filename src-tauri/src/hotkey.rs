@@ -74,15 +74,65 @@ pub fn register(app: &App, text: &str) -> Result<(), Box<dyn std::error::Error>>
     install_auto_dismiss(app);
 
     let shortcut: Shortcut = text.parse()?;
-    app.global_shortcut()
+    bind(app.handle(), shortcut)?;
+    tracing::info!("hotkey registered: {text}");
+    Ok(())
+}
+
+/// 把一个快捷键绑成"按下即切换窗口"。
+///
+/// 与 [`register`] 分开：启动注册要连带装失焦收走，而运行期换键（R116）只该动注册，
+/// 不能重复安装窗口事件监听（那会让一次失焦被处理两遍）。
+fn bind(handle: &AppHandle, shortcut: Shortcut) -> Result<(), String> {
+    handle
+        .global_shortcut()
         .on_shortcut(shortcut, |app, _shortcut, event| {
             // 只响应按下：否则一次按键会触发 Pressed + Released 两次。
             if event.state() == ShortcutState::Pressed {
                 toggle(app);
             }
-        })?;
-    tracing::info!("hotkey registered: {text}");
-    Ok(())
+        })
+        .map_err(|error| error.to_string())
+}
+
+/// 备选热键（R116）：默认键被别的程序占用时的第二选择。
+///
+/// 选 `Win+Alt+S`：`S` 取自 Slip，且 Win+Alt 组合极少被普通应用注册。
+pub const FALLBACK_SHORTCUT: &str = "super+alt+s";
+
+/// 把当前热键换成 [`FALLBACK_SHORTCUT`]，成功返回新键文本。
+///
+/// 三条纪律：
+/// - **先解析再注销**：新键写错时旧键还没被动过，不会出现"换失败且原来也没了"；
+/// - 失败**尽力恢复**旧键，恢复也失败就如实报错，不假称成功；
+/// - **不写偏好**：这是"本次运行先能按"，配置真源仍由用户在别处决定。
+pub fn switch_to_fallback(handle: &AppHandle, current: &str) -> Result<String, String> {
+    let fallback: Shortcut = FALLBACK_SHORTCUT
+        .parse()
+        .map_err(|error| format!("备选热键无法解析：{error}"))?;
+
+    handle
+        .global_shortcut()
+        .unregister_all()
+        .map_err(|error| format!("注销旧热键失败：{error}"))?;
+
+    if let Err(error) = bind(handle, fallback) {
+        tracing::warn!("备选热键注册失败，尝试恢复原键：{error}");
+        // 只解析得出旧键才谈得上恢复；解析不出就如实说"现在没有热键"。
+        let previous = current.parse::<Shortcut>().ok();
+        if let Some(previous) = previous {
+            if let Err(restore) = bind(handle, previous) {
+                return Err(format!(
+                    "备选热键注册失败（{error}），原热键也无法恢复（{restore}）"
+                ));
+            }
+            return Err(format!("备选热键注册失败（{error}），已恢复原热键"));
+        }
+        return Err(format!("备选热键注册失败：{error}"));
+    }
+
+    tracing::info!("hotkey switched to {FALLBACK_SHORTCUT}");
+    Ok(FALLBACK_SHORTCUT.to_owned())
 }
 
 /// 失焦即收走。
@@ -225,6 +275,8 @@ fn place_near_cursor(app: &AppHandle, window: &tauri::WebviewWindow) {
     };
 
     // 物理尺寸对比的是物理坐标，所以缝也要按缩放折算。
+    // R112：用的是**光标所在那块屏**的 `scale_factor()`（`monitor_from_point` 的返回值），
+    // 不是主屏——混合 DPI 下拿主屏的倍率折算，副屏上 16 逻辑像素会差出一截。
     let gap = (CURSOR_GAP * monitor.scale_factor()).round() as i32;
     let (x, y) = place(
         (cursor.x.round() as i32, cursor.y.round() as i32),
@@ -232,11 +284,102 @@ fn place_near_cursor(app: &AppHandle, window: &tauri::WebviewWindow) {
         (size.width as i32, size.height as i32),
         gap,
     );
+    // R113：`place` 只保证窗口留在工作区里（可以贴边）。贴边在 150% 缩放下看起来
+    // 像"窗口被屏幕吃掉一个角"，所以再往里收 12 物理像素。
+    // 这是**与工作区边缘**的关系，与 `CURSOR_GAP`（光标与窗口的缝）是两回事，别混。
+    let (x, y) = clamp_with_work_area_margin(
+        bounds,
+        (size.width as i32, size.height as i32),
+        (x, y),
+        WORK_AREA_MARGIN,
+    );
     let _ = window.set_position(PhysicalPosition::new(x, y));
+}
+
+/// 窗口与工作区边缘之间至少留出的距离（**物理像素**，R113）。
+const WORK_AREA_MARGIN: i32 = 12;
+
+/// 把窗口位置再夹进"工作区内缩 `margin`"的范围里。
+///
+/// 窗口比工作区还大时**绝不**继续留边：那会把左上角推到屏幕外，用户直接看不到标题。
+/// 这种情况下退化为贴左上（`low`），把可见的部分尽量留在屏内。
+fn clamp_with_work_area_margin(
+    bounds: Area,
+    size: (i32, i32),
+    pos: (i32, i32),
+    margin: i32,
+) -> (i32, i32) {
+    let clamp_axis = |value: i32, low: i32, high: i32| {
+        if high < low {
+            low
+        } else {
+            value.clamp(low, high)
+        }
+    };
+    let (width, height) = size;
+    let (x, y) = pos;
+    (
+        clamp_axis(x, bounds.left + margin, bounds.right - margin - width),
+        clamp_axis(y, bounds.top + margin, bounds.bottom - margin - height),
+    )
 }
 
 /// IPC：前端在 Esc 或捕获成功时请求收走。
 #[tauri::command]
 pub fn dismiss_window(app: AppHandle) {
     dismiss(&app);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WORK_AREA_MARGIN, clamp_with_work_area_margin};
+    use slip_app::geometry::Area;
+
+    /// 1000×800 的工作区，原点在 (0,0)。
+    fn area() -> Area {
+        Area {
+            left: 0,
+            top: 0,
+            right: 1000,
+            bottom: 800,
+        }
+    }
+
+    /// 本来就在安全区内：一个像素都不该动。
+    #[test]
+    fn an_already_inside_position_is_untouched() {
+        let moved = clamp_with_work_area_margin(area(), (400, 300), (200, 150), WORK_AREA_MARGIN);
+        assert_eq!(moved, (200, 150));
+    }
+
+    /// 贴边（`place` 允许）要被推进来 12px：右下角同样算。
+    #[test]
+    fn positions_on_the_edge_are_pushed_inward_by_the_margin() {
+        let left = clamp_with_work_area_margin(area(), (400, 300), (-40, -40), WORK_AREA_MARGIN);
+        assert_eq!(left, (WORK_AREA_MARGIN, WORK_AREA_MARGIN));
+
+        let right = clamp_with_work_area_margin(area(), (400, 300), (990, 790), WORK_AREA_MARGIN);
+        // 1000 - 12 - 400 = 588；800 - 12 - 300 = 488
+        assert_eq!(right, (588, 488));
+    }
+
+    /// 窗口比工作区还大时**不能**继续留边，否则左上角会被推出屏幕。
+    #[test]
+    fn an_oversized_window_falls_back_to_the_inner_corner() {
+        let moved = clamp_with_work_area_margin(area(), (1200, 900), (500, 400), WORK_AREA_MARGIN);
+        assert_eq!(moved, (WORK_AREA_MARGIN, WORK_AREA_MARGIN));
+    }
+
+    /// 负坐标副屏（副屏在主屏左侧时很常见）同样要留边。
+    #[test]
+    fn negative_origin_monitors_are_handled() {
+        let second = Area {
+            left: -1920,
+            top: 0,
+            right: 0,
+            bottom: 1080,
+        };
+        let moved = clamp_with_work_area_margin(second, (400, 300), (-1920, 780), WORK_AREA_MARGIN);
+        assert_eq!(moved, (-1908, 768));
+    }
 }

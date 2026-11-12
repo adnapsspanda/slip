@@ -9,10 +9,14 @@
 //! 托管状态里那个**真正注册成功**的字符串，不能写死常量——否则用户改了配置
 //! 后，界面还在展示旧热键，等于骗人。
 
+use std::io::Write;
+use std::sync::OnceLock;
+
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, Manager};
 use tauri_plugin_autostart::ManagerExt;
+use time::{OffsetDateTime, UtcOffset};
 
 /// 退出时把非阻塞的收尾放到这里。
 /// 托盘里"待办摘要"那一行的句柄。
@@ -21,16 +25,32 @@ use tauri_plugin_autostart::ManagerExt;
 /// 只 `set_text` 一行就够，且**只有计数变化时才调用**。
 pub struct TraySummary(pub MenuItem<tauri::Wry>);
 
-/// 读取当前未完成条数。拿不到快照时按 0 处理（托盘不该因为读状态失败而消失）。
-fn current_pending(app: &App) -> usize {
-    let handle = app.handle().clone();
-    let Some(state) = handle.try_state::<crate::ShellState>() else {
-        return 0;
-    };
-    match tauri::async_runtime::block_on(state.dispatcher.get_snapshot()) {
-        Ok(snapshot) => snapshot.slips.iter().filter(|slip| !slip.done).count(),
-        Err(_) => 0,
+/// 托盘里"热键：xxx"那一行的句柄。
+///
+/// R116 允许运行期换键，换成功后必须让这一行跟着变——否则界面在骗人，
+/// 和 tooltip 用真值同一个理由。
+pub struct TrayHotkey(pub MenuItem<tauri::Wry>);
+
+/// 托盘里热键那一行该显示的文本。
+fn hotkey_row_text(hotkey: &str) -> String {
+    if hotkey.is_empty() {
+        String::from("热键：未注册")
+    } else {
+        format!("热键：{}", pretty_hotkey(hotkey))
     }
+}
+
+/// 读取当前未完成条数。拿不到快照时按 `None` 处理（托盘不该因为读状态失败而消失）。
+fn pending_of(handle: &AppHandle) -> Option<usize> {
+    let state = handle.try_state::<crate::ShellState>()?;
+    match tauri::async_runtime::block_on(state.dispatcher.get_snapshot()) {
+        Ok(snapshot) => Some(snapshot.slips.iter().filter(|slip| !slip.done).count()),
+        Err(_) => None,
+    }
+}
+
+fn current_pending(app: &App) -> usize {
+    pending_of(app.handle()).unwrap_or(0)
 }
 
 /// 把托盘的摘要行与 tooltip 更新到最新计数。
@@ -42,11 +62,17 @@ pub fn refresh_tray(app: &tauri::AppHandle, pending: usize) {
     if let Some(summary) = app.try_state::<TraySummary>() {
         let _ = summary.0.set_text(slip_app::tray::summary(pending));
     }
+    // 热键行也在这里对齐：换键（R116）之后唯一还会跑的周期任务就是这一条，
+    // 让"显示的热键"只有**一个**同步点，不会出现两个地方各更新一半。
+    let hotkey = app
+        .try_state::<crate::ShellState>()
+        .map(|state| state.hotkey_text())
+        .unwrap_or_default();
+    if let Some(row) = app.try_state::<TrayHotkey>() {
+        let _ = row.0.set_text(hotkey_row_text(&hotkey));
+    }
     if let Some(tray) = app.tray_by_id("slip") {
-        let pretty = app
-            .try_state::<crate::ShellState>()
-            .map(|state| pretty_hotkey(&state.hotkey))
-            .unwrap_or_default();
+        let pretty = pretty_hotkey(&hotkey);
         let _ = tray.set_tooltip(Some(slip_app::tray::tooltip(&pretty, pending)));
     }
 }
@@ -54,13 +80,9 @@ pub fn refresh_tray(app: &tauri::AppHandle, pending: usize) {
 pub fn install_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     // 热键从托管状态读：`hotkey` 已经过解析校验，解析失败时也已回落默认值，
     // 所以这里拿到的就是**此刻真正生效**的那一组键。
-    let hotkey = app.state::<crate::ShellState>().hotkey.clone();
+    let hotkey = app.state::<crate::ShellState>().hotkey_text();
     let pretty = pretty_hotkey(&hotkey);
-    let hotkey_text = if hotkey.is_empty() {
-        String::from("热键：未注册")
-    } else {
-        format!("热键：{pretty}")
-    };
+    let hotkey_text = hotkey_row_text(&hotkey);
 
     // 置灰的信息项放在最上面：用户第一眼看到的就是"这东西怎么叫出来"。
     // enabled = false 让它不可点击，纯粹当一行说明用（回调里因此不需要分支）。
@@ -85,9 +107,19 @@ pub fn install_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         None::<&str>,
     )?;
     let summary_for_state = summary_item.clone();
+    let hotkey_for_state = hotkey_item.clone();
     let separator = PredefinedMenuItem::separator(app)?;
     let show = MenuItem::with_id(app, "show", "显示 Slip", true, None::<&str>)?;
+    // R115 三项动作：唤出捕获、打开数据目录、复制最近一条。
+    // 「唤出捕获」与「显示 Slip」语义不同：前者上膛失焦收走（和热键一致），
+    // 后者是"打开看看"。混成一个会让用户猜不到点哪下窗口会自己消失。
+    let capture_item = MenuItem::with_id(app, "capture", "快速唤出捕获", true, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "打开 Inbox", true, None::<&str>)?;
+    let open_vault = MenuItem::with_id(app, "vault", "打开数据目录", true, None::<&str>)?;
+    let copy_latest = MenuItem::with_id(app, "copyLatest", "复制最近一条", true, None::<&str>)?;
+    // R116：默认热键被占用时的第二选择。做成菜单项而不是自动抢键——
+    // 抢键会让"为什么我的快捷键变了"变成一条查不到原因的现象。
+    let fallback = MenuItem::with_id(app, "fallbackHotkey", "改用 Win+Alt+S", true, None::<&str>)?;
     // 初始勾选读系统状态，而不是写死 false：用户可能在上次运行后手动改过注册表。
     let autostart = CheckMenuItem::with_id(
         app,
@@ -104,8 +136,12 @@ pub fn install_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
             &hotkey_item,
             &summary_item,
             &separator,
+            &capture_item,
             &show,
             &open,
+            &open_vault,
+            &copy_latest,
+            &fallback,
             &autostart,
             &quit,
         ],
@@ -128,11 +164,28 @@ pub fn install_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
         // 于是左键 = 唤出，右键 = 菜单——托盘应用的通行分工。
         .show_menu_on_left_click(false)
         .on_menu_event(move |app, event| match event.id().as_ref() {
+            "capture" => {
+                crate::hotkey::summon(app);
+            }
             "show" => {
                 crate::hotkey::summon(app);
             }
             "open" => {
                 let _ = open_inbox(app);
+            }
+            "vault" => {
+                if let Err(error) = open_vault_dir(app) {
+                    tracing::warn!("open vault dir failed: {error}");
+                }
+            }
+            "copyLatest" => {
+                if let Err(error) = copy_latest_pending(app) {
+                    // 没有未完成项是最常见的情况，不该弹窗打扰，只留一条 warn。
+                    tracing::warn!("copy latest slip failed: {error}");
+                }
+            }
+            "fallbackHotkey" => {
+                switch_fallback_hotkey(app);
             }
             "autostart" => toggle_autostart(app, &autostart_item),
             "quit" => {
@@ -164,6 +217,7 @@ pub fn install_tray(app: &App) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("tray installed: {tooltip}");
     // 句柄托管必须在返回之前：刷新任务要靠它拿到那一行去 set_text。
     app.manage(TraySummary(summary_for_state));
+    app.manage(TrayHotkey(hotkey_for_state));
     Ok(())
 }
 /// 把小写的热键文本美化成给人看的形式：`ctrl+alt+space` → `Ctrl+Alt+Space`。
@@ -262,6 +316,71 @@ fn open_inbox(app: &AppHandle) -> Result<(), String> {
         return Err(format!("无法打开 {target:?}: {error}"));
     }
     Ok(())
+}
+
+/// R115：打开 vault 目录本身。
+///
+/// 与「打开 Inbox」分开：备份、导出、`inbox.md.corrupt-*` 证据都在同一个目录里，
+/// 只想看看"这里都有些什么"时打开文件反而是挡路。
+fn open_vault_dir(app: &AppHandle) -> Result<(), String> {
+    let vault = app.state::<crate::ShellState>().vault.clone();
+    std::process::Command::new("explorer.exe")
+        .arg(&vault)
+        .spawn()
+        .map_err(|error| format!("无法打开 {}: {error}", vault.display()))?;
+    Ok(())
+}
+
+/// R115：最近创建的那条**未完成且未归档**的纸条正文。
+///
+/// "最近"按 `created_at` 而不是列表位置：R92 之后置顶与排序都可能改变位置，
+/// 而"我刚刚记的那条"只由时间决定。
+fn latest_pending_text(snapshot: &slip_app::UiSnapshot) -> Option<String> {
+    snapshot
+        .slips
+        .iter()
+        .filter(|slip| !slip.done && !slip.archived)
+        .max_by_key(|slip| {
+            time::OffsetDateTime::parse(
+                &slip.created_at,
+                &time::format_description::well_known::Rfc3339,
+            )
+            .ok()
+        })
+        .map(|slip| slip.text.clone())
+}
+
+/// R115：把最近一条待办复制到剪贴板。
+///
+/// 走**公开快照**取正文，不碰磁盘；剪贴板在 Rust 侧写，webview 仍然没有这项能力。
+fn copy_latest_pending(app: &AppHandle) -> Result<(), String> {
+    use tauri_plugin_clipboard_manager::ClipboardExt;
+
+    let state = app.state::<crate::ShellState>();
+    let snapshot = tauri::async_runtime::block_on(state.dispatcher.get_snapshot())
+        .map_err(|error| format!("读取快照失败：{error:?}"))?;
+    let text = latest_pending_text(&snapshot).ok_or_else(|| String::from("没有未完成的条目"))?;
+    app.clipboard()
+        .write_text(text)
+        .map_err(|error| format!("写入剪贴板失败：{error}"))
+}
+
+/// R116：把热键换成备选键。成功则同步托管状态与托盘；失败保持原状（只留 warn）。
+fn switch_fallback_hotkey(app: &AppHandle) {
+    let Some(state) = app.try_state::<crate::ShellState>() else {
+        return;
+    };
+    let current = state.hotkey_text();
+    match crate::hotkey::switch_to_fallback(app, &current) {
+        Ok(switched) => {
+            // 显示给用户的与真正注册的必须是同一个字符串（和启动时同一条纪律）。
+            state.set_hotkey(switched.clone());
+            let pending = pending_of(app).unwrap_or(0);
+            refresh_tray(app, pending);
+            tracing::info!("hotkey fallback in effect: {switched}");
+        }
+        Err(error) => tracing::warn!("hotkey fallback failed: {error}"),
+    }
 }
 
 /// 链接**能不能开**的判定，与"怎么开"分开——这样才能单测而不真的弹浏览器。
@@ -390,17 +509,128 @@ pub fn render_plain(title: &str, slips: &[(&str, bool)]) -> String {
     slip_domain::normalize_newlines(&out)
 }
 
-/// 把导出内容写到 vault 下的 `export-<unix_ms>.md`，返回路径。
+/// 导出文件名里的时间戳：`YYYYMMDD-HHmmss`（**本地时间**）。
+///
+/// 为什么不用 unix 毫秒：用户在资源管理器里看到 `export-1793452800000.md`
+/// 判断不出这是哪一次导出的日期，排序也读不出来。日期时间一眼能认。
+pub fn export_stamp(local: OffsetDateTime) -> String {
+    format!(
+        "{:04}{:02}{:02}-{:02}{:02}{:02}",
+        local.year(),
+        u8::from(local.month()),
+        local.day(),
+        local.hour(),
+        local.minute(),
+        local.second()
+    )
+}
+
+/// 从 `reg query` 的输出里取出 `ActiveTimeBias` 的值（分钟，`UTC = 本地 + bias`）。
+///
+/// 纯函数，因为这段解析最该被测：注册表给的是十六进制 DWORD，负偏移是补码
+/// （中国时区是 `0xfffffe20`，即 −480）。算错符号会让文件名差 16 小时。
+fn parse_active_bias(raw: &str) -> Option<i32> {
+    let token = raw
+        .split_whitespace()
+        .find(|token| token.starts_with("0x") || token.starts_with("0X"))?;
+    let hex = token
+        .trim_start_matches("0x")
+        .trim_start_matches("0X")
+        .trim_end_matches(|c: char| !c.is_ascii_hexdigit());
+    let value = u32::from_str_radix(hex, 16).ok()?;
+    Some(value as i32)
+}
+
+/// 本机当前相对 UTC 的偏移（只读一次，进程内缓存）。
+///
+/// 为什么走注册表而不是 `time` 的 `now_local()`：那需要 `time/local-offset` 特性，
+/// 本仓库没有开，而开特性要改 `Cargo.toml`——那不属于外壳能单方面决定的事，
+/// 也不值得为一个文件名引入平台 FFI。`ActiveTimeBias` 是系统按**当前生效**的
+/// 时区与夏令时写下的有效偏移，正好是这里要的东西。
+fn local_offset_minutes() -> Option<i32> {
+    static CACHE: OnceLock<Option<i32>> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        let output = std::process::Command::new("reg.exe")
+            .args([
+                "query",
+                r"HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation",
+                "/v",
+                "ActiveTimeBias",
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        parse_active_bias(&String::from_utf8_lossy(&output.stdout))
+    })
+}
+
+/// 本地时区偏移；读不到就退回 UTC。
+///
+/// 宁可文件名差一个时区，也不能因为读不到时区就导不出来。
+fn local_offset() -> UtcOffset {
+    match local_offset_minutes() {
+        Some(bias) => UtcOffset::from_whole_seconds(-bias * 60).unwrap_or(UtcOffset::UTC),
+        None => {
+            tracing::warn!("无法读取本地时区偏移，导出文件名按 UTC 生成");
+            UtcOffset::UTC
+        }
+    }
+}
+
+/// 把导出内容写到 vault 下，返回路径。
+///
+/// 文件名是 `export-YYYYMMDD-HHmmss.md`（本地时间）；同一秒内再导出就追加
+/// `-2`、`-3`……**绝不覆盖**已有文件——那可能是用户特意留下的上一版。
 pub fn write_export(vault: &std::path::Path, content: &str) -> Result<std::path::PathBuf, String> {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let path = vault.join(format!("export-{stamp}.md"));
-    if let Err(error) = std::fs::write(&path, content) {
+    write_export_at(
+        vault,
+        content,
+        OffsetDateTime::now_utc().to_offset(local_offset()),
+    )
+}
+
+/// 写盘本体；`now` 可注入，所以"同秒撞名"能被单测覆盖。
+pub fn write_export_at(
+    vault: &std::path::Path,
+    content: &str,
+    now: OffsetDateTime,
+) -> Result<std::path::PathBuf, String> {
+    let stamp = export_stamp(now);
+    let (path, mut file) = create_export_file(vault, &stamp)?;
+    if let Err(error) = file.write_all(content.as_bytes()) {
+        // 半截文件比没有文件更误导人：写完失败就把残骸删掉。
+        drop(file);
+        let _ = std::fs::remove_file(&path);
         return Err(format!("写入失败：{error}"));
     }
     Ok(path)
+}
+
+/// 用 `create_new` 占一个**不存在**的文件名，避开同秒撞名。
+fn create_export_file(
+    vault: &std::path::Path,
+    stamp: &str,
+) -> Result<(std::path::PathBuf, std::fs::File), String> {
+    for attempt in 1..=99u32 {
+        let name = if attempt == 1 {
+            format!("export-{stamp}.md")
+        } else {
+            format!("export-{stamp}-{attempt}.md")
+        };
+        let path = vault.join(name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => return Ok((path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("创建导出文件失败：{error}")),
+        }
+    }
+    Err(String::from("同一秒内的导出文件过多，请稍后再试"))
 }
 
 /// 在资源管理器里选中最新那个损坏文件。
@@ -422,7 +652,13 @@ pub fn reveal_newest_corrupt(app: &AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{diff_summary, render_plain, validate_url};
+    use super::{
+        diff_summary, export_stamp, latest_pending_text, parse_active_bias, render_plain,
+        validate_url, write_export_at,
+    };
+    use slip_app::{HealthView, RecoveryView, RuntimeStatus, SlipView, UiSnapshot};
+    use time::UtcOffset;
+    use time::macros::datetime;
 
     fn row(id: &str, text: &str, done: bool) -> (String, String, bool) {
         (id.to_owned(), text.to_owned(), done)
@@ -526,5 +762,181 @@ mod tests {
         ] {
             assert!(validate_url(url).is_err(), "should reject {url:?}");
         }
+    }
+
+    // ---------------------------------------------------------- R110 导出文件名
+
+    /// 文件名是给人看的本地时间，不是 epoch 毫秒。
+    #[test]
+    fn export_stamp_is_readable_local_time() {
+        let at = datetime!(2026-11-12 07:05:09 UTC);
+        assert_eq!(export_stamp(at), "20261112-070509");
+    }
+
+    /// 位宽不足的月/日/时/分/秒必须补零，否则 `2026 1 2` 会被读成别的日期。
+    #[test]
+    fn export_stamp_pads_single_digit_components() {
+        let at = datetime!(2026-01-02 03:04:05 UTC);
+        assert_eq!(export_stamp(at), "20260102-030405");
+    }
+
+    /// 负偏移（中国是 UTC+8）走补码：0xfffffe20 = −480 分钟。
+    #[test]
+    fn active_bias_parses_twos_complement_hex() {
+        let raw = "\r\nHKEY_LOCAL_MACHINE\\SYSTEM\\CurrentControlSet\\Control\\TimeZoneInformation\r\n    ActiveTimeBias    REG_DWORD    0xfffffe20\r\n";
+        assert_eq!(parse_active_bias(raw), Some(-480));
+        assert_eq!(
+            parse_active_bias("    ActiveTimeBias    REG_DWORD    0x1e0"),
+            Some(480)
+        );
+    }
+
+    /// 读不到或格式变了就返回 None，交给调用方退回 UTC——绝不能猜。
+    #[test]
+    fn active_bias_returns_none_for_unexpected_output() {
+        assert_eq!(parse_active_bias(""), None);
+        assert_eq!(parse_active_bias("错误: 系统找不到指定的注册表项"), None);
+        assert_eq!(parse_active_bias("ActiveTimeBias REG_DWORD 0xzz"), None);
+    }
+
+    /// 临时目录：`tempfile` 不是本 crate 的依赖（铁律是不新增依赖），自己造一个够用。
+    fn temp_vault(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("slip-export-test-{tag}-{nanos}"));
+        std::fs::create_dir_all(&dir).expect("temp vault");
+        dir
+    }
+
+    /// 同一秒内连续导出两份：第二份必须带 `-2`，且**第一份内容不被覆盖**。
+    #[test]
+    fn exporting_twice_in_one_second_never_overwrites() {
+        let dir = temp_vault("twice");
+        let at = datetime!(2026-11-12 07:05:09 UTC);
+        let first = write_export_at(&dir, "第一份\n", at).expect("first");
+        let second = write_export_at(&dir, "第二份\n", at).expect("second");
+
+        assert_eq!(
+            first.file_name().unwrap().to_str().unwrap(),
+            "export-20261112-070509.md"
+        );
+        assert_eq!(
+            second.file_name().unwrap().to_str().unwrap(),
+            "export-20261112-070509-2.md"
+        );
+        assert!(first.exists() && second.exists(), "两份都要在");
+        assert_eq!(
+            std::fs::read_to_string(&first).unwrap(),
+            "第一份\n",
+            "已有文件不得被覆盖"
+        );
+        assert_eq!(std::fs::read_to_string(&second).unwrap(), "第二份\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 不同秒的两个导出各自独立，不加后缀。
+    #[test]
+    fn exports_in_different_seconds_get_distinct_names() {
+        let dir = temp_vault("distinct");
+        let a = write_export_at(&dir, "a\n", datetime!(2026-11-12 07:05:09 UTC)).unwrap();
+        let b = write_export_at(&dir, "b\n", datetime!(2026-11-12 07:05:10 UTC)).unwrap();
+        assert_ne!(a, b);
+        // 用**精确文件名**而不是 `contains("-2")`：文件名是 `export-2026…`，
+        // 那个 "-2" 来自年份 2026 前的一个连字符，不是后缀——`contains` 永远为真。
+        let name = b
+            .file_name()
+            .expect("file name")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(name, "export-20261112-070510.md", "不同秒不该加后缀");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 时区偏移换算成 `UtcOffset` 后要能正确落在本地时间上。
+    #[test]
+    fn local_stamp_follows_the_offset() {
+        let utc = datetime!(2026-11-12 00:30:00 UTC);
+        let beijing = utc.to_offset(UtcOffset::from_hms(8, 0, 0).unwrap());
+        assert_eq!(export_stamp(utc), "20261112-003000");
+        assert_eq!(export_stamp(beijing), "20261112-083000");
+    }
+
+    // ---------------------------------------------------------- R115 复制最近一条
+
+    fn slip_view(id: &str, text: &str, done: bool, archived: bool, created: &str) -> SlipView {
+        SlipView {
+            id: id.to_owned(),
+            text: text.to_owned(),
+            done,
+            archived,
+            locked: false,
+            created_at: created.to_owned(),
+            done_at: None,
+        }
+    }
+
+    fn snapshot_with(slips: Vec<SlipView>) -> UiSnapshot {
+        use std::collections::BTreeSet;
+        UiSnapshot {
+            content_rev: 1,
+            ui_rev: 1,
+            slips,
+            health: HealthView {
+                writable: true,
+                warnings: BTreeSet::new(),
+            },
+            needs_reload: false,
+            recovery: RecoveryView::Normal,
+            diagnostics: Vec::new(),
+            runtime: RuntimeStatus::Running,
+        }
+    }
+
+    /// "最近一条"按创建时间取，**不是**按列表位置——列表可能被置顶和排序改过。
+    #[test]
+    fn latest_pending_picks_the_newest_undone_slip() {
+        let snapshot = snapshot_with(vec![
+            slip_view("a", "旧的", false, false, "2026-11-10T08:00:00Z"),
+            slip_view("b", "最新的", false, false, "2026-11-12T07:00:00Z"),
+            slip_view("c", "中间", false, false, "2026-11-11T08:00:00Z"),
+        ]);
+        assert_eq!(latest_pending_text(&snapshot).as_deref(), Some("最新的"));
+    }
+
+    /// 已完成与已归档的不算"待办"，即使它们更新。
+    #[test]
+    fn latest_pending_ignores_done_and_archived_slips() {
+        let snapshot = snapshot_with(vec![
+            slip_view("a", "可复制", false, false, "2026-11-10T08:00:00Z"),
+            slip_view("b", "已完成", true, false, "2026-11-12T07:00:00Z"),
+            slip_view("c", "已归档", true, true, "2026-11-12T07:30:00Z"),
+        ]);
+        assert_eq!(latest_pending_text(&snapshot).as_deref(), Some("可复制"));
+    }
+
+    /// 一条待办都没有时返回 None，调用方只留 warn、不弹窗。
+    #[test]
+    fn latest_pending_is_none_on_an_empty_or_finished_list() {
+        assert_eq!(latest_pending_text(&snapshot_with(Vec::new())), None);
+        let finished = snapshot_with(vec![slip_view(
+            "a",
+            "做完了",
+            true,
+            false,
+            "2026-11-12T07:00:00Z",
+        )]);
+        assert_eq!(latest_pending_text(&finished), None);
+    }
+
+    /// 创建时间解析不了也不能 panic：那一条直接不参选。
+    #[test]
+    fn latest_pending_survives_unparsable_timestamps() {
+        let snapshot = snapshot_with(vec![
+            slip_view("a", "坏时间", false, false, "不是时间"),
+            slip_view("b", "好时间", false, false, "2026-11-10T08:00:00Z"),
+        ]);
+        assert_eq!(latest_pending_text(&snapshot).as_deref(), Some("好时间"));
     }
 }

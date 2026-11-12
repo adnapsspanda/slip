@@ -34,7 +34,29 @@ pub struct ShellState {
     ///
     /// 托盘 tooltip、菜单和日志都用它，保证「显示给用户的」与「真正注册的」
     /// 是同一个字符串——否则用户看到的热键会骗人。
-    pub(crate) hotkey: String,
+    ///
+    /// 为什么需要内部可变性（R116）：托盘里可以「改用 Win+Alt+S」并**重试注册**，
+    /// 成功后就地更新这一格。锁的只是一个字符串，**不是** presenter——
+    /// 与"单队列单消费者、presenter 不上锁"的约束无关。
+    hotkey: std::sync::Mutex<String>,
+}
+
+impl ShellState {
+    /// 当前**实际注册成功**的热键文本；未注册时为空串。
+    pub(crate) fn hotkey_text(&self) -> String {
+        match self.hotkey.lock() {
+            Ok(slot) => slot.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// 注册成功后就地更新。读失败（中毒）也照写：显示错误的代价比重试注册本身更大。
+    pub(crate) fn set_hotkey(&self, value: String) {
+        match self.hotkey.lock() {
+            Ok(mut slot) => *slot = value,
+            Err(poisoned) => *poisoned.into_inner() = value,
+        }
+    }
 }
 
 /// 开机自启时传给本进程的标记参数。
@@ -120,6 +142,8 @@ async fn capture(
                 archived_at: None,
                 // 新收录的纸条永远不是定稿状态。
                 locked: false,
+                // 新收录的纸条永远不置顶（R92 领域字段，外壳只负责给初值）。
+                pinned: false,
             })
         })
         .collect();
@@ -375,9 +399,10 @@ async fn restore_backup(
 /// 换来的复杂度不值。这里读的是外壳状态，代价是一次内存读取。
 #[tauri::command]
 fn hotkey_status(state: tauri::State<'_, ShellState>) -> HotkeyStatus {
+    let hotkey = state.hotkey_text();
     HotkeyStatus {
-        text: system::pretty_hotkey(&state.hotkey),
-        registered: !state.hotkey.is_empty(),
+        text: system::pretty_hotkey(&hotkey),
+        registered: !hotkey.is_empty(),
     }
 }
 
@@ -434,10 +459,11 @@ async fn copy_diagnostics(
         std::env::consts::OS,
         std::env::consts::ARCH
     ));
-    let hotkey = if state.hotkey.is_empty() {
+    let registered = state.hotkey_text();
+    let hotkey = if registered.is_empty() {
         "<未注册>"
     } else {
-        state.hotkey.as_str()
+        registered.as_str()
     };
     text.push_str(&format!("hotkey: {hotkey}\n"));
     text.push_str(&format!(
@@ -621,11 +647,11 @@ pub fn run() {
                 dispatcher,
                 _runtime: runtime,
                 vault,
-                hotkey: if hotkey_registered {
+                hotkey: std::sync::Mutex::new(if hotkey_registered {
                     hotkey
                 } else {
                     String::new()
-                },
+                }),
             });
 
             // 托盘失败不应让应用起不来：最坏情况是回到"只能手动找窗口"。
