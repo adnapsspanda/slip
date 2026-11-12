@@ -26,6 +26,8 @@
    */
   --ink-soft: #787061;
   --accent: #b4663a;
+  /* 过滤命中的底色：在纸色上压一层暖黄，正文仍是 --ink（对纸色 12.6:1，底色只更亮）。 */
+  --mark-bg: #f7e2c1;
   --scrollbar-thumb: rgb(120 112 97 / 32%);
   --scrollbar-thumb-hover: rgb(120 112 97 / 55%);
   --accent-focus-ring: rgb(180 102 58 / 14%);
@@ -63,6 +65,8 @@
     --ink: #f1ebd8;
     --ink-soft: #a89f8d;
     --accent: #e07a47;
+    /* 深色下的命中底色：深棕黄，浅墨白字压在上面仍有 9:1，不刺眼也不含糊。 */
+    --mark-bg: #4a3a22;
     --scrollbar-thumb: rgb(168 159 141 / 28%);
     --scrollbar-thumb-hover: rgb(168 159 141 / 50%);
     --accent-focus-ring: rgb(224 122 71 / 20%);
@@ -323,6 +327,8 @@ body {
 .capture__input {
   width: 100%;
   resize: none;
+  /* R89：捕获框也是正文入口，粘进一条长路径时同样要能折行。 */
+  overflow-wrap: anywhere;
   border: 1px solid var(--paper-edge);
   border-radius: 10px;
   background: var(--paper-card);
@@ -542,10 +548,72 @@ body {
   }
 }
 
+/*
+ * 正文块：正文 + 标签徽章两行。
+ *
+ * 用列方向 flex 而不是让徽章跟在正文行里：标签数量不定，跟在行内会把最后一行
+ * 正文挤成窄条；另起一行时徽章还能自己折行。
+ */
+.slip__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+}
+
 .slip__text {
   flex: 1;
   word-break: break-word;
+  /*
+   * R89：超长无空格串（路径、哈希、粘贴进来的 JSON）不能撑破布局。
+   * 用 `anywhere` 而不是 `break-all`：前者只在真的放不下时断，且会参与
+   * min-content 计算（`break-word` 不会）——没有这一条，flex 子项的最小宽度
+   * 就是那一整条长串，整张纸会被顶宽。
+   */
+  overflow-wrap: anywhere;
   cursor: text;
+}
+
+/* 标签徽章：边框用纸沿色、文字用次级墨色——读得清，但不和正文抢注意力。 */
+.slip__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.slip__tag {
+  padding: 0 5px;
+  border: 1px solid var(--paper-edge);
+  border-radius: 4px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+/*
+ * 中英混排微间距（R87）：**零宽度的元素**，不是空格字符。
+ *
+ * 只在"汉字紧邻 ASCII 字母/数字"处由 `render.js` 插入。用 `0.2ch`（约 1px 多一点）
+ * 而不是 `0.25em`：这个量级刚好消掉"汉字方框紧贴西文"的局促感，又不会让
+ * `第2章` 看起来像 `第 2 章`。
+ */
+.slip__gap {
+  display: inline-block;
+  width: 0.2ch;
+}
+
+/*
+ * 过滤命中（R90）：背景柔和、文字色继承。
+ * `padding` 只有 1px：块级 padding 会让长段命中把行距撑开，这里只求"看得见"。
+ */
+.slip__highlight {
+  padding: 0 1px;
+  border-radius: 3px;
+  background: var(--mark-bg);
+  color: inherit;
 }
 
 /* 锁定只表示正文不可改，所以只降正文与锁图标，勾选框保持可点。 */
@@ -613,6 +681,8 @@ body {
 .slip__edit {
   flex: 1;
   min-width: 0;
+  /* R89：与正文同一口径，编辑长主体时不把行撑破（单行框内是横向滚动，属性照样生效）。 */
+  overflow-wrap: anywhere;
   padding: 1px 6px;
   border: 1px solid var(--paper-edge);
   border-radius: 7px;

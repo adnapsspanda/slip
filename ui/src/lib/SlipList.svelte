@@ -1,8 +1,10 @@
 <script>
   import { listNavTarget, tabTarget } from "./keys.js";
   import { tick } from "svelte";
-  import { tokenize } from "./inline.js";
   import { exactLocal, relativeTime } from "./time.js";
+  import { buildInline } from "./render.js";
+  import { parseQuery } from "./filter.js";
+  import { extractTags } from "./tags.js";
 
   /**
    * 纸片列表。
@@ -30,6 +32,12 @@
     ondelink,
     /** 列表为空是因为过滤没匹配到，而不是真的没有内容。 */
     filtering = false,
+    /**
+     * 过滤框的原始输入。只用于渲染层的两件事：高亮命中片段、以及"这一行和非空
+     * 模板无关"的标签徽章不受影响。**判定不在这里做**——`App.svelte` 已经用同一个
+     * 纯函数筛过一遍，列表拿到的 `slips` 就是结果。
+     */
+    query = "",
     /** 正在看归档抽屉：每行给出"恢复"而不是"归档"。 */
     archivedView = false,
     /** 归档里有多少条。列表空但归档非空时，空态文案必须说清"东西还在"。 */
@@ -39,6 +47,14 @@
     /** 双向暴露"是否正在编辑"，让 App 的 Ctrl+Z 知道该不该让路。 */
     editing = $bindable(false),
   } = $props();
+
+  /**
+   * 过滤条件**只解析一次**，供每一行的高亮切片复用。
+   *
+   * 放在组件顶层而不是在模板里对每一行调 `parseQuery`：过滤框每敲一个字符都会重渲染
+   * 整个列表，逐行解析等于把同一份输入重复解析 N 遍。
+   */
+  let parsedFilter = $derived(parseQuery(query));
 
   let editingId = $state(null);
   /** 编辑框里的初值/当前值；提交失败时靠它把用户输入原样留着。 */
@@ -351,6 +367,8 @@
     </li>
   {:else}
     {#each slips as slip, index (slip.id)}
+      <!-- 标签只算一次：模板里两处要用（判空 + 遍历），重复调用纯属浪费。 -->
+      {@const tags = extractTags(slip.text)}
       <li
         class:slip--done={slip.done}
         class="slip"
@@ -388,45 +406,84 @@
             aria-label="编辑纸条"
           />
         {:else}
-          <span
-            class="slip__text"
-            class:slip__text--locked={slip.locked}
-            role="textbox"
-            tabindex="0"
-            aria-readonly="true"
-            aria-label={slip.locked
-              ? "已锁定的纸条正文"
-              : "纸条正文，双击或回车编辑"}
-            bind:this={itemEls[index]}
-            onkeydown={(event) => handleItemKeydown(event, slip, index)}
-            title={slip.locked ? "已锁定，先解锁才能修改" : "双击编辑"}
-          >
-            <!--
-              逐段渲染而不是 `{@html}`：正文来自 inbox.md，这个文件用户随时可编辑，
-              当 HTML 插进 DOM 就等于给它一个执行入口。这里的每一段要么是纯文本
-              （Svelte 自动转义），要么是下面这三种已知标签。
-            -->
-            {#each tokenize(slip.text) as token}
-              {#if token.type === "bold"}
-                <strong>{token.value}</strong>
-              {:else if token.type === "code"}
-                <code>{token.value}</code>
-              {:else if token.type === "link"}
-                <a
-                  class="slip__link"
-                  href={token.href}
-                  onclick={(event) => {
-                    // 交给系统浏览器；双击链接不该顺带进入编辑。
-                    event.preventDefault();
-                    event.stopPropagation();
-                    ondelink?.(token.href);
-                  }}
-                  ondblclick={(event) => event.stopPropagation()}
-                  >{token.value}</a
-                >
-              {:else}{token.value}{/if}
-            {/each}
-          </span>
+          <!--
+            正文与徽章分成两行（`.slip__body`）：徽章是**渲染层的另一段 DOM**，
+            不塞进 `.slip__text` 里。两条理由：
+              ① 正文的派生视图必须与 `slip.text` 逐字节一致——徽章文本会把
+                 `textContent` 变成"原文 + #标签"，任何以它为准的校验都会失真；
+              ② 标签多的时候需要整行折行，塞在正文行里会把文字挤成窄条。
+          -->
+          <div class="slip__body">
+            <span
+              class="slip__text"
+              class:slip__text--locked={slip.locked}
+              role="textbox"
+              tabindex="0"
+              aria-readonly="true"
+              aria-label={slip.locked
+                ? "已锁定的纸条正文"
+                : "纸条正文，双击或回车编辑"}
+              bind:this={itemEls[index]}
+              onkeydown={(event) => handleItemKeydown(event, slip, index)}
+              title={slip.locked ? "已锁定，先解锁才能修改" : "双击编辑"}
+            >
+              <!--
+                逐段渲染而不是 `{@html}`：正文来自 inbox.md，这个文件用户随时可编辑，
+                当 HTML 插进 DOM 就等于给它一个执行入口。这里的每一段要么是纯文本
+                （Svelte 自动转义），要么是下面这几种已知标签。
+
+                `buildInline` 只做视图加工（混排微间距、命中高亮），**不改字**：
+                所有非 gap 片段的文本拼起来逐字节等于 `slip.text`。
+              -->
+              {#each buildInline(slip.text, parsedFilter) as token}
+                {#if token.type === "bold"}
+                  <strong
+                    >{#if token.hit}<mark class="slip__highlight"
+                        >{token.value}</mark
+                      >{:else}{token.value}{/if}</strong
+                  >
+                {:else if token.type === "code"}
+                  <code
+                    >{#if token.hit}<mark class="slip__highlight"
+                        >{token.value}</mark
+                      >{:else}{token.value}{/if}</code
+                  >
+                {:else if token.type === "link"}
+                  <a
+                    class="slip__link"
+                    href={token.href}
+                    onclick={(event) => {
+                      // 交给系统浏览器；双击链接不该顺带进入编辑。
+                      event.preventDefault();
+                      event.stopPropagation();
+                      ondelink?.(token.href);
+                    }}
+                    ondblclick={(event) => event.stopPropagation()}
+                    >{token.value}</a
+                  >
+                {:else if token.type === "gap"}
+                  <!--
+                    中英混排的微间距（R87）：**零宽元素**，不是空格字符。
+                    正文里塞一个真实空格会改写用户字节；这里只是让"汉字紧跟 abc"
+                    看起来不至于挤在一起。`aria-hidden` 是必须的——它没有语义。
+                  -->
+                  <span class="slip__gap" aria-hidden="true"></span>
+                {:else if token.hit}
+                  <!-- 过滤命中：`<mark>` 只是视觉强调，文本仍逐字相同。 -->
+                  <mark class="slip__highlight">{token.value}</mark>
+                {:else}{token.value}{/if}
+              {/each}
+            </span>
+            {#if tags.length > 0}
+              <span class="slip__tags"
+                >{#each tags as tag (tag)}<!--
+                    标签徽章（R84）：正文里的 `#工作` 原样留着，这里只是额外的可扫视入口。
+                  --><span
+                    class="slip__tag">#{tag}</span
+                  >{/each}</span
+              >
+            {/if}
+          </div>
           {#if archivedView}
             <button
               type="button"
@@ -434,6 +491,7 @@
               aria-label="恢复纸条"
               title="恢复到列表"
               onclick={() => onunarchive?.(slip)}
+              ondblclick={(event) => event.stopPropagation()}
             >
               <svg
                 viewBox="0 0 16 16"
@@ -450,7 +508,6 @@
                   stroke-linejoin="round"
                 />
               </svg>
-              ondblclick={(event) => event.stopPropagation()}
             </button>
           {:else if slip.done}
             <button
@@ -459,6 +516,7 @@
               aria-label="归档纸条"
               title="归档（从列表收起）"
               onclick={() => onarchive?.(slip)}
+              ondblclick={(event) => event.stopPropagation()}
             >
               <svg
                 viewBox="0 0 16 16"
@@ -475,7 +533,6 @@
                   stroke-linejoin="round"
                 />
               </svg>
-              ondblclick={(event) => event.stopPropagation()}
             </button>
           {/if}
           <button
@@ -486,6 +543,7 @@
             aria-label={slip.locked ? "解锁纸条" : "锁定纸条"}
             title={slip.locked ? "解锁正文" : "锁定正文"}
             onclick={() => onlock?.(slip)}
+            ondblclick={(event) => event.stopPropagation()}
           >
             <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
               <path
@@ -506,7 +564,6 @@
                 stroke-width="1.4"
               />
             </svg>
-            ondblclick={(event) => event.stopPropagation()}
           </button>
           {#if !editingId}
             <!--

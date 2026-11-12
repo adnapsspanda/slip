@@ -7,6 +7,7 @@
     shouldSilentRefresh,
   } from "./lib/status.js";
   import { noticeAction, filterKeyIntent } from "./lib/keys.js";
+  import { matchesFilter, parseQuery } from "./lib/filter.js";
   import { createSerialQueue, nextToggleTarget } from "./lib/queue.js";
   import { confirmStep, CONFIRM_WINDOW_MS } from "./lib/confirm.js";
   import * as bridge from "./lib/bridge.js";
@@ -120,11 +121,18 @@
   let filtering = $state(false);
   let filterRef = $state(null);
 
+  /**
+   * 过滤条件只解析一次，然后逐条判定。
+   *
+   * 判定逻辑全部在 `lib/filter.js` 的纯函数里（`#tag`、`is:done`/`is:open`/`is:locked`，
+   * 其余为全文模糊搜索；不合法的 `is:xxx` 降级而不报错、不清空列表）。
+   * 这里只负责"取哪一侧 + 交给谁"，因为这两件事依赖界面状态，不该进纯函数。
+   */
+  let parsedFilter = $derived(parseQuery(filter));
   let visible = $derived.by(() => {
     const base = showArchived ? archivedSlips : activeSlips;
-    const needle = filter.trim().toLowerCase();
-    if (!needle) return base;
-    return base.filter((slip) => slip.text.toLowerCase().includes(needle));
+    if (!parsedFilter.constrained) return base;
+    return base.filter((slip) => matchesFilter(slip, parsedFilter));
   });
   // 统计始终看**未归档**那一侧：归档抽屉里显示"3 条未完成"只会让人困惑。
   let pendingCount = $derived(activeSlips.filter((slip) => !slip.done).length);
@@ -1102,6 +1110,7 @@
       bind:this={listRef}
       slips={visible}
       filtering={filter.trim().length > 0}
+      query={filter}
       archivedView={showArchived}
       archivedCount={archivedSlips.length}
       onunarchive={handleUnarchive}

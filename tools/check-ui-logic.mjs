@@ -28,6 +28,9 @@ import {
   noticeAction,
   filterKeyIntent,
 } from "../ui/src/lib/keys.js";
+import { extractTags } from "../ui/src/lib/tags.js";
+import { FILTER_STATES, highlightSlices, matchesFilter, parseQuery } from "../ui/src/lib/filter.js";
+import { buildInline, needsGap, splitMixRuns } from "../ui/src/lib/render.js";
 
 let failed = 0;
 const check = (label, actual, expected) => {
@@ -238,6 +241,130 @@ check("刚好到间隔 → 要刷", shouldSilentRefresh(10000, 10000 + SILENT_RE
 check("超过间隔 → 要刷", shouldSilentRefresh(10000, 60000), true);
 check("时钟回拨 → 保守要刷", shouldSilentRefresh(10000, 5000), true);
 check("非法值 → 要刷", shouldSilentRefresh(Number.NaN, 10000), true);
+
+// ---- R84 `#标签` 提取：与 crates/slip-domain/src/tags.rs 的用例一一对应 ----
+// 前端这份与 Rust 那份必须**规则完全一致**，否则界面上看得见的标签和能过滤到的
+// 标签是两套东西。下面每条都摘自 Rust 侧的测试，改一边就得改另一边。
+check("简单英文标签", extractTags("#work #life"), ["work", "life"]);
+check("句中的标签", extractTags("今天要写 #work 的报告"), ["work"]);
+check("中文标签", extractTags("做点事 #工作 #生活"), ["工作", "生活"]);
+check("中英混合的标签名", extractTags("#待办2"), ["待办2"]);
+check("URL 锚点不算标签", extractTags("https://a.com#b"), []);
+check("句子里的 URL 锚点也不算法", extractTags("见 https://example.com/page#section 这里有说明"), []);
+check("同一句里的真标签仍要认出来", extractTags("https://a.com#b 另外 #work"), ["work"]);
+check("下划线在标签名里合法", extractTags("#work_name"), ["work_name"]);
+check("纯符号的标签不算", extractTags("#-"), []);
+check("括号包裹的中文标签", extractTags("（#工作）"), ["工作"]);
+check("括号包裹的英文标签", extractTags("(#work)"), ["work"]);
+check("直角引号包裹的标签", extractTags("「#工作」"), ["工作"]);
+// 尾标点表逐个验（与 Rust 的 is_trailing_punct 同表）
+const TAG_TRAILING = [",", ".", ";", ":", "!", "?", ")", "]", "}", '"', "'", "。", "，", "、", "；", "：", "！", "？", "）", "】", "》", "」", "』", "…"];
+const tagNotStripped = TAG_TRAILING.filter((ch) => extractTags(`#work${ch}`).join() !== "work");
+check("尾标点全部被剥掉", tagNotStripped, []);
+check("多个尾标点一起剥", extractTags("#work!?"), ["work"]);
+check("中文句号被剥掉", extractTags("#工作。"), ["工作"]);
+// 退化 token：逐条都不该产出标签（与 Rust 的 rejects_degenerate_tokens 同集）
+const DEGENERATE = ["#", "# ", "#a#b", "#a/b", "#!!", "没有标签", "a#b", "# 标题"];
+check("退化 token 都不算标签", DEGENERATE.map((text) => extractTags(text).join("|")), DEGENERATE.map(() => ""));
+check("按首次出现顺序去重", extractTags("#b #a #b #c #a"), ["b", "a", "c"]);
+check("标签名大小写敏感", extractTags("#Work #work"), ["Work", "work"]);
+const tagSource = "#工作 今天要把报告写完";
+const tagSourceBefore = tagSource;
+extractTags(tagSource);
+check("提取标签不改写正文", tagSource, tagSourceBefore);
+
+// ---- R85/R86 过滤：#tag 与 is:done / is:open / is:locked ----
+const open = { text: "写 #工作 的报告", done: false, locked: false };
+const done = { text: "买牛奶", done: true, locked: false };
+const locked = { text: "已锁的 #工作 条目", done: false, locked: true };
+check("空输入全部显示", matchesFilter(open, ""), true);
+check("纯空白全部显示", matchesFilter(open, "   "), true);
+check("全文模糊搜索（大小写不敏感）", matchesFilter({ text: "Buy Milk" }, "milk"), true);
+check("全文模糊搜索未命中", matchesFilter({ text: "买牛奶" }, "面包"), false);
+check("#tag 命中", matchesFilter(open, "#工作"), true);
+check("#tag 未命中", matchesFilter(open, "#生活"), false);
+check("标签大小写敏感（与领域层一致）", matchesFilter({ text: "写 #Work" }, "#work"), false);
+check("过滤框里标签的尾标点也被剥", parseQuery("#工作，").tags, ["工作"]);
+check("单独的 # 不是标签（当普通词搜）", parseQuery("#").tags, []);
+check("is:done 命中已完成", matchesFilter(done, "is:done"), true);
+check("is:done 不命中未完成", matchesFilter(open, "is:done"), false);
+check("is:open 命中未完成", matchesFilter(open, "is:open"), true);
+check("is:open 不命中已完成", matchesFilter(done, "is:open"), false);
+check("is:locked 只看锁定标志", [matchesFilter(locked, "is:locked"), matchesFilter(open, "is:locked")], [true, false]);
+check("条件之间是 AND", [matchesFilter(open, "is:open #工作"), matchesFilter(done, "is:open #工作")], [true, false]);
+check("关键字大小写不敏感", matchesFilter(done, "IS:DONE"), true);
+check("状态关键字表只有三个", FILTER_STATES, ["done", "open", "locked"]);
+check("多词按空白切开后逐词 AND", [matchesFilter({ text: "买牛奶" }, "买 牛奶"), matchesFilter({ text: "买面包" }, "买 牛奶")], [true, false]);
+// 不合法 is:xxx：不报错、也不清空列表；同一句里的其它条件照常生效
+check("不合法 is:xxx 不构成约束", matchesFilter(open, "is:bogus"), true);
+check("不合法 is:xxx 之后其它词仍生效", [matchesFilter(open, "is:bogus 报告"), matchesFilter(done, "is:bogus 报告")], [true, false]);
+check("解析结果标记了降级", parseQuery("is:bogus").degraded, true);
+check("空查询不算受约束", parseQuery("   ").constrained, false);
+check("只有不合法 is: 时不算受约束", parseQuery("is:bogus").constrained, false);
+
+// ---- R90 高亮切片：用文本切片而不是 HTML 注入 ----
+check("命中处切成 hit 片段", highlightSlices("买入牛奶", "牛奶"), [
+  { value: "买入", hit: false },
+  { value: "牛奶", hit: true },
+]);
+check("没有命中时是单个非 hit 段", highlightSlices("买入牛奶", "面包"), [{ value: "买入牛奶", hit: false }]);
+check("高亮大小写不敏感", highlightSlices("Buy Milk", "milk"), [
+  { value: "Buy ", hit: false },
+  { value: "Milk", hit: true },
+]);
+check("多处命中都标出来", highlightSlices("牛奶和牛奶", "牛奶").filter((s) => s.hit).map((s) => s.value), ["牛奶", "牛奶"]);
+check(
+  "重叠的多词命中合并成一段",
+  highlightSlices("报告书", "报告 报告书"),
+  [{ value: "报告书", hit: true }],
+);
+check("只有状态条件时不高亮正文", highlightSlices("买入牛奶", "is:done"), [{ value: "买入牛奶", hit: false }]);
+// 高亮切片拼回去必须逐字节等于原文（不可回退：正文只读）
+const HL_SOURCES = ["买入牛奶", "报告书 与 报告", "", "纯文本没有命中"];
+const hlRebuilt = HL_SOURCES.filter((text) => highlightSlices(text, "报告 牛奶").map((s) => s.value).join("") !== text);
+check("高亮切片拼回后与原文逐字节相同", hlRebuilt, []);
+
+// ---- R87 中英混排微间距：只插零宽元素，不动正文字符 ----
+check("汉字后紧跟字母要间距", needsGap("看", "a"), true);
+check("字母后紧跟汉字要间距", needsGap("a", "看"), true);
+check("汉字紧跟数字要间距", needsGap("第", "2"), true);
+check("汉字之间不要间距", needsGap("看", "书"), false);
+check("字母与数字之间不要间距", needsGap("a", "2"), false);
+check("汉字与标点之间不要间距", needsGap("看", "，"), false);
+check("混排切分保留全部字符", splitMixRuns("第2章abc").join(""), "第2章abc");
+check("混排切分的段落", splitMixRuns("第2章abc"), ["第", "2", "章", "abc"]);
+check("纯中文不切", splitMixRuns("买牛奶"), ["买牛奶"]);
+const gapPieces = buildInline("看abc", "");
+check("间距片段是零宽的（value 为空串）", gapPieces.filter((p) => p.type === "gap").map((p) => p.value), [""]);
+check("间距片段个数与交界数一致", gapPieces.filter((p) => p.type === "gap").length, 1);
+// 渲染视图的硬契约：非 gap 片段拼起来必须与 tokenize 的可见文本逐字节相同。
+// 注：`**粗体**` 这类标记字符**本来就会被 tokenize 消费掉**（那是行内标记，不是正文），
+// 所以基准取 tokenize 的拼接结果，而不是原始字符串。
+const INLINE_SOURCES = [
+  "看abc https://a.com#b 另外 **粗体**abc 和 `code`",
+  "#工作 把 报告 写完",
+  "见 https://a.com。",
+  "",
+];
+const rebuilt = INLINE_SOURCES.filter((text) => {
+  const expected = tokenize(text).map((token) => token.value).join("");
+  const actual = buildInline(text, "报告 abc")
+    .filter((piece) => piece.type !== "gap")
+    .map((piece) => piece.value)
+    .join("");
+  return actual !== expected;
+});
+check("渲染片段拼回后与可见正文逐字节相同", rebuilt, []);
+check(
+  "过滤命中在渲染片段里被标出",
+  buildInline("买入牛奶", "牛奶").filter((p) => p.hit).map((p) => p.value),
+  ["牛奶"],
+);
+check(
+  "没有过滤词时没有任何 hit 片段",
+  buildInline("买入牛奶", "").filter((p) => p.hit).length,
+  0,
+);
 
 if (failed > 0) {
   console.log(`\n失败 ${failed} 项。`);
