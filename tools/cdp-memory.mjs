@@ -119,9 +119,12 @@ const after = await heapMB();
 const growth = Math.round((after - before) * 100) / 100;
 console.log(`重建后堆 ${after} MB（增长 ${growth} MB）`);
 
-// 20 次重建若每次泄漏一点点闭包，增长会很可观；这里给 8 MB 的宽容度，
-// 主要抓"每次重建都留下完整一份列表"这种量级的泄漏。
-check("反复重建后堆没有明显增长（< 8 MB）", growth < 8, `增长 ${growth.toFixed(2)} MB`);
+// 阈值 2 MB（R124 收紧，原 8 MB）。
+//
+// 依据：实测 500 条 × 20 次重建是 0 增长（6.3 → 6.3 MB）。既然没有噪声，
+// 8 MB 的宽容度就太松了——它抓不住"每次重建泄漏 300 KB"这种真实退化。
+// 2 MB 仍然给了 GC 抖动足够的余地（每个断言都先 collectGarbage 再读）。
+check("反复重建后堆没有明显增长（< 2 MB）", growth < 2, `增长 ${growth.toFixed(2)} MB`);
 
 const rowsAfter = await rowCount();
 check("重建后条数不变", rowsAfter === expected, `实际 ${rowsAfter}`);
