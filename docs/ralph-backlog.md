@@ -49,10 +49,27 @@
 | R-05 | 限制常量前后端各一份 | `slip-domain` 的 `MAX_TEXT_CODEPOINTS=2000` / `MAX_LINES=100` 与 `Capture.svelte` 的字面量重复，无单一来源 | 加一条会红的契约测试，把两处钉在一起 | ✅ 见完成记录 |
 | R-09 | 无安装包 | `bundle.active: false`，只能分发绿色 exe | 确认是否刻意；若是，在 README「已知限制」里写明不提供安装包及原因 | ✅ 见 README.md:140-142（写明原因与开启方法） |
 | R-03 | 摆放兜底居中到主屏 | **降级**：原证据（用户两次启动坐标恒为 `(965,344)`）实际来自沙盒启动，交互桌面上 `place_near_cursor` 正常跟随光标 | 仅在能复现"真实桌面下光标不可读"时再修；修法是把兜底顺序改为 光标所在屏 → 前台窗口所在屏 → 主屏 | 降级 |
+| R-32 | 状态生命周期覆盖缺口 | `AGENTS.md` 自述：`showArchived` / `showBackups` 跨唤出、`notice` 与三个整体替换路径**没有任何断言** | 在 SAC 拦 exe、端到端跑不了的条件下补可运行的守卫；能变异验证 | ✅ 见完成记录 |
 | R-01 | ~~归档撤销承诺与实现不符~~ | **撤回**：`Patch::Unarchive`（`model.rs:52`）、`apply_patch` 分支（`state.rs:135`）、`inverse_batch` 双向映射（`dispatch.rs:565-568`）、领域测试（`state.rs:304`）、端到端测试（`pipeline.rs:301` `archive_and_undo_preserve_done_state_through_disk`）全部就位 | 无需改动。文档承诺与实现**一致** | ✅ 撤回 |
 
 ## 完成记录
 
+- **R-32｜本轮：补齐两条「没有断言」的状态生命周期**。
+  - 新增 `crates/slip-app/tests/frontend_lifecycle.rs`（4 条）：读 `ui/src/App.svelte`
+    源码，断言 `summon()` 里清 `showArchived` / `showBackups` / `pendingRestore`，
+    以及 `handleReload` / `handleRestore` / `handleIsolate` 三个整体替换路径都清 `notice`。
+  - 为什么是结构守卫而不是端到端：本机 SAC 仍拦新产出的 `slip-shell.exe`
+    （`tools/check-environment.ps1`：最近拦截 11/12 09:53:59），端到端跑不了；
+    组件状态也没有可单测的纯函数入口。测试文件头已诚实标注局限：只保证清理语句
+    不被删，不保证行为，行为级仍归 `cdp-probe.mjs` 第 24 节与备份恢复场景。
+  - 函数体提取按 prettier 的两格闭合缩进定位，避开模板字符串里 `${...}` 的计数问题；
+    签名或闭合行找不到时给出「请同步本测试」的失败信息。
+  - **变异验证 6/6**：逐条删掉 `showArchived = false;` / `showBackups = false;` /
+    `pendingRestore = null;`（`summon()`）与三个路径的 `notice = null;`，
+    对应测试均 FAILED；每次立刻还原，`git status` 干净。
+  - `AGENTS.md` 的覆盖表两行由「没有断言」改为守卫路径；变异验证表新增一行。
+  - 验证：WSL `cargo test -p slip-app --test frontend_lifecycle` 4/4；
+    随后跑完整 WSL 套件（286 项）与 clippy / fmt。
 - **R117 对比度实测 + R118 列表边界（本轮）**：
   - 新增 `ui/src/lib/color.js`：WCAG 相对亮度与对比度计算（纯函数，8 条断言，
     含"黑白 = 21"、"同色 = 1"、"非法输入返回 null"的自我校验）。

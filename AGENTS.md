@@ -216,9 +216,9 @@ pwsh -File tools/verify-hotkey.ps1
    | 撤销栈 + `Reload` | 集成测试 `reload_clears_the_undo_stack` |
    | 撤销栈 + `RestoreBackup` | 端到端「恢复需要二次确认」间接覆盖（恢复后撤销栈已空） |
    | 撤销栈 + `IsolateAndReset` | 集成测试 `isolate_and_reset_clears_the_undo_stack`（先构造降级态；已做变异验证：去掉 `undo.clear()` 该测试会红） |
-   | `showArchived` / `showBackups` 跨唤出 | **没有断言**，靠本表人工核对 |
+   | `showArchived` / `showBackups` / `pendingRestore` 跨唤出 | 结构守卫 `crates/slip-app/tests/frontend_lifecycle.rs::summon_resets_the_archived_and_backup_views`（读 `summon()` 源码，缺清理语句即红；已做变异验证） |
    | `notice` 跨唤出 | 端到端「再唤出后撤销提示已过期清除」 |
-   | `notice` 与三个整体替换路径 | **没有断言**，靠本表人工核对 |
+   | `notice` 与三个整体替换路径 | 结构守卫 `reload_clears_the_undo_notice` / `restore_backup_clears_the_undo_notice` / `isolate_and_reset_clears_the_undo_notice`（读 `App.svelte` 函数体；已做变异验证） |
 
    新增/修改这些路径时，能补断言就补；补不上的（例如需要构造降级态、或要清空整个列表
    才能触发），在 `docs/ralph-backlog.md` 里写明"为什么没覆盖"，不要默默留空。
@@ -466,9 +466,11 @@ cargo build -p slip-shell
 | `bom_is_detected_and_written_back_byte_identically` | 删掉 `render` 里的 BOM 分支 | FAILED ✅ |
 | `a_real_change_drops_the_bom` | 提交时保留 BOM | FAILED ✅ |
 | `validate_candidate` 的守卫 | 改成无条件 `Ok(())` | FAILED ✅ |
+| `frontend_lifecycle.rs` 的 4 条生命周期守卫 | 逐条删掉 `summon()` 里的清理语句 / 三个路径的 `notice = null;` | 6/6 FAILED ✅ |
 
 **尚未**做变异验证的：`isolate_and_reset_clears_the_undo_stack` 已做过（见 R24）；
-其余前端断言、以及所有只靠"跑绿了"确认的测试，都还没验证过。
+其余前端断言、以及所有只靠"跑绿了"确认的测试，都还没验证过。生命周期这 4 条是结构守卫
+（读源码），只保证清理语句不被删，不保证行为；行为级仍以端到端为准。
 
 
 - 领域层与调度层用**纯内存**测试，禁止碰真磁盘。
