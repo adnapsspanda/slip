@@ -13,46 +13,14 @@
 //! **不回滚 `latest`**，也不把已提交的操作改成失败。
 
 use slip_domain::Slip;
-use slip_store::prefs::Prefs;
 use slip_store::{Diagnostic, RecoveryState, StoreOutcome, StoreSnapshot, Warning};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 
 use crate::{HealthView, RecoveryView, RuntimeStatus, SlipView, UiSnapshot};
 
-/// 展示层里唯一需要持久化的东西。
-///
-/// 早先这里还有 `order` / `collapsed` / `dock_side` / `monitors`，以及配套的
-/// `ViewEvent` 通路与 `dispatch` 里的偏好去抖机制。但前端**从未产生过任何视图事件**
-/// ——整条路径是死的，却让 `dispatch` 主循环多背了一个 `select!` 分支与一套
-/// dirty/due 状态机。已整体删除。
-///
-/// 将来若要重新引入拖拽 / 折叠，必须先给出 UI 入口与验收用例，
-/// 而不是先把后端通路加回来。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct PaperViewSet {
-    /// 原样携带，**本层从不解释它**：`Prefs` 是整体读写的，少带一个字段就等于
-    /// 每次保存都把用户配置的热键静默擦掉。
-    pub hotkey: Option<String>,
-}
-
-impl PaperViewSet {
-    pub fn from_prefs(prefs: &Prefs) -> Self {
-        Self {
-            hotkey: prefs.hotkey.clone(),
-        }
-    }
-
-    pub fn to_prefs(&self) -> Prefs {
-        Prefs {
-            hotkey: self.hotkey.clone(),
-        }
-    }
-}
-
 pub struct Presenter {
     latest: StoreSnapshot,
-    view: PaperViewSet,
     runtime: RuntimeStatus,
     current: Option<UiSnapshot>,
     ui_rev: u64,
@@ -61,13 +29,8 @@ pub struct Presenter {
 impl Presenter {
     /// 初始化：立即合成 `ui_rev = 1` 的完整快照（v11 §6.3）。
     pub fn new(initial: StoreSnapshot) -> Self {
-        Self::with_view(initial, PaperViewSet::default())
-    }
-
-    pub fn with_view(initial: StoreSnapshot, view: PaperViewSet) -> Self {
         let mut presenter = Self {
             latest: initial,
-            view,
             runtime: RuntimeStatus::Running,
             current: None,
             ui_rev: 0,
@@ -108,10 +71,6 @@ impl Presenter {
 
     pub fn ui_rev(&self) -> u64 {
         self.ui_rev
-    }
-
-    pub fn view(&self) -> &PaperViewSet {
-        &self.view
     }
 
     pub fn latest(&self) -> &StoreSnapshot {
@@ -216,52 +175,6 @@ mod tests {
     use super::*;
     use slip_domain::{ContentRev, Slip, SlipId};
     use slip_store::{Availability, Health, StoreError, StoreSnapshot};
-
-    #[test]
-    fn paper_view_set_roundtrip_only_pins_field_copy() {
-        // 原名 `view_roundtrip_never_drops_the_hotkey`（AGENTS.md 里引用的就是它）。
-        //
-        // 必须诚实标注：这条只验证 `PaperViewSet::from_prefs` → `to_prefs` 的
-        // 字段复制（本质上等价于 clone 断言），**不是**任何行为断言。生产代码里
-        // `Presenter::view()` / `PaperViewSet::to_prefs` 目前没有调用者——视图写入
-        // 通路（拖拽/折叠）早已随死代码删除。
-        //
-        // 它仍值得保留：`Prefs` 是整体写的，字段复制一旦丢 `hotkey`，将来任何
-        // 重新接上的持久化路径都会静默擦掉用户配置。
-        //
-        // 当前没有视图写入生产路径；将来若重新引入拖拽/折叠，必须让快照合成或
-        // 偏好持久化真正经过 `Presenter`，并补行为测试，只加这条字段断言不够。
-        let prefs = Prefs {
-            hotkey: Some(String::from("ctrl+alt+h")),
-        };
-
-        let view = PaperViewSet::from_prefs(&prefs);
-
-        assert_eq!(view.to_prefs().hotkey, Some(String::from("ctrl+alt+h")));
-    }
-
-    #[test]
-    fn presenter_keeps_the_view_set_it_was_built_with() {
-        // 字段复制测试不经过 `Presenter`；这条证明视图集在构造（含首次 `publish`）
-        // 以及之后的 `accept` 发布中仍然存活，不会被默认视图集覆盖。
-        let mut presenter = Presenter::with_view(
-            snapshot(1, vec![slip("a", false)]),
-            PaperViewSet {
-                hotkey: Some(String::from("ctrl+alt+h")),
-            },
-        );
-        assert_eq!(
-            presenter.view().to_prefs().hotkey.as_deref(),
-            Some("ctrl+alt+h")
-        );
-
-        let _ = presenter.accept(&StoreOutcome::ok(snapshot(2, vec![slip("b", false)])));
-        assert_eq!(
-            presenter.view().to_prefs().hotkey.as_deref(),
-            Some("ctrl+alt+h"),
-            "accept 发布新快照后视图集必须原样保留"
-        );
-    }
 
     fn slip(text: &str, done: bool) -> Slip {
         Slip {

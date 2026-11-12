@@ -1927,7 +1927,7 @@
   | 「开发机两台显示器都是 150%」 | ❌ 现在只有一块屏。已改为「开发机所有显示器缩放都相同」，与台数解耦 |
   | AGENTS「覆盖 7 类语义」 | ❌ 实际远超 7 类。已重写为完整清单，并注明**条目数不要写死** |
   | AGENTS 钩子覆盖「fmt / clippy / test」 | ❌ 已含编码检查与 prettier。已更新 |
-  | `PaperViewSet` 必须原样携带 `hotkey` | ✅ 有回归测试 `paper_view_set_roundtrip_only_pins_field_copy`（只钉字段复制，非行为断言） |
+  | 热键持久化 | ✅ 2026-11-12：删除只被测试使用的 `PaperViewSet`；热键由外壳 `system::persist_hotkey` 读-改-写 `Prefs`，不再依赖视图快照搬运字段 |
 
   顺带把「断言不得依赖未声明的环境前提」写进 `AGENTS.md` 的验收章节——
   本会话两次假红都是这个形状（类名撞车、坐标写死）。

@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use slip_app::dispatch::Dispatcher;
-use slip_app::presenter::{PaperViewSet, Presenter};
+use slip_app::presenter::Presenter;
 use slip_app::{Ack, AckError, AckResult, UiSnapshot};
 use slip_domain::{Mutation, Patch, Slip, SlipId, split_drafts};
 use slip_store::prefs::{JsonPrefsStore, PrefsStore};
@@ -878,8 +878,7 @@ pub fn run() {
             // 热键的合法性属于外壳：存储层只存字符串。这里做解析 + 回落。
             let hotkey = hotkey::resolve_shortcut(loaded.hotkey.as_deref());
             let initial = store.snapshot();
-            let view = PaperViewSet::from_prefs(&loaded);
-            let presenter = Presenter::with_view(initial, view);
+            let presenter = Presenter::new(initial);
 
             // 调度器要一个长期运行时；Tauri 自己的 async_runtime 不能保证
             // 生命周期与这里一致，所以显式建一个并持有它。

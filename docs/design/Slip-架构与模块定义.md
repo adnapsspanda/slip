@@ -634,7 +634,6 @@ app 只有一个消费者拥有 `presenter`。所有同步磁盘调用均 `spawn
 ```rust
 pub struct Presenter {
     latest: StoreSnapshot,
-    view: PaperViewSet,
     runtime: RuntimeStatus,
     current: Option<UiSnapshot>,
     ui_rev: u64,
@@ -1101,17 +1100,17 @@ Capability 只有两项：`core:default` 与 `core:window:allow-start-dragging`�
 > 下面这段描述的是**当时**的缺陷。保留它是因为"少带一个字段就静默擦掉配置"
 > 这个教训仍然适用于将来任何改回"运行期写偏好"的设计。
 
-把 `hotkey` 加进 `Prefs` 之后，`PaperViewSet::to_prefs()` 立刻编译失败——它只搬运
+把 `hotkey` 加进 `Prefs` 之后，当时的 `PaperViewSet::to_prefs()` 立刻编译失败——它只搬运
 `order` / `collapsed` / `dock_side` 三个字段。而 `dispatch.rs` 里任何一次拖拽或折叠
 触发的偏好保存，走的正是 `presenter.view().to_prefs()`。
 
 也就是说：**用户改了热键，随便拖动一张纸片，热键配置就被静默擦回默认值。**
 
-修法是让 `from_prefs` / `to_prefs` 恢复成无损往返——`PaperViewSet` 原样携带
-`hotkey` 但**从不解释它**。已加回归测试 `paper_view_set_roundtrip_only_pins_field_copy`
-（原名单数形式已随改名废弃；这条只钉字段复制，不是行为断言）。
+当时的修法是让 `from_prefs` / `to_prefs` 无损往返。修订 15 删除了视图写入通路；
+2026-11-12 又把只被测试使用的 `PaperViewSet` 一并删除。热键的持久化真源仍是
+`ui-state.json`，由外壳 `system::persist_hotkey` 读-改-写。
 
-教训：**当一个结构体是"整体读、整体写"的载体时，只搬运它关心的字段就是在慢慢丢数据。**
+教训仍成立：**当一个结构体是"整体读、整体写"的载体时，只搬运它关心的字段就是在慢慢丢数据。**
 
 ### 14.7 实现期新增的两个测试缝（生产无旁路）
 

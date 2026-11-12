@@ -31,7 +31,7 @@ fn slip(text: &str) -> Slip {
 /// 临时 vault + 真实 store + 真实调度器。
 fn dispatcher_for(inbox: &std::path::Path) -> Dispatcher {
     let store = Arc::new(MarkdownStore::new(inbox));
-    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    let presenter = Presenter::new(store.snapshot());
     Dispatcher::spawn(store, presenter, 8)
 }
 
@@ -122,7 +122,7 @@ async fn capture_writes_through_to_disk_and_back_to_the_snapshot() {
     let inbox = dir.path().join("inbox.md");
 
     let store = Arc::new(MarkdownStore::new(&inbox));
-    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    let presenter = Presenter::new(store.snapshot());
     let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     let created = slip("买发票");
@@ -191,7 +191,7 @@ async fn restarting_the_shell_reads_the_same_content_back() {
 
     {
         let store = Arc::new(MarkdownStore::new(&inbox));
-        let presenter = Presenter::with_view(store.snapshot(), Default::default());
+        let presenter = Presenter::new(store.snapshot());
         let dispatcher = Dispatcher::spawn(store, presenter, 8);
         let ack = dispatcher
             .apply(String::from("r1"), vec![Mutation::Append(slip("一次写入"))])
@@ -202,7 +202,7 @@ async fn restarting_the_shell_reads_the_same_content_back() {
 
     // 模拟重新启动：全新的 store 读同一个文件。
     let store = Arc::new(MarkdownStore::new(&inbox));
-    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    let presenter = Presenter::new(store.snapshot());
     let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     let snapshot = dispatcher.get_snapshot().await.unwrap();
@@ -216,7 +216,7 @@ async fn capture_of_several_lines_creates_several_slips() {
     let dir = tempfile::tempdir().expect("temp vault");
     let inbox = dir.path().join("inbox.md");
     let store = Arc::new(MarkdownStore::new(&inbox));
-    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    let presenter = Presenter::new(store.snapshot());
     let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     // 外壳把多行文本交给 split_drafts，这里直接复现那条路径。
@@ -260,7 +260,7 @@ async fn domain_rejection_does_not_touch_the_file() {
     let dir = tempfile::tempdir().expect("temp vault");
     let inbox = dir.path().join("inbox.md");
     let store = Arc::new(MarkdownStore::new(&inbox));
-    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    let presenter = Presenter::new(store.snapshot());
     let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     let before = std::fs::read(&inbox).unwrap_or_default();
@@ -282,7 +282,7 @@ async fn edit_undo_and_lock_round_trip_through_disk() {
     let inbox = dir.path().join("inbox.md");
 
     let store = Arc::new(MarkdownStore::new(&inbox));
-    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    let presenter = Presenter::new(store.snapshot());
     let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     let created = slip("原始内容");
@@ -386,7 +386,7 @@ async fn archive_and_undo_preserve_done_state_through_disk() {
     let inbox = dir.path().join("inbox.md");
 
     let store = Arc::new(MarkdownStore::new(&inbox));
-    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    let presenter = Presenter::new(store.snapshot());
     let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     let first = slip("交水电费");
@@ -482,7 +482,7 @@ async fn reload_clears_the_undo_stack() {
     let dir = tempfile::tempdir().expect("temp vault");
     let inbox = dir.path().join("inbox.md");
     let store = Arc::new(MarkdownStore::new(&inbox));
-    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    let presenter = Presenter::new(store.snapshot());
     let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     let created = slip("会被外部删掉的一条");
@@ -532,7 +532,7 @@ async fn isolate_and_reset_clears_the_undo_stack() {
     let dir = tempfile::tempdir().expect("temp vault");
     let inbox = dir.path().join("inbox.md");
     let store = Arc::new(MarkdownStore::new(&inbox));
-    let presenter = Presenter::with_view(store.snapshot(), Default::default());
+    let presenter = Presenter::new(store.snapshot());
     let dispatcher = Dispatcher::spawn(store, presenter, 8);
 
     let created = slip("隔离之前的一条");
